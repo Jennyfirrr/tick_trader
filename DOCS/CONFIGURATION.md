@@ -40,7 +40,26 @@ All settings are in `engine.cfg` (key=value format). Lines starting with `#` are
 | `take_profit_pct` | `3.00` | TP as % (also used as stddev multiplier for volatility-based exits) |
 | `stop_loss_pct` | `1.50` | SL as % (also used as stddev multiplier for volatility-based exits) |
 
-When rolling stats are populated, TP/SL are computed as `entry +/- (stddev * pct * 100)`. Falls back to percentage-based when stats aren't ready.
+When rolling stats are populated, TP/SL are computed as `entry +/- (stddev * pct * 100)`. Falls back to percentage-based when stats aren't ready. TP has a fee floor: minimum TP = `entry + entry * fee_rate * 3` to ensure profitable exits actually profit after round-trip fees.
+
+## Paper Trading
+
+| Key | Default | Description |
+|---|---|---|
+| `starting_balance` | `10000.00` | Starting paper trading balance ($) |
+| `fee_rate` | `0.10` | Per-trade fee as % (0.10 = 0.1% for Binance) |
+| `risk_pct` | `2.00` | Fraction of balance to risk per position (%) |
+
+Position quantity is computed as `(balance * risk_pct) / price`. At $10k balance and 2% risk, each position is ~$200.
+
+## Risk Management
+
+| Key | Default | Description |
+|---|---|---|
+| `max_drawdown_pct` | `10.00` | Halt trading when total P&L drops below this % of starting balance |
+| `max_exposure_pct` | `50.00` | Max % of starting balance deployed in open positions |
+
+Circuit breaker trips when `realized_pnl + unrealized_pnl < -(starting_balance * max_drawdown_pct)`. Exit gates keep running. Resets on restart.
 
 ## Market Microstructure Filters
 
@@ -109,6 +128,15 @@ max_shift=5.00
 # per-position exit conditions
 take_profit_pct=3.00
 stop_loss_pct=1.50
+
+# paper trading
+starting_balance=10000.00
+fee_rate=0.10
+risk_pct=2.00
+
+# risk management
+max_drawdown_pct=10.00
+max_exposure_pct=50.00
 
 # market microstructure filters
 volume_multiplier=3.00

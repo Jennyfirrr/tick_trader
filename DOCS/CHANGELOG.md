@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.4.0] - 2026-03-20 (branch: feature/risk-and-sizing)
+
+### Added
+- **Trading fees** - 0.1% per trade (configurable `fee_rate`). Deducted from balance on
+  both buy and sell. Realized P&L is now net of fees. Cumulative fees tracked and displayed
+  in TUI. All fee math is branchless FPN operations in the fill/exit paths.
+
+- **Position sizing** - quantity computed as `(balance * risk_pct) / price` instead of using
+  the stream's micro-fill volume. Default 2% risk per position ($200 at $10k balance =
+  0.00286 BTC at $70k). Configurable via `risk_pct` in engine.cfg.
+
+- **TP fee floor** - minimum take profit set at `entry * fee_rate * 3` (round-trip fees +
+  safety margin). Prevents the scenario where a volatility-based TP exit actually loses money
+  after fees. At $70k with 0.1% fees, TP floor is $210 above entry.
+
+- **Circuit breaker** - halts all new entries when total P&L (realized + unrealized) drops
+  below `max_drawdown_pct` of starting balance. Default 10% = halt at -$1,000 on a $10k
+  account. Exit gates keep running to protect existing positions. Branchless check ANDed
+  into the fill mask.
+
+- **Exposure limit** - caps total deployed capital at `max_exposure_pct` of starting balance.
+  Default 50% = max $5,000 in open positions. Ensures cash reserves for new entries on
+  deeper dips. Branchless check ANDed into the fill mask.
+
+- **TUI risk display** - shows fees paid, risk per position, exposure percentage with limit,
+  circuit breaker status (OK/TRIPPED).
+
+### Changed
+- Fill consumption now checks 6 conditions (all branchless, ANDed together):
+  not-duplicate, room-in-portfolio, entry-spacing, can-afford, not-blown, under-exposure
+- Exit buffer drain deducts exit fees from proceeds before returning to balance
+- Realized P&L is now net of both entry and exit fees
+
 ## [0.3.0] - 2026-03-20
 
 ### Added
