@@ -13,6 +13,8 @@
 - **Total held positions line** - shows aggregate qty and dollar value across all open positions.
 - **SL floor** - stop loss distance must be at least half the TP distance. Prevents the $17 SL
   on a $209 TP that was triggering on normal fluctuations. Minimum 2:1 reward-to-risk ratio.
+- **Position detail view** - shows entry price, current price, dollar difference, qty, value
+  on first line, TP/SL distances and gross/net P&L on second line.
 
 ### Fixed
 - **Idle squeeze goes to zero** - was flooring at offset_min (0.05%) which left a permanent
