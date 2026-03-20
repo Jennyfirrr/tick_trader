@@ -106,10 +106,12 @@ Four mechanisms adjust the buy gate:
    Positive P&L -> loosen (smaller offset, lower volume requirement). Negative P&L -> tighten.
    Clamped to configurable min/max ranges.
 
-4. **Idle squeeze** - when portfolio is empty and price is above buy gate, shrinks offset 5%
-   toward minimum each slow-path tick. Also squeezes volume multiplier toward minimum.
-   Prevents the engine from sitting idle in a rising market. Stops as soon as a position is
-   entered.
+4. **Idle squeeze** - when portfolio is empty and price is above buy gate, shrinks offset 10%
+   toward zero each slow-path tick. Also squeezes volume multiplier toward 1.0x. Goes all the
+   way to zero offset (not offset_min) so the gate can reach the rolling average. At zero
+   offset, the rolling average catches up to price naturally as old ticks leave the 128-tick
+   window. Stops as soon as a position is entered, then P&L-based adaptation takes over and
+   pushes offset back up based on performance.
 
 ### Paper trading balance
 Starts at `starting_balance` from config. Position size = `balance * risk_pct / price`. Cost deducted on buy (including entry fee), net proceeds returned on sell (after exit fee). Balance check is branchless — ANDed into the fill mask alongside spacing and capacity checks.

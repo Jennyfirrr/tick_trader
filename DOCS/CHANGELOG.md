@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.4] - 2026-03-20 (branch: feature/risk-and-sizing)
+
+### Fixed
+- **Idle squeeze floor** - offset was flooring at `offset_min` (0.05%) which left a permanent
+  gap when the rolling average lagged price in a trending market. Gate would get stuck $100+
+  below price and never trigger a buy. Fix: squeeze goes all the way to zero offset and
+  volume multiplier drops to 1.0x. At zero offset, the gate sits at the rolling average which
+  catches up naturally as old ticks leave the 128-tick window. Squeeze rate increased from 5%
+  to 10% per cycle for faster convergence.
+
+### Notes
+- Hot path remains unchanged at ~60ns per tick (BuyGate + PositionExitGate). All fixes in
+  this session have been to slow-path logic (every 100 ticks), fill path (rare), or TUI
+  (display only).
+
 ## [0.4.3] - 2026-03-20 (branch: feature/risk-and-sizing)
 
 ### Fixed
