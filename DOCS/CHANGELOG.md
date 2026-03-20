@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.4.8] - 2026-03-20
+
+### Added
+- **FoxML color theme** - TUI now uses truecolor ANSI escape sequences matching the FoxML
+  neovim colorscheme. Earthy palette: peach headers, sand labels, wheat price values,
+  green/red P&L, dim comments. No cyan or blue — all warm forest tones.
+- **FoxML Trader branding** - fox ASCII art and "FOXML TRADER" title in the header bar.
+- **P&L block grouping** - blank lines separate balance, P&L, and risk sections for easier scanning.
+- **Colored indicators** - trend direction (green UP, red DOWN, dim FLAT), circuit breaker
+  status (green OK, bold red TRIPPED), win rate colored by threshold, profit factor colored
+  by profitability. Hotkey letters highlighted in pink.
+
+### Fixed
+- **Positions pushing top off screen** - was printing up to 63 blank lines to clear old
+  position renders even with 0 positions. Removed since `\033[2J` already clears the screen
+  each render cycle.
+
 ## [0.4.7] - 2026-03-20
 
 ### Changed

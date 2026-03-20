@@ -26,6 +26,32 @@
 using namespace std;
 
 //======================================================================================================
+// [FOXML THEME - truecolor ANSI]
+//======================================================================================================
+// colors pulled from the FoxML neovim colorscheme palette
+// uses 24-bit truecolor: \033[38;2;R;G;Bm (foreground)
+//======================================================================================================
+#define C_RESET   "\033[0m"
+#define C_BOLD    "\033[1m"
+
+// palette - earthy tones from the FoxML neovim colorscheme
+#define C_PEACH   "\033[38;2;212;152;90m"    // #d4985a - titles, headers, accent
+#define C_WHEAT   "\033[38;2;212;180;131m"   // #d4b483 - warm accent, price
+#define C_FG      "\033[38;2;213;196;176m"   // #d5c4b0 - normal text
+#define C_DIM     "\033[38;2;90;98;112m"     // #5a6270 - comments, hints
+#define C_GREEN   "\033[38;2;122;171;136m"   // #7aab88 - positive P&L
+#define C_RED     "\033[38;2;192;104;104m"   // #c06868 - negative P&L
+#define C_YELLOW  "\033[38;2;196;180;138m"   // #c4b48a - warnings
+#define C_SAND    "\033[38;2;168;154;122m"   // #a89a7a - labels, separators
+#define C_WARM    "\033[38;2;176;164;152m"   // #b0a498 - secondary labels
+#define C_PINK    "\033[38;2;184;150;122m"   // #b8967a - secondary accent
+#define C_SURF    "\033[38;2;58;65;75m"      // #3a414b - dim separators
+#define C_LAV     "\033[38;2;138;154;122m"   // #8a9a7a - lavender/muted green
+
+// conditional P&L color: green if >= 0, red if < 0
+#define C_PNL(v) ((v) >= 0.0 ? C_GREEN : C_RED)
+
+//======================================================================================================
 // [STRUCT]
 //======================================================================================================
 struct EngineTUI {
@@ -157,32 +183,39 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
     // cursor home - overwrites in place, no flicker
     printf("\033[H\033[2J");
 
-    printf("================================================================\n");
-    printf("  TICK TRADER ENGINE                          tick: %-8lu\n", (unsigned long)tick);
-    printf("================================================================\n");
-    printf("  STATE: %-8s  |  UPTIME: %02u:%02u:%02u\n", state_str, hours, mins, secs);
-    printf("----------------------------------------------------------------\n");
-    printf("  PRICE: %-12.2f  |  VOLUME: %-12.8f\n", price, volume);
-    printf("----------------------------------------------------------------\n");
-    printf("  MARKET STRUCTURE (rolling %d-tick window):\n", ctrl->rolling.count);
-    printf("    avg price:  %-12.2f  |  stddev: %-10.2f\n", roll_price_avg, roll_stddev);
-    printf("    range:      %-12.2f  -  %-12.2f\n", roll_p_min, roll_p_max);
+    printf(C_SAND "  ================================================================" C_RESET "\n");
+    printf(C_BOLD C_PEACH "     /\\_/\\   FOXML TRADER" C_RESET
+           C_DIM "                       tick: " C_RESET C_FG "%-8lu" C_RESET "\n", (unsigned long)tick);
+    printf(C_BOLD C_PEACH "    ( o.o )  " C_WHEAT "engine v0.4" C_RESET "\n");
+    printf(C_BOLD C_PEACH "     > ^ <" C_RESET "\n");
+    printf(C_SAND "  ================================================================" C_RESET "\n");
+    printf(C_SAND "  STATE: " C_FG "%-8s" C_RESET
+           C_DIM "  |  " C_SAND "UPTIME: " C_FG "%02u:%02u:%02u" C_RESET "\n", state_str, hours, mins, secs);
+    printf(C_SURF "  ----------------------------------------------------------------" C_RESET "\n");
+    printf(C_SAND "  PRICE: " C_BOLD C_WHEAT "%-12.2f" C_RESET
+           C_DIM "  |  " C_SAND "VOLUME: " C_FG "%-12.8f" C_RESET "\n", price, volume);
+    printf(C_SURF "  ----------------------------------------------------------------" C_RESET "\n");
+    printf(C_BOLD C_PEACH "  MARKET STRUCTURE " C_DIM "(rolling %d-tick window):" C_RESET "\n", ctrl->rolling.count);
+    printf(C_SAND "    avg price:  " C_FG "%-12.2f" C_DIM "  |  " C_SAND "stddev: " C_FG "%-10.2f" C_RESET "\n", roll_price_avg, roll_stddev);
+    printf(C_SAND "    range:      " C_FG "%-12.2f" C_DIM "  -  " C_FG "%-12.2f" C_RESET "\n", roll_p_min, roll_p_max);
     double roll_price_slope = FPN_ToDouble(ctrl->rolling.price_slope);
-    printf("    avg volume: %-12.8f  |  vol slope: %+.8f\n", roll_vol_avg, roll_vol_slope);
-    printf("    price slope: %+.4f/tick  |  trend: %s\n", roll_price_slope,
-           (roll_price_slope > 0.5) ? "UP" : (roll_price_slope < -0.5) ? "DOWN" : "FLAT");
-    printf("----------------------------------------------------------------\n");
+    printf(C_SAND "    avg volume: " C_FG "%-12.8f" C_DIM "  |  " C_SAND "vol slope: " C_FG "%+.8f" C_RESET "\n", roll_vol_avg, roll_vol_slope);
+    const char *trend_color = (roll_price_slope > 0.5) ? C_GREEN : (roll_price_slope < -0.5) ? C_RED : C_DIM;
+    const char *trend_str   = (roll_price_slope > 0.5) ? "UP" : (roll_price_slope < -0.5) ? "DOWN" : "FLAT";
+    printf(C_SAND "    price slope: " C_FG "%+.4f/tick" C_DIM "  |  " C_SAND "trend: " "%s%s" C_RESET "\n",
+           roll_price_slope, trend_color, trend_str);
+    printf(C_SURF "  ----------------------------------------------------------------" C_RESET "\n");
     // adaptive filter state
     double live_offset = FPN_ToDouble(ctrl->live_offset_pct) * 100.0;  // display as %
     double live_vmult  = FPN_ToDouble(ctrl->live_vol_mult);
 
-    printf("  BUY GATE (adaptive):\n");
-    printf("    price <= %-12.2f  (offset: %.3f%%)\n", buy_p, live_offset);
-    printf("    vol   >= %-12.8f  (mult: %.2fx)\n", buy_v, live_vmult);
-    printf("    distance:   $%-10.2f  (%.3f%% away)\n", gate_dist, gate_dist_pct);
-    printf("    spacing:    $%-10.2f  (min between entries)\n", spacing);
-    printf("----------------------------------------------------------------\n");
-    printf("  POSITIONS (%d/16):\n", active_count);
+    printf(C_BOLD C_PEACH "  BUY GATE " C_DIM "(adaptive):" C_RESET "\n");
+    printf(C_SAND "    price <= " C_FG "%-12.2f" C_DIM "  (offset: %.3f%%)" C_RESET "\n", buy_p, live_offset);
+    printf(C_SAND "    vol   >= " C_FG "%-12.8f" C_DIM "  (mult: %.2fx)" C_RESET "\n", buy_v, live_vmult);
+    printf(C_SAND "    distance:   " C_FG "$%-10.2f" C_DIM "  (%.3f%% away)" C_RESET "\n", gate_dist, gate_dist_pct);
+    printf(C_SAND "    spacing:    " C_FG "$%-10.2f" C_DIM "  (min between entries)" C_RESET "\n", spacing);
+    printf(C_SURF "  ----------------------------------------------------------------" C_RESET "\n");
+    printf(C_BOLD C_PEACH "  POSITIONS " C_DIM "(%d/16):" C_RESET "\n", active_count);
 
     // walk active bitmap and display each position
     uint16_t active = ctrl->portfolio.active_bitmap;
@@ -210,23 +243,19 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
         total_qty   += qty;
 
         double price_diff = price - entry;
-        if (displayed > 0) printf("  ·\n");
-        printf("  #%-2d    $%.2f -> $%.2f  (%+.2f)\n",
-               idx, entry, price, price_diff);
-        printf("         qty: %.6f    val: $%.2f\n", qty, value);
-        printf("         TP: %+.0f   SL: -%.0f   gross: %+.2f%%   net: %+.2f%%\n",
-               to_tp, to_sl, pos_pnl, net_pnl);
+        if (displayed > 0) printf(C_SURF "  ·" C_RESET "\n");
+        printf(C_WHEAT "  #%-2d    " C_FG "$%.2f" C_DIM " -> " C_WHEAT "$%.2f" C_RESET
+               "  " "%s(%+.2f)" C_RESET "\n",
+               idx, entry, price, C_PNL(price_diff), price_diff);
+        printf(C_SAND "         qty: " C_FG "%.6f" C_SAND "    val: " C_FG "$%.2f" C_RESET "\n", qty, value);
+        printf(C_SAND "         TP: " C_FG "%+.0f" C_SAND "   SL: " C_FG "-%.0f" C_SAND
+               "   gross: " "%s%+.2f%%" C_SAND "   net: " "%s%+.2f%%" C_RESET "\n",
+               to_tp, to_sl, C_PNL(pos_pnl), pos_pnl, C_PNL(net_pnl), net_pnl);
         displayed++;
         active &= active - 1;
     }
     // held total moved to P&L block below
-    // clear remaining position lines from previous renders
-    // 4 lines per position (3 data + 1 separator dot), minus 1 separator for first
-    int used_lines = (displayed > 0) ? (displayed * 3 + (displayed - 1)) : 0;
-    int max_lines  = 16 * 4 - 1;  // worst case lines
-    for (int i = used_lines; i < max_lines; i++) {
-        printf("  %-70s\n", "");
-    }
+    // no need to clear old lines - \033[2J clears the full screen each render
 
     double realized = FPN_ToDouble(ctrl->realized_pnl);
     double balance  = FPN_ToDouble(ctrl->balance);
@@ -236,28 +265,32 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
     double return_pct = (starting != 0.0) ? (total_pnl / starting) * 100.0 : 0.0;
     double risk_amt = FPN_ToDouble(ctrl->config.risk_pct) * 100.0;
 
-    printf("----------------------------------------------------------------\n");
+    printf(C_SURF "  ----------------------------------------------------------------" C_RESET "\n");
     double equity = balance + total_value;
-    printf("  EQUITY:         $%-12.4f  (cash + positions)\n", equity);
-    printf("  BALANCE:        $%-12.4f  (started: $%.0f)\n", balance, starting);
-    printf("  HELD:           $%-12.4f  (qty: %.6f)\n", total_value, total_qty);
-    printf("  REALIZED P&L:   $%-+12.4f  (after fees)\n", realized);
-    printf("  UNREALIZED P&L: $%-+12.4f  (open positions)\n", pnl);
-    printf("  TOTAL P&L:      $%-+12.4f  (%+.2f%%)\n", total_pnl, return_pct);
+    printf(C_SAND "  EQUITY:         " C_BOLD C_FG "$%-12.4f" C_RESET C_DIM "  (cash + positions)" C_RESET "\n", equity);
+    printf(C_SAND "  BALANCE:        " C_FG "$%-12.4f" C_RESET C_DIM "  (started: $%.0f)" C_RESET "\n", balance, starting);
+    printf(C_SAND "  HELD:           " C_FG "$%-12.4f" C_RESET C_DIM "  (qty: %.6f)" C_RESET "\n", total_value, total_qty);
+    printf("\n");
+    printf(C_SAND "  REALIZED P&L:   " "%s$%-+12.4f" C_RESET C_DIM "  (after fees)" C_RESET "\n", C_PNL(realized), realized);
+    printf(C_SAND "  UNREALIZED P&L: " "%s$%-+12.4f" C_RESET C_DIM "  (open positions)" C_RESET "\n", C_PNL(pnl), pnl);
+    printf(C_SAND "  TOTAL P&L:      " C_BOLD "%s$%-+12.4f" C_RESET C_DIM "  (" "%s%+.2f%%" C_DIM ")" C_RESET "\n",
+           C_PNL(total_pnl), total_pnl, C_PNL(return_pct), return_pct);
+    printf("\n");
     double deployed = starting - balance;
     double exposure_pct = (starting != 0.0) ? (deployed / starting) * 100.0 : 0.0;
     double max_exp = FPN_ToDouble(ctrl->config.max_exposure_pct) * 100.0;
     double max_dd  = FPN_ToDouble(ctrl->config.max_drawdown_pct) * 100.0;
     int breaker_tripped = (total_pnl < -(starting * FPN_ToDouble(ctrl->config.max_drawdown_pct)));
 
-    printf("  FEES PAID:      $%-12.4f  (%.1f%% rate)\n", fees,
+    printf(C_SAND "  FEES PAID:      " C_FG "$%-12.4f" C_RESET C_DIM "  (%.1f%% rate)" C_RESET "\n", fees,
            FPN_ToDouble(ctrl->config.fee_rate) * 100.0);
-    printf("  RISK/POSITION:  %.1f%%  |  EXPOSURE: %.1f%%/%.0f%%\n",
+    printf(C_SAND "  RISK/POSITION:  " C_FG "%.1f%%" C_RESET
+           C_DIM "  |  " C_SAND "EXPOSURE: " C_FG "%.1f%%/%.0f%%" C_RESET "\n",
            risk_amt, exposure_pct, max_exp);
-    printf("  CIRCUIT BREAKER: %s  (max drawdown: %.0f%%)\n",
-           breaker_tripped ? "TRIPPED" : "OK", max_dd);
-    printf("  MODE: PAPER TRADING (simulated fills)\n");
-    printf("----------------------------------------------------------------\n");
+    printf(C_SAND "  CIRCUIT BREAKER: " "%s%s" C_RESET C_DIM "  (max drawdown: %.0f%%)" C_RESET "\n",
+           breaker_tripped ? C_BOLD C_RED : C_GREEN, breaker_tripped ? "TRIPPED" : "OK", max_dd);
+    printf(C_SAND "  MODE: " C_YELLOW "PAPER TRADING" C_RESET C_DIM " (simulated fills)" C_RESET "\n");
+    printf(C_SURF "  ----------------------------------------------------------------" C_RESET "\n");
     uint32_t total_exits = ctrl->wins + ctrl->losses;
     double win_rate = (total_exits > 0) ? ((double)ctrl->wins / total_exits) * 100.0 : 0.0;
     double g_wins  = FPN_ToDouble(ctrl->gross_wins);
@@ -267,16 +300,24 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
     double avg_loss = (ctrl->losses > 0) ? g_losses / ctrl->losses : 0.0;
     double avg_hold = (total_exits > 0) ? (double)ctrl->total_hold_ticks / total_exits : 0.0;
 
-    printf("  TICKS: %-8lu  |  BUYS: %-4u  |  EXITS: %-4u\n",
+    printf(C_SAND "  TICKS: " C_FG "%-8lu" C_RESET
+           C_DIM "  |  " C_SAND "BUYS: " C_FG "%-4u" C_RESET
+           C_DIM "  |  " C_SAND "EXITS: " C_FG "%-4u" C_RESET "\n",
            (unsigned long)tick, ctrl->total_buys, total_exits);
-    printf("  WINS: %-4u  LOSSES: %-4u  WIN RATE: %.1f%%\n",
-           ctrl->wins, ctrl->losses, win_rate);
-    printf("  AVG WIN: $%.4f  AVG LOSS: $%.4f  PROFIT FACTOR: %.2f\n",
-           avg_win, avg_loss, profit_factor);
-    printf("  AVG HOLD: %.0f ticks\n", avg_hold);
-    printf("  LOG: btcusdt_order_history.csv\n");
-    printf("==================================================\n");
-    printf("  [q]uit  [p]ause  [r]eload config                \n");
+    printf(C_SAND "  WINS: " C_GREEN "%-4u" C_RESET
+           C_SAND "  LOSSES: " C_RED "%-4u" C_RESET
+           C_SAND "  WIN RATE: " "%s%.1f%%" C_RESET "\n",
+           ctrl->wins, ctrl->losses,
+           (win_rate >= 50.0) ? C_GREEN : (total_exits > 0 ? C_RED : C_DIM), win_rate);
+    printf(C_SAND "  AVG WIN: " C_GREEN "$%.4f" C_RESET
+           C_SAND "  AVG LOSS: " C_RED "$%.4f" C_RESET
+           C_SAND "  PROFIT FACTOR: " "%s%.2f" C_RESET "\n",
+           avg_win, avg_loss,
+           (profit_factor >= 1.0) ? C_GREEN : (total_exits > 0 ? C_RED : C_DIM), profit_factor);
+    printf(C_SAND "  AVG HOLD: " C_FG "%.0f ticks" C_RESET "\n", avg_hold);
+    printf(C_DIM "  LOG: btcusdt_order_history.csv" C_RESET "\n");
+    printf(C_SAND "  ================================================" C_RESET "\n");
+    printf(C_PINK "  [q]" C_DIM "uit  " C_PINK "[p]" C_DIM "ause  " C_PINK "[r]" C_DIM "eload config" C_RESET "                \n");
 
     fflush(stdout);
 }
