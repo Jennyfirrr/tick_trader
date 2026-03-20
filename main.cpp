@@ -214,17 +214,12 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "  Trade log:        %lu entries\n", (unsigned long)log.trade_count);
     fprintf(stderr, "  Open positions:   %d\n", Portfolio_CountActive(&ctrl.portfolio));
     fprintf(stderr, "  Unrealized P&L:   $%.4f\n", FPN_ToDouble(ctrl.portfolio_delta));
-
-    // force-close any remaining positions before exit
-    if (ctrl.portfolio.active_bitmap != 0) {
-        fprintf(stderr, "  Closing %d remaining positions...\n",
-                Portfolio_CountActive(&ctrl.portfolio));
-        engine_force_close_all(&ctrl, &log, last_stream.price);
-    }
     fprintf(stderr, "==================================================\n");
 
-    // final snapshot save
+    // save snapshot WITH positions intact - they'll be resumed on next startup
     PortfolioController_SaveSnapshot(&ctrl, snapshot_path);
+    fprintf(stderr, "  Snapshot saved (%d positions persisted)\n",
+            Portfolio_CountActive(&ctrl.portfolio));
 
     //==================================================================================================
     // cleanup

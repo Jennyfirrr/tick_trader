@@ -195,12 +195,15 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
         double pos_pnl = 0.0;
         if (entry != 0.0) pos_pnl = ((price - entry) / entry) * 100.0;
 
-        // show distance to TP and SL
         double to_tp = tp - price;
         double to_sl = price - sl;
+        double value = price * qty;
+        // net P&L: accounts for round-trip fees (entry + exit)
+        double fee_r = FPN_ToDouble(ctrl->config.fee_rate);
+        double net_pnl = pos_pnl - (fee_r * 200.0);  // 2x fee_rate as percentage points
 
-        printf("  #%-2d  %.2f  qty:%.6f  TP:%.2f(%+.0f)  SL:%.2f(-%0.f)  %+.2f%%\n",
-               idx, entry, qty, tp, to_tp, sl, to_sl, pos_pnl);
+        printf("  #%-2d  $%-8.2f  qty:%.6f  val:$%.2f  TP:%+.0f  SL:-%0.f  %+.2f%% (net:%+.2f%%)\n",
+               idx, entry, qty, value, to_tp, to_sl, pos_pnl, net_pnl);
         displayed++;
         active &= active - 1;
     }
