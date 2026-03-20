@@ -84,8 +84,76 @@ Open multiple websocket connections (one per symbol, each with its own controlle
 ### 5.2 Correlation awareness
 If trading multiple symbols, track correlation between positions. Don't let the portfolio become concentrated in correlated assets (e.g. BTC and ETH often move together).
 
-### 5.3 Separate strategy core
-Move strategy logic to a separate process/server. The execution engine stays fast (just executes conditions), while the strategy server does heavier analysis and sends condition updates over the network. This is the architecture mentioned in the OrderGates.hpp comments.
+### 5.3 Strategy library (swappable header files)
+The current strategy (mean-reversion with regression-driven gate adjustment) is hardcoded into
+`PortfolioController.hpp`. Factor it out so different strategies live in separate headers, all
+exporting the same function signatures, and you swap which one you `#include` at compile time.
+
+**Interface a strategy header needs to provide:**
+
+```cpp
+// called once after warmup — set initial buy conditions from rolling stats
+template <unsigned F>
+void Strategy_Init(StrategyState<F> *state, const RollingStats<F> *rolling,
+                   const ControllerConfig<F> *config);
+
+// called every tick — should the engine buy? returns buy condition (price + volume thresholds)
+template <unsigned F>
+BuyConditions<F> Strategy_BuySignal(const StrategyState<F> *state, const DataStream<F> *stream,
+                                     const RollingStats<F> *rolling);
+
+// called every tick per position — should this position exit? returns exit mask (0 or 1)
+template <unsigned F>
+int Strategy_ExitSignal(const StrategyState<F> *state, const Position<F> *pos,
+                        const DataStream<F> *stream, const RollingStats<F> *rolling);
+
+// called every slow-path — adapt strategy state based on P&L feedback
+template <unsigned F>
+void Strategy_Adapt(StrategyState<F> *state, double pnl_slope, double r2,
+                    const ControllerConfig<F> *config);
+```
+
+**`StrategyState<F>` is strategy-defined** — each header declares its own struct with whatever
+internal state it needs (regression feeders, custom indicators, counters, etc). The engine
+doesn't look inside it.
+
+**How to swap strategies:**
+```cpp
+// in main.cpp or a strategy_select.hpp
+#include "Strategies/MeanReversion.hpp"    // current strategy, first one to extract
+// #include "Strategies/Momentum.hpp"      // buy into trends instead of dips
+// #include "Strategies/GridTrader.hpp"    // fixed grid of buy/sell levels
+// #include "Strategies/Scalper.hpp"       // tight TP, high frequency
+```
+
+**Migration path:**
+1. Define the 4 function signatures above in a `Strategies/StrategyInterface.hpp` (comments only, no code — just documents the contract)
+2. Extract current logic from `PortfolioController.hpp` into `Strategies/MeanReversion.hpp`
+3. Verify 80/80 tests still pass — behavior should be identical
+4. Write a second strategy to prove the interface works (momentum is simplest — buy when price slope > threshold AND volume rising)
+
+**What stays in the engine (not strategy-specific):**
+- Portfolio bitmap management, fill consumption, exit buffer drain
+- Rolling stats computation
+- Risk management (circuit breaker, exposure limit, position sizing)
+- TUI, trade logging, snapshot persistence
+- Session lifecycle and reconnect
+
+**What moves into strategy headers:**
+- Buy signal logic (currently `BuyGate` conditions + adaptive filter math)
+- Exit signal logic (currently TP/SL computation in `Portfolio_AddPosition`)
+- Adaptation logic (currently the P&L regression → filter adjustment in slow path)
+- Any strategy-specific state (regression feeders, idle squeeze counters, etc.)
+
+**Key constraint:** hot-path functions (`Strategy_BuySignal`, `Strategy_ExitSignal`) must stay
+branchless. The interface doesn't enforce this — it's a convention. Each strategy author is
+responsible for keeping the hot path fast.
+
+### 5.4 Separate strategy server
+Once the strategy library works, the next step is moving strategy logic to a separate
+process/server. The execution engine stays fast (just executes conditions), while the strategy
+server does heavier analysis and sends condition updates over IPC. This is the architecture
+mentioned in the OrderGates.hpp comments.
 
 ---
 
