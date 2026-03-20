@@ -23,6 +23,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#ifdef LATENCY_PROFILING
+#include <x86intrin.h>
+#include <unistd.h>
+#endif
+
 constexpr unsigned FP = 64;
 
 //======================================================================================================
@@ -109,7 +114,26 @@ int main(int argc, char *argv[]) {
     // init TUI
     //==================================================================================================
     EngineTUI tui;
+#ifdef LATENCY_BENCH
+    TUI_Init(&tui, 0, 10);  // bench mode: TUI disabled for clean latency measurement
+#else
     TUI_Init(&tui, 1, 10);  // TODO: read tui_enabled and render_interval from config
+#endif
+
+#ifdef LATENCY_PROFILING
+    // calibrate TSC: measure cycles over a known 10ms sleep to get cycles-per-nanosecond
+    {
+        unsigned int tsc_aux;
+        uint64_t cal_start = __rdtscp(&tsc_aux);
+        usleep(10000); // 10ms
+        uint64_t cal_end = __rdtscp(&tsc_aux);
+        tui.tsc_per_ns = (double)(cal_end - cal_start) / 10000000.0; // 10ms = 10M ns
+        tui.hot_min = UINT64_MAX; tui.hot_max = 0; tui.hot_sum = 0; tui.hot_count = 0;
+        tui.slow_min = UINT64_MAX; tui.slow_max = 0; tui.slow_sum = 0; tui.slow_count = 0;
+        fprintf(stderr, "[LATENCY] TSC calibrated: %.2f cycles/ns (%.1f GHz)\n",
+                tui.tsc_per_ns, tui.tsc_per_ns);
+    }
+#endif
 
     //==================================================================================================
     // main loop
@@ -196,9 +220,29 @@ int main(int argc, char *argv[]) {
         // ENGINE TICK - runs on timeout with last known price, but only after first real tick
         //==============================================================================================
         if (has_data) {
+#ifdef LATENCY_PROFILING
+            unsigned int tsc_aux;
+            uint64_t tick_start = __rdtscp(&tsc_aux);
+#endif
             BuyGate(&ctrl.buy_conds, &last_stream, &pool);
             PositionExitGate(&ctrl.portfolio, last_stream.price, &ctrl.exit_buf, ctrl.total_ticks);
             PortfolioController_Tick(&ctrl, &pool, last_stream.price, last_stream.volume, &log);
+#ifdef LATENCY_PROFILING
+            uint64_t tick_end = __rdtscp(&tsc_aux);
+            uint64_t cycles = tick_end - tick_start;
+            // tick_count == 0 means slow path just ran, > 0 means hot path only
+            if (ctrl.tick_count == 0) {
+                if (cycles < tui.slow_min) tui.slow_min = cycles;
+                if (cycles > tui.slow_max) tui.slow_max = cycles;
+                tui.slow_sum += cycles;
+                tui.slow_count++;
+            } else {
+                if (cycles < tui.hot_min) tui.hot_min = cycles;
+                if (cycles > tui.hot_max) tui.hot_max = cycles;
+                tui.hot_sum += cycles;
+                tui.hot_count++;
+            }
+#endif
 
             // save snapshot every slow-path cycle (portfolio state survives crashes)
             if (ctrl.tick_count == 0) {
@@ -209,7 +253,20 @@ int main(int argc, char *argv[]) {
         //==============================================================================================
         // TUI RENDER
         //==============================================================================================
+#ifdef LATENCY_BENCH
+        // bench mode: TUI disabled, dump stats to stderr periodically
+        if (ctrl.total_ticks > 0 && (ctrl.total_ticks % 10000) == 0) {
+            double hot_avg = (tui.hot_count > 0) ? (double)tui.hot_sum / tui.hot_count / tui.tsc_per_ns : 0;
+            double hot_min_ns = (tui.hot_count > 0) ? (double)tui.hot_min / tui.tsc_per_ns : 0;
+            double hot_max_ns = (tui.hot_count > 0) ? (double)tui.hot_max / tui.tsc_per_ns : 0;
+            double slow_avg = (tui.slow_count > 0) ? (double)tui.slow_sum / tui.slow_count / tui.tsc_per_ns : 0;
+            fprintf(stderr, "[BENCH] tick %lu | hot: avg %.0fns min %.0fns max %.0fns (%lu) | slow: avg %.0fns (%lu)\n",
+                    (unsigned long)ctrl.total_ticks, hot_avg, hot_min_ns, hot_max_ns,
+                    (unsigned long)tui.hot_count, slow_avg, (unsigned long)tui.slow_count);
+        }
+#else
         TUI_Render(&tui, &ctrl, &last_stream, ctrl.total_ticks);
+#endif
     }
 
     //==================================================================================================
@@ -222,6 +279,24 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "  Trade log:        %lu entries\n", (unsigned long)log.trade_count);
     fprintf(stderr, "  Open positions:   %d\n", Portfolio_CountActive(&ctrl.portfolio));
     fprintf(stderr, "  Unrealized P&L:   $%.4f\n", FPN_ToDouble(ctrl.portfolio_delta));
+#ifdef LATENCY_PROFILING
+    fprintf(stderr, "--------------------------------------------------\n");
+    if (tui.hot_count > 0) {
+        double hot_avg = (double)tui.hot_sum / tui.hot_count / tui.tsc_per_ns;
+        double hot_min_ns = (double)tui.hot_min / tui.tsc_per_ns;
+        double hot_max_ns = (double)tui.hot_max / tui.tsc_per_ns;
+        double hot_p99 = hot_max_ns; // TODO: proper percentile tracking
+        fprintf(stderr, "  Hot path:         avg %.0fns  min %.0fns  max %.0fns  (%lu ticks)\n",
+                hot_avg, hot_min_ns, hot_max_ns, (unsigned long)tui.hot_count);
+    }
+    if (tui.slow_count > 0) {
+        double slow_avg = (double)tui.slow_sum / tui.slow_count / tui.tsc_per_ns;
+        double slow_min_ns = (double)tui.slow_min / tui.tsc_per_ns;
+        double slow_max_ns = (double)tui.slow_max / tui.tsc_per_ns;
+        fprintf(stderr, "  Slow path:        avg %.0fns  min %.0fns  max %.0fns  (%lu cycles)\n",
+                slow_avg, slow_min_ns, slow_max_ns, (unsigned long)tui.slow_count);
+    }
+#endif
     fprintf(stderr, "==================================================\n");
 
     // save snapshot WITH positions intact - they'll be resumed on next startup

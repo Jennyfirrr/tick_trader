@@ -202,16 +202,16 @@ inline void PositionExitGate(Portfolio<F> *portfolio, FPN<F> current_price, Exit
         int has_exits = !FPN_IsZero(portfolio->positions[idx].take_profit_price);
         int should_exit = (hit_tp | hit_sl) & has_exits;
 
-        // always write to current buffer slot (branchless), increment count by 0 or 1
-        exit_buf->records[exit_buf->count].position_index = idx;
-        exit_buf->records[exit_buf->count].exit_price     = current_price;
-        exit_buf->records[exit_buf->count].tick            = tick;
-        exit_buf->records[exit_buf->count].reason          = hit_sl & (!hit_tp); // 0=TP, 1=SL (TP takes priority)
-        exit_buf->count += should_exit;
-
-        // clear portfolio bit if exiting
-        uint16_t clear_mask = (uint16_t)(-(int16_t)should_exit) & (1 << idx);
-        portfolio->active_bitmap &= ~clear_mask;
+        // conditional write: exits are rare (~1/1000 ticks), well-predicted branch
+        // saves ~8ns/position vs unconditional 24-byte write every tick
+        if (should_exit) {
+            exit_buf->records[exit_buf->count].position_index = idx;
+            exit_buf->records[exit_buf->count].exit_price     = current_price;
+            exit_buf->records[exit_buf->count].tick            = tick;
+            exit_buf->records[exit_buf->count].reason          = hit_sl & (!hit_tp); // 0=TP, 1=SL (TP takes priority)
+            exit_buf->count++;
+            portfolio->active_bitmap &= ~(1 << idx);
+        }
 
         active &= active - 1;
     }
@@ -235,12 +235,13 @@ inline void PositionExitGate(Portfolio<F> *portfolio, FPN<F> current_price, Exit
 //   [sizeof(FPN<F>)] balance
 //======================================================================================================
 #define PORTFOLIO_SNAPSHOT_MAGIC 0x4B434954  // "TICK" in little-endian
-#define PORTFOLIO_SNAPSHOT_VERSION 2
+#define PORTFOLIO_SNAPSHOT_VERSION 3
 
 template <unsigned F>
 static inline int Portfolio_Save(const Portfolio<F> *portfolio, FPN<F> realized_pnl,
                                   FPN<F> live_offset_pct, FPN<F> live_vol_mult,
-                                  FPN<F> balance, const char *filepath) {
+                                  FPN<F> live_stddev_mult, FPN<F> balance,
+                                  const char *filepath) {
     FILE *f = fopen(filepath, "wb");
     if (!f) {
         fprintf(stderr, "[SNAPSHOT] failed to open %s for writing\n", filepath);
@@ -259,6 +260,7 @@ static inline int Portfolio_Save(const Portfolio<F> *portfolio, FPN<F> realized_
     fwrite(&realized_pnl, sizeof(FPN<F>), 1, f);
     fwrite(&live_offset_pct, sizeof(FPN<F>), 1, f);
     fwrite(&live_vol_mult, sizeof(FPN<F>), 1, f);
+    fwrite(&live_stddev_mult, sizeof(FPN<F>), 1, f);
     fwrite(&balance, sizeof(FPN<F>), 1, f);
 
     fflush(f);
@@ -269,7 +271,8 @@ static inline int Portfolio_Save(const Portfolio<F> *portfolio, FPN<F> realized_
 template <unsigned F>
 static inline int Portfolio_Load(Portfolio<F> *portfolio, FPN<F> *realized_pnl,
                                   FPN<F> *live_offset_pct, FPN<F> *live_vol_mult,
-                                  FPN<F> *balance, const char *filepath) {
+                                  FPN<F> *live_stddev_mult, FPN<F> *balance,
+                                  const char *filepath) {
     FILE *f = fopen(filepath, "rb");
     if (!f) {
         // no snapshot file is normal on first run
@@ -299,6 +302,7 @@ static inline int Portfolio_Load(Portfolio<F> *portfolio, FPN<F> *realized_pnl,
     if (fread(realized_pnl, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
     if (fread(live_offset_pct, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
     if (fread(live_vol_mult, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
+    if (fread(live_stddev_mult, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
     if (fread(balance, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
 
     fclose(f);

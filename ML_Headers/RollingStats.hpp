@@ -11,7 +11,7 @@
 //   3. rolling price standard deviation - dynamic entry spacing based on actual volatility
 //
 // uses the same ring buffer pattern as RegressionFeederX with branchless power-of-2 wrap
-// window size is fixed at compile time for branchless operation
+// window size W is a template parameter, defaulting to 128, for branchless operation
 //======================================================================================================
 #ifndef ROLLING_STATS_HPP
 #define ROLLING_STATS_HPP
@@ -19,21 +19,16 @@
 #include "../FixedPoint/FixedPointN.hpp"
 
 //======================================================================================================
-// [WINDOW SIZE]
-//======================================================================================================
-// must be power of 2 for branchless wrap with & (ROLLING_WINDOW - 1)
-// 128 ticks at BTC trade frequency is roughly 10-30 seconds of market data
-//======================================================================================================
-#ifndef ROLLING_WINDOW
-#define ROLLING_WINDOW 128
-#endif
-
-//======================================================================================================
 // [ROLLING STATS STRUCT]
 //======================================================================================================
-template <unsigned F> struct RollingStats {
-    FPN<F> price_buf[ROLLING_WINDOW];
-    FPN<F> volume_buf[ROLLING_WINDOW];
+// W must be power of 2 for branchless wrap with & (W - 1)
+// default W=128: at BTC trade frequency this is roughly 10-30 seconds of market data
+//======================================================================================================
+template <unsigned F, unsigned W = 128> struct RollingStats {
+    static_assert(W > 0 && (W & (W - 1)) == 0, "W must be power of 2");
+
+    FPN<F> price_buf[W];
+    FPN<F> volume_buf[W];
     int head;
     int count;
 
@@ -50,9 +45,9 @@ template <unsigned F> struct RollingStats {
 //======================================================================================================
 // [INIT]
 //======================================================================================================
-template <unsigned F> inline RollingStats<F> RollingStats_Init() {
-    RollingStats<F> rs;
-    for (int i = 0; i < ROLLING_WINDOW; i++) {
+template <unsigned F, unsigned W = 128> inline RollingStats<F, W> RollingStats_Init() {
+    RollingStats<F, W> rs;
+    for (int i = 0; i < (int)W; i++) {
         rs.price_buf[i]  = FPN_Zero<F>();
         rs.volume_buf[i] = FPN_Zero<F>();
     }
@@ -73,27 +68,26 @@ template <unsigned F> inline RollingStats<F> RollingStats_Init() {
 //======================================================================================================
 // adds a new price/volume sample and recomputes all rolling statistics
 // this runs on the slow path (every poll_interval ticks), not every tick
-// the computation is O(ROLLING_WINDOW) which is 128 iterations of FPN math -
-// well within the slow-path budget
+// the computation is O(W) which at default 128 is well within the slow-path budget
 //======================================================================================================
-template <unsigned F>
-inline void RollingStats_Push(RollingStats<F> *rs, FPN<F> price, FPN<F> volume) {
+template <unsigned F, unsigned W>
+inline void RollingStats_Push(RollingStats<F, W> *rs, FPN<F> price, FPN<F> volume) {
     // write to ring buffer
     rs->price_buf[rs->head]  = price;
     rs->volume_buf[rs->head] = volume;
-    rs->head  = (rs->head + 1) & (ROLLING_WINDOW - 1);
-    rs->count += (rs->count < ROLLING_WINDOW);
+    rs->head  = (rs->head + 1) & ((int)W - 1);
+    rs->count += (rs->count < (int)W);
 
     if (rs->count < 2) return; // need at least 2 samples for meaningful stats
 
     // single pass: compute sums for price avg, volume avg, price min/max
     FPN<F> price_sum  = FPN_Zero<F>();
     FPN<F> volume_sum = FPN_Zero<F>();
-    FPN<F> p_min = rs->price_buf[(rs->head - rs->count + ROLLING_WINDOW) & (ROLLING_WINDOW - 1)];
+    FPN<F> p_min = rs->price_buf[(rs->head - rs->count + (int)W) & ((int)W - 1)];
     FPN<F> p_max = p_min;
 
     for (int i = 0; i < rs->count; i++) {
-        int idx = (rs->head - rs->count + i + ROLLING_WINDOW) & (ROLLING_WINDOW - 1);
+        int idx = (rs->head - rs->count + i + (int)W) & ((int)W - 1);
         FPN<F> p = rs->price_buf[idx];
         FPN<F> v = rs->volume_buf[idx];
 
@@ -120,8 +114,8 @@ inline void RollingStats_Push(RollingStats<F> *rs, FPN<F> price, FPN<F> volume) 
 
     // price and volume slopes: first-last difference over the window
     // positive = increasing, negative = decreasing
-    int oldest_idx = (rs->head - rs->count + ROLLING_WINDOW) & (ROLLING_WINDOW - 1);
-    int newest_idx = (rs->head - 1 + ROLLING_WINDOW) & (ROLLING_WINDOW - 1);
+    int oldest_idx = (rs->head - rs->count + (int)W) & ((int)W - 1);
+    int newest_idx = (rs->head - 1 + (int)W) & ((int)W - 1);
 
     FPN<F> price_diff = FPN_Sub(rs->price_buf[newest_idx], rs->price_buf[oldest_idx]);
     rs->price_slope = FPN_DivNoAssert(price_diff, n_fp);
@@ -136,8 +130,8 @@ inline void RollingStats_Push(RollingStats<F> *rs, FPN<F> price, FPN<F> volume) 
 // returns 1 if the given volume is >= multiplier * rolling_avg, 0 otherwise
 // branchless - produces a mask value the caller can AND with other conditions
 //======================================================================================================
-template <unsigned F>
-inline int RollingStats_VolumeSignificant(const RollingStats<F> *rs, FPN<F> tick_volume, FPN<F> multiplier) {
+template <unsigned F, unsigned W>
+inline int RollingStats_VolumeSignificant(const RollingStats<F, W> *rs, FPN<F> tick_volume, FPN<F> multiplier) {
     FPN<F> threshold = FPN_Mul(rs->volume_avg, multiplier);
     return FPN_GreaterThanOrEqual(tick_volume, threshold);
 }
@@ -149,8 +143,8 @@ inline int RollingStats_VolumeSignificant(const RollingStats<F> *rs, FPN<F> tick
 // spacing = stddev * spacing_multiplier
 // returns the FPN spacing value - caller compares against nearest existing position
 //======================================================================================================
-template <unsigned F>
-inline FPN<F> RollingStats_EntrySpacing(const RollingStats<F> *rs, FPN<F> spacing_multiplier) {
+template <unsigned F, unsigned W>
+inline FPN<F> RollingStats_EntrySpacing(const RollingStats<F, W> *rs, FPN<F> spacing_multiplier) {
     return FPN_Mul(rs->price_stddev, spacing_multiplier);
 }
 
@@ -161,8 +155,8 @@ inline FPN<F> RollingStats_EntrySpacing(const RollingStats<F> *rs, FPN<F> spacin
 // buy_price = rolling_avg - (rolling_avg * offset_pct)
 // this means "only buy when price dips offset_pct below the rolling average"
 //======================================================================================================
-template <unsigned F>
-inline FPN<F> RollingStats_BuyPrice(const RollingStats<F> *rs, FPN<F> offset_pct) {
+template <unsigned F, unsigned W>
+inline FPN<F> RollingStats_BuyPrice(const RollingStats<F, W> *rs, FPN<F> offset_pct) {
     FPN<F> offset = FPN_Mul(rs->price_avg, offset_pct);
     return FPN_Sub(rs->price_avg, offset);
 }
