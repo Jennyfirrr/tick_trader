@@ -485,10 +485,7 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl, OrderPool<F> 
     // the squeeze rate is proportional to the slope magnitude
     {
         constexpr unsigned N = FPN<F>::N;
-        int is_empty     = (ctrl->portfolio.active_bitmap == 0);
-        int slope_positive = !ctrl->rolling.volume_slope.sign;  // reuse sign bit of price movement
-        // actually check price slope via (price_avg > buy_conds_initial.price) as a proxy
-        // better: directly check if current price > buy gate price (we're trailing behind)
+        int is_empty = (ctrl->portfolio.active_bitmap == 0);
         int trailing = FPN_GreaterThan(current_price, ctrl->buy_conds.price);
 
         // squeeze fires when: portfolio empty AND current price above buy gate
@@ -527,6 +524,12 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl, OrderPool<F> 
     // update buy gate from rolling stats using LIVE adaptive filter values
     ctrl->buy_conds.price  = RollingStats_BuyPrice(&ctrl->rolling, ctrl->live_offset_pct);
     ctrl->buy_conds.volume = FPN_Mul(ctrl->rolling.volume_avg, ctrl->live_vol_mult);
+
+    // update initial conditions to track the market - prevents the AdjustBuyGate clamp
+    // from anchoring to stale warmup prices. the clamp window (max_shift) moves with
+    // the rolling average so the gate stays in the current price neighborhood
+    ctrl->buy_conds_initial.price  = ctrl->buy_conds.price;
+    ctrl->buy_conds_initial.volume = ctrl->buy_conds.volume;
 
     // compute unrealized P&L and estimate exit fees on open positions
     // gross P&L is what Portfolio_ComputePnL returns (price delta * qty)

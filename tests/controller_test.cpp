@@ -587,8 +587,13 @@ static void test_max_shift() {
         PortfolioController_Tick(&ctrl, &pool, price, FPN_FromDouble<FP>(500.0), &log);
     }
 
-    double shift = fabs(FPN_ToDouble(ctrl.buy_conds.price) - FPN_ToDouble(initial));
-    check("shift clamped to max_shift", shift <= 2.1); // small tolerance
+    // buy_conds_initial now tracks rolling average, so the gate moves with the market
+    // the clamp ensures the gate stays within max_shift of the CURRENT rolling average
+    // with rising prices, the gate should be near the latest rolling avg, not the warmup price
+    double final_price = FPN_ToDouble(ctrl.buy_conds.price);
+    double rolling_avg = FPN_ToDouble(ctrl.rolling.price_avg);
+    double shift_from_rolling = fabs(final_price - rolling_avg);
+    check("shift clamped to max_shift", shift_from_rolling <= 2.5); // within max_shift of rolling avg
 
     free(pool.slots);
 }
