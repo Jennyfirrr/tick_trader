@@ -48,9 +48,44 @@ The engine connects to Binance, runs a warmup phase (observes market), then begi
 | `btcusdt_order_history.csv` | Trade log (every buy and sell with prices, TP/SL, P&L) |
 | `portfolio.snapshot` | Binary snapshot of portfolio state (survives restarts) |
 
+## Resetting Paper Trading
+
+```bash
+rm portfolio.snapshot btcusdt_order_history.csv
+./engine
+```
+
+Starts fresh with the `starting_balance` from config.
+
+## Disconnect Handling
+
+The engine handles disconnects gracefully:
+
+- **WiFi drops / laptop sleep** - snapshot saved, reconnect on wake, positions preserved
+- **Process crash** - last snapshot from most recent slow-path cycle is on disk, restart resumes
+- **`q` to quit** - snapshot saved with positions, restart picks them up
+- **24-hour Binance cutoff** - planned reconnect, positions force-closed (by design)
+
+Positions that would have hit TP/SL while offline exit on the first tick after reconnect. This means gap risk — BTC could have moved significantly while you were disconnected.
+
+## Running 24/7
+
+The engine does NOT run while the laptop is asleep. For continuous operation:
+
+```bash
+# on a VPS or always-on machine
+ssh your-server
+tmux new -s trader
+./engine engine.cfg    # with tui_enabled=0 for headless
+# Ctrl+B, D to detach - engine keeps running
+# tmux attach -t trader to reconnect later
+```
+
+Options: VPS ($5-10/month), home server, Raspberry Pi, or any machine that stays on.
+
 ## Headless Mode
 
-Set `tui_enabled=0` in config to run without terminal output. The engine runs identically - useful for tmux/screen sessions.
+Set `tui_enabled=0` in config to run without terminal output. The engine runs identically - useful for tmux/screen sessions and VPS deployment.
 
 ## Tuning
 

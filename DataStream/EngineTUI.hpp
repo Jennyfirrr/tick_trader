@@ -286,15 +286,29 @@ static inline char TUI_HandleInput(EngineTUI *tui, PortfolioController<F> *ctrl,
     }
 
     if (c == 'r' || c == 'R') {
-        // hot-swap config reload
+        // hot-swap config reload - all fields except symbol/testnet/warmup (need restart)
         ControllerConfig<F> new_cfg = ControllerConfig_Load<F>(config_path);
-        // only swap hot-swappable fields
-        ctrl->config.poll_interval   = new_cfg.poll_interval;
-        ctrl->config.r2_threshold    = new_cfg.r2_threshold;
-        ctrl->config.slope_scale_buy = new_cfg.slope_scale_buy;
-        ctrl->config.max_shift       = new_cfg.max_shift;
-        ctrl->config.take_profit_pct = new_cfg.take_profit_pct;
-        ctrl->config.stop_loss_pct   = new_cfg.stop_loss_pct;
+        ctrl->config.poll_interval     = new_cfg.poll_interval;
+        ctrl->config.r2_threshold      = new_cfg.r2_threshold;
+        ctrl->config.slope_scale_buy   = new_cfg.slope_scale_buy;
+        ctrl->config.max_shift         = new_cfg.max_shift;
+        ctrl->config.take_profit_pct   = new_cfg.take_profit_pct;
+        ctrl->config.stop_loss_pct     = new_cfg.stop_loss_pct;
+        ctrl->config.fee_rate          = new_cfg.fee_rate;
+        ctrl->config.risk_pct          = new_cfg.risk_pct;
+        ctrl->config.volume_multiplier = new_cfg.volume_multiplier;
+        ctrl->config.entry_offset_pct  = new_cfg.entry_offset_pct;
+        ctrl->config.spacing_multiplier = new_cfg.spacing_multiplier;
+        ctrl->config.offset_min        = new_cfg.offset_min;
+        ctrl->config.offset_max        = new_cfg.offset_max;
+        ctrl->config.vol_mult_min      = new_cfg.vol_mult_min;
+        ctrl->config.vol_mult_max      = new_cfg.vol_mult_max;
+        ctrl->config.filter_scale      = new_cfg.filter_scale;
+        ctrl->config.max_drawdown_pct  = new_cfg.max_drawdown_pct;
+        ctrl->config.max_exposure_pct  = new_cfg.max_exposure_pct;
+        // reset live filters to new config values
+        ctrl->live_offset_pct = new_cfg.entry_offset_pct;
+        ctrl->live_vol_mult   = new_cfg.volume_multiplier;
         fprintf(stderr, "[TUI] config reloaded from %s\n", config_path);
         return 'r';
     }

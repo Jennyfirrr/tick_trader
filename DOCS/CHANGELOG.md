@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.4.1] - 2026-03-20 (branch: feature/risk-and-sizing)
+
+### Fixed
+- **Balance accounting** - positions were accumulating raw stream quantity via consolidation,
+  inflating sizes to 0.7+ BTC instead of the sized 0.003 BTC. Disabled consolidation since
+  position sizing means each fill is an independent entry. Entry spacing prevents duplicates.
+- **Realized P&L** - now includes entry fee in cost basis. Previously only deducted exit fee,
+  understating losses.
+- **Position persistence on quit** - pressing `q` now saves snapshot WITH positions intact
+  instead of force-closing everything first. Positions resume on restart.
+- **Duplicate FEES PAID line** removed from TUI.
+- **Snapshot saved before reconnect** - both unplanned disconnects and 24-hour boundary now
+  save state before any reconnect attempt.
+
+### Added
+- **Position dollar value** in TUI - shows `val:$200.04` (current price * qty) so you can
+  see how much you actually hold in each position.
+- **Net P&L per position** - shows both gross and net P&L accounting for round-trip fees
+  (0.2% at default rate). A position showing +0.04% gross might be -0.16% net.
+- **Disconnect resilience** - laptop sleep, WiFi drops, and process crashes all preserve
+  positions via snapshot. Engine reconnects and resumes monitoring on wake.
+
+### Notes
+- Engine does NOT run while laptop is asleep. Process freezes completely. For 24/7 operation,
+  run on a VPS or always-on machine in a tmux session with `tui_enabled=0`.
+- Positions that would have hit TP/SL while offline will exit on the first tick after wake,
+  which may be at a very different price (gap risk).
+
 ## [0.4.0] - 2026-03-20 (branch: feature/risk-and-sizing)
 
 ### Added
