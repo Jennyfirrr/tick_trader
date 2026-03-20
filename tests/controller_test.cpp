@@ -284,7 +284,7 @@ static void test_fill_timing() {
     ctrl.state = CONTROLLER_ACTIVE; // force active
     ctrl.buy_conds.price  = FPN_FromDouble<FP>(100.0);
     ctrl.buy_conds.volume = FPN_FromDouble<FP>(400.0);
-    ctrl.buy_conds_initial = ctrl.buy_conds;
+    ctrl.mean_rev.buy_conds_initial = ctrl.buy_conds;
 
     OrderPool<FP> pool;
     OrderPool_init(&pool, 64);
@@ -330,7 +330,7 @@ static void test_backpressure() {
     ctrl.state = CONTROLLER_ACTIVE;
     ctrl.buy_conds.price  = FPN_FromDouble<FP>(100.0);
     ctrl.buy_conds.volume = FPN_FromDouble<FP>(400.0);
-    ctrl.buy_conds_initial = ctrl.buy_conds;
+    ctrl.mean_rev.buy_conds_initial = ctrl.buy_conds;
 
     OrderPool<FP> pool;
     OrderPool_init(&pool, 64);
@@ -400,7 +400,7 @@ static void test_warmup() {
     check("buy volume from observed mean", mean_v > 0);
 
     // initial anchor should match
-    check("initial anchor set", FPN_Equal(ctrl.buy_conds.price, ctrl.buy_conds_initial.price));
+    check("initial anchor set", FPN_Equal(ctrl.buy_conds.price, ctrl.mean_rev.buy_conds_initial.price));
 
     free(pool.slots);
 }
@@ -573,7 +573,7 @@ static void test_max_shift() {
         PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(100.0), FPN_FromDouble<FP>(500.0), &log);
     }
 
-    FPN<FP> initial = ctrl.buy_conds_initial.price;
+    FPN<FP> initial = ctrl.mean_rev.buy_conds_initial.price;
 
     // add positions and feed extreme trend
     for (int i = 0; i < 5; i++) {

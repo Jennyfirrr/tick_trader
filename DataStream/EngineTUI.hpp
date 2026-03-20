@@ -268,8 +268,8 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
            roll_price_slope, trend_color, trend_str); row++;
     printf(C_SURF "  ----------------------------------------------------------------" C_RESET "\n"); row++;
     // adaptive filter state
-    double live_offset = FPN_ToDouble(ctrl->live_offset_pct) * 100.0;  // display as %
-    double live_vmult  = FPN_ToDouble(ctrl->live_vol_mult);
+    double live_offset = FPN_ToDouble(ctrl->mean_rev.live_offset_pct) * 100.0;  // display as %
+    double live_vmult  = FPN_ToDouble(ctrl->mean_rev.live_vol_mult);
 
     printf(C_BOLD C_PEACH "  BUY GATE " C_DIM "(adaptive):" C_RESET "\n"); row++;
     printf(C_SAND "    price <= " C_FG "%-12.2f" C_DIM "  (offset: %.3f%%)" C_RESET "\n", buy_p, live_offset); row++;
@@ -383,7 +383,7 @@ static inline char TUI_HandleInput(EngineTUI *tui, PortfolioController<F> *ctrl,
         int is_paused = FPN_IsZero(ctrl->buy_conds.price);
         if (is_paused) {
             // unpause - restore initial conditions, regression will adjust from here
-            ctrl->buy_conds = ctrl->buy_conds_initial;
+            ctrl->buy_conds = ctrl->mean_rev.buy_conds_initial;
         } else {
             ctrl->buy_conds.price  = FPN_Zero<F>();
             ctrl->buy_conds.volume = FPN_Zero<F>();
@@ -413,8 +413,8 @@ static inline char TUI_HandleInput(EngineTUI *tui, PortfolioController<F> *ctrl,
         ctrl->config.max_drawdown_pct  = new_cfg.max_drawdown_pct;
         ctrl->config.max_exposure_pct  = new_cfg.max_exposure_pct;
         // reset live filters to new config values
-        ctrl->live_offset_pct = new_cfg.entry_offset_pct;
-        ctrl->live_vol_mult   = new_cfg.volume_multiplier;
+        ctrl->mean_rev.live_offset_pct = new_cfg.entry_offset_pct;
+        ctrl->mean_rev.live_vol_mult   = new_cfg.volume_multiplier;
         fprintf(stderr, "[TUI] config reloaded from %s\n", config_path);
         return 'r';
     }
