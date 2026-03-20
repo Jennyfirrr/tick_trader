@@ -91,13 +91,25 @@ The feedback loop. Consumes fills from the order pool, tracks P&L, runs regressi
 Walks the portfolio bitmap, computes absolute distance from fill price to each existing entry price. If any distance < `stddev * spacing_multiplier`, the fill is rejected. Branchless absolute value via word-level mask-select.
 
 ### Adaptive filters (slow path)
-Three mechanisms adjust the buy gate:
+Four mechanisms adjust the buy gate:
 
-1. **P&L regression** - fits a line to recent P&L values. If slope is positive (making money), shifts buy gate price up (more aggressive). Gated by R^2 confidence.
+1. **Rolling stats update** - buy gate price and volume are recomputed from the rolling average
+   each slow-path tick using the live adaptive offset and multiplier. `buy_conds_initial` also
+   tracks the rolling stats so the max_shift clamp window moves with the market (not anchored
+   to stale warmup prices).
 
-2. **Filter adaptation** - same P&L slope adjusts entry_offset_pct and volume_multiplier. Positive P&L -> loosen (smaller offset, lower volume requirement). Negative P&L -> tighten. Clamped to configurable min/max ranges.
+2. **P&L regression** - fits a line to recent net P&L values (after estimated exit fees). If
+   slope is positive (making money), shifts buy gate price up (more aggressive). Gated by R^2
+   confidence. Only fires when regression has enough data (MAX_WINDOW samples).
 
-3. **Idle squeeze** - when portfolio is empty and price is above buy gate, shrinks offset 5% toward minimum each slow-path tick. Prevents the engine from sitting idle in a rising market.
+3. **Filter adaptation** - same P&L slope adjusts entry_offset_pct and volume_multiplier.
+   Positive P&L -> loosen (smaller offset, lower volume requirement). Negative P&L -> tighten.
+   Clamped to configurable min/max ranges.
+
+4. **Idle squeeze** - when portfolio is empty and price is above buy gate, shrinks offset 5%
+   toward minimum each slow-path tick. Also squeezes volume multiplier toward minimum.
+   Prevents the engine from sitting idle in a rising market. Stops as soon as a position is
+   entered.
 
 ### Paper trading balance
 Starts at `starting_balance` from config. Position size = `balance * risk_pct / price`. Cost deducted on buy (including entry fee), net proceeds returned on sell (after exit fee). Balance check is branchless — ANDed into the fill mask alongside spacing and capacity checks.

@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.4.3] - 2026-03-20 (branch: feature/risk-and-sizing)
+
+### Fixed
+- **Stale buy gate clamp** - `buy_conds_initial` was set once during warmup and never updated.
+  `AdjustBuyGate`'s max_shift clamp was dragging the gate back toward the original warmup
+  price as the market moved, causing the gate to sit $40+ below where it should be after
+  8+ minutes. Fix: `buy_conds_initial` now updates from rolling stats each slow-path tick.
+  The clamp window moves with the market.
+- **Config hot-reload** - `r` key now reloads all fields including fee_rate, risk_pct,
+  volume_multiplier, entry_offset_pct, spacing_multiplier, all clamps, and risk limits.
+  Also resets live adaptive filters to new values on reload.
+- **Dead code** - removed unused `slope_positive` variable from idle squeeze.
+
+### Known Limitations
+- Circuit breaker uses `portfolio_delta` from the last slow-path cycle, which could be up to
+  `poll_interval` ticks stale. In a flash crash, one fill could slip through before the
+  breaker updates. Acceptable tradeoff vs adding Portfolio_ComputePnL to every tick.
+
 ## [0.4.2] - 2026-03-20 (branch: feature/risk-and-sizing)
 
 ### Fixed
