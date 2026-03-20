@@ -210,16 +210,21 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
         total_qty   += qty;
 
         double price_diff = price - entry;
-        printf("  #%-2d  entry:$%.2f  now:$%.2f (%+.2f)  qty:%.6f  val:$%.2f\n",
-               idx, entry, price, price_diff, qty, value);
-        printf("       TP:%+.0f  SL:-%0.f  gross:%+.2f%%  net:%+.2f%%\n",
+        if (displayed > 0) printf("  ·\n");
+        printf("  #%-2d    $%.2f -> $%.2f  (%+.2f)\n",
+               idx, entry, price, price_diff);
+        printf("         qty: %.6f    val: $%.2f\n", qty, value);
+        printf("         TP: %+.0f   SL: -%.0f   gross: %+.2f%%   net: %+.2f%%\n",
                to_tp, to_sl, pos_pnl, net_pnl);
         displayed++;
         active &= active - 1;
     }
     // held total moved to P&L block below
     // clear remaining position lines from previous renders
-    for (int i = displayed; i < 16; i++) {
+    // 4 lines per position (3 data + 1 separator dot), minus 1 separator for first
+    int used_lines = (displayed > 0) ? (displayed * 3 + (displayed - 1)) : 0;
+    int max_lines  = 16 * 4 - 1;  // worst case lines
+    for (int i = used_lines; i < max_lines; i++) {
         printf("  %-70s\n", "");
     }
 

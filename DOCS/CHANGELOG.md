@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.7] - 2026-03-20
+
+### Changed
+- **Position display layout** - each position now renders across 3 lines instead of 2 with
+  wider spacing between fields. Entry/current price on first line, qty/value on second,
+  TP/SL/P&L on third. Dot separator (`·`) between positions for visual breathing room.
+
 ## [0.4.6] - 2026-03-20
 
 ### Added
