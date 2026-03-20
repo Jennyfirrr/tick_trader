@@ -400,11 +400,20 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl, OrderPool<F> 
 
             // TP FLOOR: ensure TP is above the round-trip fee breakeven point
             // min_tp = entry + entry * fee_rate * 3 (2x for round-trip fees + 1x safety margin)
-            // if volatility TP is below this, use the floor instead
             FPN<F> three = FPN_FromDouble<F>(3.0);
             FPN<F> fee_floor_offset = FPN_Mul(fill_price, FPN_Mul(ctrl->config.fee_rate, three));
             FPN<F> tp_floor = FPN_AddSat(fill_price, fee_floor_offset);
             tp_price = FPN_Max(tp_price, tp_floor);
+
+            // SL FLOOR: ensure SL distance is at least half the TP distance
+            // prevents SL from being so tight that normal price fluctuations trigger it
+            // with TP at +$209 (fee floor), SL should be at least -$104.50
+            // this gives a minimum 2:1 reward-to-risk ratio
+            FPN<F> tp_dist = FPN_Sub(tp_price, fill_price);  // how far TP is from entry
+            FPN<F> half    = FPN_FromDouble<F>(0.5);
+            FPN<F> min_sl_dist = FPN_Mul(tp_dist, half);     // SL must be at least half that
+            FPN<F> sl_floor = FPN_SubSat(fill_price, min_sl_dist);
+            sl_price = FPN_Min(sl_price, sl_floor);  // Min because SL is below entry (lower = wider)
 
             Portfolio_AddPositionWithExits(&ctrl->portfolio, sized_qty, fill_price, tp_price, sl_price);
             ctrl->total_buys++;
