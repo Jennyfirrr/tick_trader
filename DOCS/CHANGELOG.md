@@ -1,5 +1,80 @@
 # Changelog
 
+## [0.6.0] - 2026-03-20 (branch: strategy-library)
+
+### Added
+- **Stddev-scaled offset mode** - new offset computation: `buy_price = avg - (stddev * mult)`
+  instead of `avg - (avg * pct)`. Entry threshold now scales with market volatility —
+  wider dips required in volatile markets, tighter in quiet ones. Enabled via
+  `offset_stddev_mult` config key (0 = disabled, uses percentage mode). Branchless
+  mask-select between modes. Adaptation adjusts `live_stddev_mult` within configurable
+  bounds (`offset_stddev_min`/`offset_stddev_max`).
+
+- **Multi-timeframe confirmation** - second rolling stats window (`RollingStats<F, 512>`,
+  ~2-4 minutes of data) tracks broader trend. When `min_long_slope` is set, buys are
+  blocked if the long-window price slope is negative — prevents buying short-term dips
+  inside broader crashes. Gate masks `buy_conds.price` to zero branchlessly. Placed at
+  end of controller struct for L1 cache layout (24KB cold buffer past hot-path fields).
+
+- **12 new tests** (80 → 92) covering stddev offset computation, mode selection,
+  adaptation bounds, mode-conditional adaptation (inactive value doesn't drift),
+  multi-timeframe gate (blocks on negative slope, allows on positive, disabled = always
+  passes).
+
+### Changed
+- Snapshot format bumped to version 3 (added `live_stddev_mult` field). Old v2 snapshots
+  are cleanly rejected — engine starts fresh with warmup.
+- TUI buy gate display shows `(stddev: Nx)` when in stddev mode, `(offset: N%)` in
+  percentage mode.
+- TUI config reload (`r` key) now also resets `live_stddev_mult`.
+- Config parser clamps `offset_stddev_mult/min/max` to non-negative (negative values
+  would invert the buy direction).
+- Rolling stats pushed to both windows during warmup so long window has data at activation.
+
+### Architecture
+- Mode-conditional adaptation: idle squeeze and regression only adapt the ACTIVE mode's
+  offset value. Prevents value drift of inactive mode (e.g. `live_stddev_mult` drifting
+  from 0 to `offset_stddev_min` while in percentage mode via squeeze math).
+- Zero hot-path impact. All new logic runs on the slow path. BuyGate still just checks
+  `price <= conds.price` and `volume >= conds.volume` — unchanged.
+
+## [0.5.0] - 2026-03-20 (branch: strategy-library)
+
+### Added
+- **Strategy library architecture** - mean reversion logic extracted from
+  `PortfolioController.hpp` into `Strategies/MeanReversion.hpp`. Strategies are modular:
+  each implements `Init`, `Adapt`, `BuySignal` functions with its own state struct.
+  Runtime `strategy_id` flag selects which strategy runs on the slow path — zero hot-path
+  cost. Designed for Branch 3 regime-based auto-switching.
+
+- **`StrategyInterface.hpp`** - documents the 4-function strategy contract (Init, Adapt,
+  BuySignal, ExitSignal). Defines `STRATEGY_MEAN_REVERSION` enum.
+
+- **`ControllerConfig.hpp`** - config struct, defaults, and parser extracted from
+  PortfolioController into standalone header. Eliminates circular include dependency
+  between controller and strategy headers.
+
+- **Templated rolling stats window** - `RollingStats<F, W=128>` where W is a template
+  parameter with `static_assert` for power-of-2. Enables multi-timeframe windows
+  (`RollingStats<F, 512>`) without code duplication.
+
+### Changed
+- `PortfolioController.hpp` reduced from ~800 to ~430 lines (strategy logic removed).
+  Controller now calls `MeanReversion_Adapt` + `MeanReversion_BuySignal` on slow path.
+- `MeanReversionState<F>` holds: regression feeder, ROR regressor, live_offset_pct,
+  live_vol_mult, buy_conds_initial, last regression result.
+- `EngineTUI.hpp` field paths updated (`ctrl->mean_rev.live_offset_pct` etc).
+- Dead code removed: warmup feeder push (data was immediately discarded at warmup
+  completion).
+
+### Architecture
+- Strategy selection via runtime flag, not compile-time `#include`. All strategies
+  compiled into the binary. Regime detector (Branch 3) just sets `ctrl->strategy_id`.
+- Each strategy has unique function names (`MeanReversion_BuySignal`, not
+  `Strategy_BuySignal`) so multiple strategies coexist.
+- Engine owns market data (rolling stats). Strategies read it, don't own it.
+- Hot path completely untouched. ~60ns per tick preserved.
+
 ## [0.4.8] - 2026-03-20
 
 ### Added

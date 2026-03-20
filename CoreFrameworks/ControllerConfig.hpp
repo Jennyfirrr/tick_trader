@@ -45,6 +45,11 @@ template <unsigned F> struct ControllerConfig {
                            // starting balance (e.g. 0.10 = 10%)
   FPN<F> max_exposure_pct; // max fraction of balance deployed in positions
                            // (e.g. 0.50 = 50%)
+  // enhanced buy signal (disabled by default = backward compatible)
+  FPN<F> offset_stddev_mult;  // stddev-scaled offset multiplier (0 = use percentage mode)
+  FPN<F> offset_stddev_min;   // adaptation lower bound for stddev mode (e.g. 0.5)
+  FPN<F> offset_stddev_max;   // adaptation upper bound for stddev mode (e.g. 4.0)
+  FPN<F> min_long_slope;      // min long-window price slope to allow buys (0 = disabled)
 };
 //======================================================================================================
 template <unsigned F> inline ControllerConfig<F> ControllerConfig_Default() {
@@ -71,6 +76,10 @@ template <unsigned F> inline ControllerConfig<F> ControllerConfig_Default() {
   cfg.max_drawdown_pct = FPN_FromDouble<F>(0.10); // halt at 10% drawdown
   cfg.max_exposure_pct =
       FPN_FromDouble<F>(0.50); // max 50% of balance in positions
+  cfg.offset_stddev_mult = FPN_Zero<F>();         // 0 = disabled, use percentage mode
+  cfg.offset_stddev_min = FPN_FromDouble<F>(0.5); // 0.5 stddev - most aggressive
+  cfg.offset_stddev_max = FPN_FromDouble<F>(4.0); // 4.0 stddev - most defensive
+  cfg.min_long_slope = FPN_Zero<F>();             // 0 = disabled
   return cfg;
 }
 //======================================================================================================
@@ -157,6 +166,20 @@ inline ControllerConfig<F> ControllerConfig_Load(const char *filepath) {
       cfg.max_drawdown_pct = FPN_FromDouble<F>(atof(val) / 100.0);
     else if (strcmp(key, "max_exposure_pct") == 0)
       cfg.max_exposure_pct = FPN_FromDouble<F>(atof(val) / 100.0);
+    else if (strcmp(key, "offset_stddev_mult") == 0) {
+      double v = atof(val); if (v < 0) v = 0;
+      cfg.offset_stddev_mult = FPN_FromDouble<F>(v);
+    }
+    else if (strcmp(key, "offset_stddev_min") == 0) {
+      double v = atof(val); if (v < 0) v = 0;
+      cfg.offset_stddev_min = FPN_FromDouble<F>(v);
+    }
+    else if (strcmp(key, "offset_stddev_max") == 0) {
+      double v = atof(val); if (v < 0) v = 0;
+      cfg.offset_stddev_max = FPN_FromDouble<F>(v);
+    }
+    else if (strcmp(key, "min_long_slope") == 0)
+      cfg.min_long_slope = FPN_FromDouble<F>(atof(val));
   }
 
   fclose(f);

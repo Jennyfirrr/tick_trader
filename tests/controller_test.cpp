@@ -752,6 +752,208 @@ static void test_full_pipeline() {
 }
 
 //======================================================================================================
+// [TEST 17: STDDEV OFFSET MODE]
+//======================================================================================================
+static void test_stddev_offset() {
+    printf("\n--- Stddev Offset Mode ---\n");
+
+    ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+    cfg.warmup_ticks  = 10;
+    cfg.poll_interval = 1;
+    cfg.offset_stddev_mult = FPN_FromDouble<FP>(1.5); // enable stddev mode at 1.5x
+
+    PortfolioController<FP> ctrl;
+    PortfolioController_Init(&ctrl, cfg);
+
+    OrderPool<FP> pool;
+    OrderPool_init(&pool, 64);
+    TradeLog log;
+    log.file = 0;
+    log.trade_count = 0;
+
+    // warmup with known prices around $100 with some spread
+    for (int i = 0; i < 10; i++) {
+        FPN<FP> price  = FPN_FromDouble<FP>(98.0 + (double)i * 0.5);
+        FPN<FP> volume = FPN_FromDouble<FP>(500.0);
+        PortfolioController_Tick(&ctrl, &pool, price, volume, &log);
+    }
+    check("stddev: warmup done", ctrl.state == CONTROLLER_ACTIVE);
+
+    // in stddev mode, buy_price should be avg - (stddev * 1.5)
+    // verify the buy price is below the rolling average
+    double buy_p = FPN_ToDouble(ctrl.buy_conds.price);
+    double avg_p = FPN_ToDouble(ctrl.rolling.price_avg);
+    double stddev = FPN_ToDouble(ctrl.rolling.price_stddev);
+    check("stddev: buy price below avg", buy_p < avg_p);
+
+    // verify the offset scales with stddev: buy = avg - stddev * mult
+    double expected = avg_p - stddev * 1.5;
+    check("stddev: buy price = avg - stddev*mult", fabs(buy_p - expected) < 0.5);
+
+    // verify percentage mode gives different result
+    ControllerConfig<FP> cfg2 = ControllerConfig_Default<FP>();
+    cfg2.warmup_ticks  = 10;
+    cfg2.poll_interval = 1;
+    // offset_stddev_mult = 0 (default, percentage mode)
+
+    PortfolioController<FP> ctrl2;
+    PortfolioController_Init(&ctrl2, cfg2);
+
+    for (int i = 0; i < 10; i++) {
+        FPN<FP> price  = FPN_FromDouble<FP>(98.0 + (double)i * 0.5);
+        FPN<FP> volume = FPN_FromDouble<FP>(500.0);
+        PortfolioController_Tick(&ctrl2, &pool, price, volume, &log);
+    }
+
+    double pct_buy_p = FPN_ToDouble(ctrl2.buy_conds.price);
+    check("stddev: different from pct mode", fabs(buy_p - pct_buy_p) > 0.01);
+
+    free(pool.slots);
+}
+
+//======================================================================================================
+// [TEST 18: STDDEV ADAPTATION BOUNDS]
+//======================================================================================================
+static void test_stddev_adaptation() {
+    printf("\n--- Stddev Adaptation Bounds ---\n");
+
+    ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+    cfg.warmup_ticks     = 5;
+    cfg.poll_interval    = 1;
+    cfg.r2_threshold     = FPN_FromDouble<FP>(0.01);
+    cfg.offset_stddev_mult = FPN_FromDouble<FP>(2.0);
+    cfg.offset_stddev_min  = FPN_FromDouble<FP>(0.5);
+    cfg.offset_stddev_max  = FPN_FromDouble<FP>(4.0);
+
+    PortfolioController<FP> ctrl;
+    PortfolioController_Init(&ctrl, cfg);
+
+    check("stddev: init from config", fabs(FPN_ToDouble(ctrl.mean_rev.live_stddev_mult) - 2.0) < 0.01);
+
+    OrderPool<FP> pool;
+    OrderPool_init(&pool, 64);
+    TradeLog log;
+    log.file = 0;
+    log.trade_count = 0;
+
+    // warmup
+    for (int i = 0; i < 5; i++) {
+        PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(100.0), FPN_FromDouble<FP>(500.0), &log);
+    }
+
+    // add positions and run many ticks to trigger regression adaptation
+    for (int i = 0; i < 5; i++) {
+        pool.slots[i].price    = FPN_FromDouble<FP>(99.0);
+        pool.slots[i].quantity = FPN_FromDouble<FP>(10.0);
+        pool.bitmap |= (1ULL << i);
+    }
+
+    for (int i = 0; i < 200; i++) {
+        FPN<FP> price = FPN_FromDouble<FP>(99.0 + (double)i * 0.01);
+        PortfolioController_Tick(&ctrl, &pool, price, FPN_FromDouble<FP>(500.0), &log);
+    }
+
+    // stddev_mult should stay within bounds regardless of regression direction
+    double sm = FPN_ToDouble(ctrl.mean_rev.live_stddev_mult);
+    check("stddev: within lower bound", sm >= 0.49);
+    check("stddev: within upper bound", sm <= 4.01);
+
+    // in stddev mode, offset_pct should NOT have drifted (mode-conditional)
+    double op = FPN_ToDouble(ctrl.mean_rev.live_offset_pct);
+    double init_op = FPN_ToDouble(cfg.entry_offset_pct);
+    check("stddev: offset_pct unchanged in stddev mode", fabs(op - init_op) < 0.0001);
+
+    free(pool.slots);
+}
+
+//======================================================================================================
+// [TEST 19: MULTI-TIMEFRAME GATE]
+//======================================================================================================
+static void test_multi_timeframe() {
+    printf("\n--- Multi-Timeframe Gate ---\n");
+
+    ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+    cfg.warmup_ticks  = 10;
+    cfg.poll_interval = 1;
+    cfg.min_long_slope = FPN_FromDouble<FP>(0.0001); // require positive long trend
+
+    PortfolioController<FP> ctrl;
+    PortfolioController_Init(&ctrl, cfg);
+
+    OrderPool<FP> pool;
+    OrderPool_init(&pool, 64);
+    TradeLog log;
+    log.file = 0;
+    log.trade_count = 0;
+
+    // warmup with rising prices (positive long slope)
+    for (int i = 0; i < 10; i++) {
+        FPN<FP> price = FPN_FromDouble<FP>(100.0 + (double)i * 0.1);
+        PortfolioController_Tick(&ctrl, &pool, price, FPN_FromDouble<FP>(500.0), &log);
+    }
+    check("mt: warmup done", ctrl.state == CONTROLLER_ACTIVE);
+
+    // run a few more ticks with rising prices to build long slope
+    for (int i = 0; i < 20; i++) {
+        FPN<FP> price = FPN_FromDouble<FP>(101.0 + (double)i * 0.05);
+        PortfolioController_Tick(&ctrl, &pool, price, FPN_FromDouble<FP>(500.0), &log);
+    }
+
+    // with rising long slope, buy gate should be active (price > 0)
+    double buy_p_rising = FPN_ToDouble(ctrl.buy_conds.price);
+    check("mt: buys allowed with rising long slope", buy_p_rising > 0);
+
+    // now feed falling prices to create negative long slope
+    for (int i = 0; i < 30; i++) {
+        FPN<FP> price = FPN_FromDouble<FP>(102.0 - (double)i * 0.2);
+        PortfolioController_Tick(&ctrl, &pool, price, FPN_FromDouble<FP>(500.0), &log);
+    }
+
+    // with negative long slope, buy gate should be blocked (price = 0)
+    double buy_p_falling = FPN_ToDouble(ctrl.buy_conds.price);
+    check("mt: buys blocked with falling long slope", buy_p_falling < 0.01);
+
+    free(pool.slots);
+}
+
+//======================================================================================================
+// [TEST 20: MULTI-TIMEFRAME DISABLED]
+//======================================================================================================
+static void test_multi_timeframe_disabled() {
+    printf("\n--- Multi-Timeframe Disabled ---\n");
+
+    ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+    cfg.warmup_ticks  = 10;
+    cfg.poll_interval = 1;
+    // min_long_slope = 0 (default, disabled)
+
+    PortfolioController<FP> ctrl;
+    PortfolioController_Init(&ctrl, cfg);
+
+    OrderPool<FP> pool;
+    OrderPool_init(&pool, 64);
+    TradeLog log;
+    log.file = 0;
+    log.trade_count = 0;
+
+    // warmup
+    for (int i = 0; i < 10; i++) {
+        PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(100.0), FPN_FromDouble<FP>(500.0), &log);
+    }
+
+    // feed falling prices — with gate disabled, buys should still work
+    for (int i = 0; i < 20; i++) {
+        FPN<FP> price = FPN_FromDouble<FP>(100.0 - (double)i * 0.1);
+        PortfolioController_Tick(&ctrl, &pool, price, FPN_FromDouble<FP>(500.0), &log);
+    }
+
+    double buy_p = FPN_ToDouble(ctrl.buy_conds.price);
+    check("mt disabled: buys allowed despite falling slope", buy_p > 0);
+
+    free(pool.slots);
+}
+
+//======================================================================================================
 // [MAIN]
 //======================================================================================================
 int main() {
@@ -775,6 +977,10 @@ int main() {
     test_empty_regression();
     test_tick_counter();
     test_full_pipeline();
+    test_stddev_offset();
+    test_stddev_adaptation();
+    test_multi_timeframe();
+    test_multi_timeframe_disabled();
 
     printf("\n======================================\n");
     printf("  RESULTS: %d passed, %d failed\n", tests_passed, tests_failed);

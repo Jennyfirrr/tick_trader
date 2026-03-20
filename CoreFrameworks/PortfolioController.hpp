@@ -63,6 +63,10 @@ template <unsigned F> struct PortfolioController {
   uint64_t warmup_count;
 
   ControllerConfig<F> config;
+
+  // cold data — only accessed on slow path, placed last for cache layout
+  // (24KB buffer stays past hot-path fields so portfolio/buy_conds/exit_buf stay in L1)
+  RollingStats<F, 512> rolling_long;
 };
 //======================================================================================================
 // [INIT]
@@ -97,6 +101,7 @@ inline void PortfolioController_Init(PortfolioController<F> *ctrl,
   ctrl->mean_rev.ror = RORRegressor_Init<F>();
   ctrl->mean_rev.live_offset_pct = config.entry_offset_pct;
   ctrl->mean_rev.live_vol_mult = config.volume_multiplier;
+  ctrl->mean_rev.live_stddev_mult = config.offset_stddev_mult;
   ctrl->mean_rev.buy_conds_initial = ctrl->buy_conds;
   ctrl->mean_rev.has_regression = 0;
 
@@ -112,6 +117,8 @@ inline void PortfolioController_Init(PortfolioController<F> *ctrl,
   ctrl->warmup_count = 0;
 
   ctrl->config = config;
+
+  ctrl->rolling_long = RollingStats_Init<F, 512>();
 }
 //======================================================================================================
 // [TICK - MAIN CONTROLLER FUNCTION]
@@ -135,8 +142,9 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
     ctrl->volume_sum = FPN_AddSat(ctrl->volume_sum, current_volume);
     ctrl->warmup_count++;
 
-    // feed rolling stats during warmup
+    // feed rolling stats during warmup (both windows so long window has data at activation)
     RollingStats_Push(&ctrl->rolling, current_price, current_volume);
+    RollingStats_Push(&ctrl->rolling_long, current_price, current_volume);
 
     if (ctrl->warmup_count >= ctrl->config.warmup_ticks) {
       MeanReversion_Init(&ctrl->mean_rev, &ctrl->rolling, &ctrl->buy_conds);
@@ -397,6 +405,7 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
   // update rolling market stats - tracks price/volume trends for dynamic gate
   // adjustment
   RollingStats_Push(&ctrl->rolling, current_price, current_volume);
+  RollingStats_Push(&ctrl->rolling_long, current_price, current_volume);
 
   // compute unrealized P&L and estimate exit fees on open positions
   // gross P&L is what Portfolio_ComputePnL returns (price delta * qty)
@@ -413,7 +422,7 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
                        ctrl->portfolio.active_bitmap, &ctrl->buy_conds,
                        &ctrl->config);
   ctrl->buy_conds = MeanReversion_BuySignal(&ctrl->mean_rev, &ctrl->rolling,
-                                             &ctrl->config);
+                                             &ctrl->rolling_long, &ctrl->config);
 }
 //======================================================================================================
 // [SNAPSHOT SAVE/LOAD]
@@ -426,19 +435,20 @@ inline void PortfolioController_SaveSnapshot(const PortfolioController<F> *ctrl,
                                              const char *filepath) {
   Portfolio_Save(&ctrl->portfolio, ctrl->realized_pnl,
                  ctrl->mean_rev.live_offset_pct, ctrl->mean_rev.live_vol_mult,
-                 ctrl->balance, filepath);
+                 ctrl->mean_rev.live_stddev_mult, ctrl->balance, filepath);
 }
 
 template <unsigned F>
 inline int PortfolioController_LoadSnapshot(PortfolioController<F> *ctrl,
                                             const char *filepath) {
-  FPN<F> realized, offset, vmult, bal;
-  int ok = Portfolio_Load(&ctrl->portfolio, &realized, &offset, &vmult, &bal,
-                          filepath);
+  FPN<F> realized, offset, vmult, stdmult, bal;
+  int ok = Portfolio_Load(&ctrl->portfolio, &realized, &offset, &vmult, &stdmult,
+                          &bal, filepath);
   if (ok) {
     ctrl->realized_pnl = realized;
     ctrl->mean_rev.live_offset_pct = offset;
     ctrl->mean_rev.live_vol_mult = vmult;
+    ctrl->mean_rev.live_stddev_mult = stdmult;
     ctrl->balance = bal;
     // skip warmup if we have positions - we're resuming a session
     if (ctrl->portfolio.active_bitmap != 0) {
