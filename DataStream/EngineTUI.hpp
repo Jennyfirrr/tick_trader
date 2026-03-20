@@ -167,7 +167,10 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
     printf("  MARKET STRUCTURE (rolling %d-tick window):\n", ctrl->rolling.count);
     printf("    avg price:  %-12.2f  |  stddev: %-10.2f\n", roll_price_avg, roll_stddev);
     printf("    range:      %-12.2f  -  %-12.2f\n", roll_p_min, roll_p_max);
+    double roll_price_slope = FPN_ToDouble(ctrl->rolling.price_slope);
     printf("    avg volume: %-12.8f  |  vol slope: %+.8f\n", roll_vol_avg, roll_vol_slope);
+    printf("    price slope: %+.4f/tick  |  trend: %s\n", roll_price_slope,
+           (roll_price_slope > 0.5) ? "UP" : (roll_price_slope < -0.5) ? "DOWN" : "FLAT");
     printf("----------------------------------------------------------------\n");
     // adaptive filter state
     double live_offset = FPN_ToDouble(ctrl->live_offset_pct) * 100.0;  // display as %
@@ -248,10 +251,20 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
     printf("----------------------------------------------------------------\n");
     uint32_t total_exits = ctrl->wins + ctrl->losses;
     double win_rate = (total_exits > 0) ? ((double)ctrl->wins / total_exits) * 100.0 : 0.0;
+    double g_wins  = FPN_ToDouble(ctrl->gross_wins);
+    double g_losses = FPN_ToDouble(ctrl->gross_losses);
+    double profit_factor = (g_losses > 0.001) ? g_wins / g_losses : 0.0;
+    double avg_win  = (ctrl->wins > 0) ? g_wins / ctrl->wins : 0.0;
+    double avg_loss = (ctrl->losses > 0) ? g_losses / ctrl->losses : 0.0;
+    double avg_hold = (total_exits > 0) ? (double)ctrl->total_hold_ticks / total_exits : 0.0;
+
     printf("  TICKS: %-8lu  |  BUYS: %-4u  |  EXITS: %-4u\n",
            (unsigned long)tick, ctrl->total_buys, total_exits);
-    printf("  WINS(TP): %-4u  LOSSES(SL): %-4u  WIN RATE: %.1f%%\n",
+    printf("  WINS: %-4u  LOSSES: %-4u  WIN RATE: %.1f%%\n",
            ctrl->wins, ctrl->losses, win_rate);
+    printf("  AVG WIN: $%.4f  AVG LOSS: $%.4f  PROFIT FACTOR: %.2f\n",
+           avg_win, avg_loss, profit_factor);
+    printf("  AVG HOLD: %.0f ticks\n", avg_hold);
     printf("  LOG: btcusdt_order_history.csv\n");
     printf("==================================================\n");
     printf("  [q]uit  [p]ause  [r]eload config                \n");

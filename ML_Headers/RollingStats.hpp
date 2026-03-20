@@ -41,6 +41,7 @@ template <unsigned F> struct RollingStats {
     FPN<F> volume_avg;         // mean volume over window
     FPN<F> volume_slope;       // linear trend of volume (positive = increasing)
     FPN<F> price_avg;          // mean price over window
+    FPN<F> price_slope;        // linear trend of price (positive = rising)
     FPN<F> price_stddev;       // standard deviation of price over window (volatility proxy)
     FPN<F> price_min;          // min price in window (for range-based spacing)
     FPN<F> price_max;          // max price in window (for range-based spacing)
@@ -60,6 +61,7 @@ template <unsigned F> inline RollingStats<F> RollingStats_Init() {
     rs.volume_avg   = FPN_Zero<F>();
     rs.volume_slope = FPN_Zero<F>();
     rs.price_avg    = FPN_Zero<F>();
+    rs.price_slope  = FPN_Zero<F>();
     rs.price_stddev = FPN_Zero<F>();
     rs.price_min    = FPN_Zero<F>();
     rs.price_max    = FPN_Zero<F>();
@@ -116,11 +118,14 @@ inline void RollingStats_Push(RollingStats<F> *rs, FPN<F> price, FPN<F> volume) 
     FPN<F> four  = FPN_FromDouble<F>(4.0);
     rs->price_stddev = FPN_DivNoAssert(range, four);
 
-    // volume slope: simple first-last difference over the window
-    // positive means volume is increasing, negative means decreasing
-    // more accurate than a full regression for this purpose and much cheaper
+    // price and volume slopes: first-last difference over the window
+    // positive = increasing, negative = decreasing
     int oldest_idx = (rs->head - rs->count + ROLLING_WINDOW) & (ROLLING_WINDOW - 1);
     int newest_idx = (rs->head - 1 + ROLLING_WINDOW) & (ROLLING_WINDOW - 1);
+
+    FPN<F> price_diff = FPN_Sub(rs->price_buf[newest_idx], rs->price_buf[oldest_idx]);
+    rs->price_slope = FPN_DivNoAssert(price_diff, n_fp);
+
     FPN<F> vol_diff = FPN_Sub(rs->volume_buf[newest_idx], rs->volume_buf[oldest_idx]);
     rs->volume_slope = FPN_DivNoAssert(vol_diff, n_fp);
 }

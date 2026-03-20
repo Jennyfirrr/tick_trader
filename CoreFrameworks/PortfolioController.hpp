@@ -146,6 +146,10 @@ template <unsigned F> struct PortfolioController {
     uint32_t wins;                // TP exits
     uint32_t losses;              // SL exits
     uint32_t total_buys;          // total entries
+    FPN<F> gross_wins;            // cumulative dollar gains from TP exits
+    FPN<F> gross_losses;          // cumulative dollar losses from SL exits (positive number)
+    uint64_t total_hold_ticks;    // cumulative ticks held across all closed positions
+    uint64_t entry_ticks[16];     // tick at which each position was entered (indexed by slot)
 
     RegressionFeederX<F> feeder;
     RORRegressor<F> ror;
@@ -183,6 +187,10 @@ template <unsigned F> inline void PortfolioController_Init(PortfolioController<F
     ctrl->wins             = 0;
     ctrl->losses           = 0;
     ctrl->total_buys       = 0;
+    ctrl->gross_wins       = FPN_Zero<F>();
+    ctrl->gross_losses     = FPN_Zero<F>();
+    ctrl->total_hold_ticks = 0;
+    for (int i = 0; i < 16; i++) ctrl->entry_ticks[i] = 0;
 
     ctrl->feeder  = RegressionFeederX_Init<F>();
     ctrl->ror     = RORRegressor_Init<F>();
@@ -415,8 +423,9 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl, OrderPool<F> 
             FPN<F> sl_floor = FPN_SubSat(fill_price, min_sl_dist);
             sl_price = FPN_Min(sl_price, sl_floor);  // Min because SL is below entry (lower = wider)
 
-            Portfolio_AddPositionWithExits(&ctrl->portfolio, sized_qty, fill_price, tp_price, sl_price);
+            int slot = Portfolio_AddPositionWithExits(&ctrl->portfolio, sized_qty, fill_price, tp_price, sl_price);
             ctrl->total_buys++;
+            if (slot >= 0) ctrl->entry_ticks[slot] = ctrl->total_ticks;
 
             // deduct cost + entry fee from balance
             ctrl->balance   = FPN_SubSat(ctrl->balance, total_cost);
@@ -475,8 +484,33 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl, OrderPool<F> 
         ctrl->total_fees = FPN_AddSat(ctrl->total_fees, exit_fee);
 
         const char *reason = (rec->reason == 0) ? "TP" : "SL";
-        ctrl->wins   += (rec->reason == 0);  // TP
-        ctrl->losses += (rec->reason == 1);  // SL
+        ctrl->wins   += (rec->reason == 0);
+        ctrl->losses += (rec->reason == 1);
+
+        // track win/loss dollar amounts for profit factor
+        // pos_pnl is net (after fees), positive for wins, negative for losses
+        int is_win = !pos_pnl.sign & !FPN_IsZero(pos_pnl);
+        int is_loss = pos_pnl.sign;
+        // branchless accumulate: add to wins if positive, add negated to losses if negative
+        {
+            constexpr unsigned N2 = FPN<F>::N;
+            uint64_t win_mask  = -(uint64_t)is_win;
+            uint64_t loss_mask = -(uint64_t)is_loss;
+            FPN<F> neg_pnl = FPN_Negate(pos_pnl);
+            FPN<F> win_add, loss_add;
+            for (unsigned w = 0; w < N2; w++) {
+                win_add.w[w]  = pos_pnl.w[w] & win_mask;
+                loss_add.w[w] = neg_pnl.w[w] & loss_mask;
+            }
+            win_add.sign  = 0;
+            loss_add.sign = 0;
+            ctrl->gross_wins   = FPN_AddSat(ctrl->gross_wins, win_add);
+            ctrl->gross_losses = FPN_AddSat(ctrl->gross_losses, loss_add);
+        }
+
+        // track hold time
+        uint64_t entry_tick = ctrl->entry_ticks[rec->position_index];
+        ctrl->total_hold_ticks += (rec->tick > entry_tick) ? (rec->tick - entry_tick) : 0;
         TradeLog_Sell(trade_log, rec->tick, exit_d, qty_d, entry_d, delta_pct, reason);
     }
     ExitBuffer_Clear(&ctrl->exit_buf);
