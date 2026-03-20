@@ -343,19 +343,12 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
     // [PHASE 3] overlay positions on right column using cursor positioning
     //==================================================================================================
     // separator at column 60, right content starts at column 64
-    int sep_col = 60;
-    int total_right = pln;  // how many right-column lines
-    int right_height = (total_right > (row - pos_start_row)) ? total_right : (row - pos_start_row);
+    int sep_col = 66;
 
-    // draw || separator and position lines
-    for (int i = 0; i < right_height; i++) {
+    // draw || separator and position lines (only for position height, not full left column)
+    for (int i = 0; i < pln; i++) {
         int r = pos_start_row + i;
-        // draw separator
-        printf("\033[%d;%dH" C_SURF " || " C_RESET, r, sep_col);
-        // draw position content if we have a line for this row
-        if (i < total_right) {
-            printf("%s", pos_buf[i]);
-        }
+        printf("\033[%d;%dH" C_SURF "||" C_RESET " %s", r, sep_col, pos_buf[i]);
     }
 
     fflush(stdout);
