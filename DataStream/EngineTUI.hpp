@@ -239,8 +239,12 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
            breaker_tripped ? "TRIPPED" : "OK", max_dd);
     printf("  MODE: PAPER TRADING (simulated fills)\n");
     printf("----------------------------------------------------------------\n");
-    printf("  TICKS: %-8lu  |  TRADES: %-8lu\n",
-           (unsigned long)tick, (unsigned long)ctrl->total_ticks);
+    uint32_t total_exits = ctrl->wins + ctrl->losses;
+    double win_rate = (total_exits > 0) ? ((double)ctrl->wins / total_exits) * 100.0 : 0.0;
+    printf("  TICKS: %-8lu  |  BUYS: %-4u  |  EXITS: %-4u\n",
+           (unsigned long)tick, ctrl->total_buys, total_exits);
+    printf("  WINS(TP): %-4u  LOSSES(SL): %-4u  WIN RATE: %.1f%%\n",
+           ctrl->wins, ctrl->losses, win_rate);
     printf("  LOG: btcusdt_order_history.csv\n");
     printf("==================================================\n");
     printf("  [q]uit  [p]ause  [r]eload config                \n");

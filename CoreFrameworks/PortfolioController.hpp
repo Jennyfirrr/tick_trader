@@ -143,6 +143,10 @@ template <unsigned F> struct PortfolioController {
     FPN<F> balance;               // paper trading balance (deducted on buy, added on sell)
     FPN<F> total_fees;            // cumulative fees paid (tracked for display)
 
+    uint32_t wins;                // TP exits
+    uint32_t losses;              // SL exits
+    uint32_t total_buys;          // total entries
+
     RegressionFeederX<F> feeder;
     RORRegressor<F> ror;
     RollingStats<F> rolling;
@@ -176,6 +180,9 @@ template <unsigned F> inline void PortfolioController_Init(PortfolioController<F
     ctrl->realized_pnl    = FPN_Zero<F>();
     ctrl->balance          = config.starting_balance;
     ctrl->total_fees       = FPN_Zero<F>();
+    ctrl->wins             = 0;
+    ctrl->losses           = 0;
+    ctrl->total_buys       = 0;
 
     ctrl->feeder  = RegressionFeederX_Init<F>();
     ctrl->ror     = RORRegressor_Init<F>();
@@ -400,6 +407,7 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl, OrderPool<F> 
             tp_price = FPN_Max(tp_price, tp_floor);
 
             Portfolio_AddPositionWithExits(&ctrl->portfolio, sized_qty, fill_price, tp_price, sl_price);
+            ctrl->total_buys++;
 
             // deduct cost + entry fee from balance
             ctrl->balance   = FPN_SubSat(ctrl->balance, total_cost);
@@ -458,6 +466,8 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl, OrderPool<F> 
         ctrl->total_fees = FPN_AddSat(ctrl->total_fees, exit_fee);
 
         const char *reason = (rec->reason == 0) ? "TP" : "SL";
+        ctrl->wins   += (rec->reason == 0);  // TP
+        ctrl->losses += (rec->reason == 1);  // SL
         TradeLog_Sell(trade_log, rec->tick, exit_d, qty_d, entry_d, delta_pct, reason);
     }
     ExitBuffer_Clear(&ctrl->exit_buf);
@@ -518,8 +528,13 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl, OrderPool<F> 
     ctrl->buy_conds.price  = RollingStats_BuyPrice(&ctrl->rolling, ctrl->live_offset_pct);
     ctrl->buy_conds.volume = FPN_Mul(ctrl->rolling.volume_avg, ctrl->live_vol_mult);
 
-    // compute unrealized P&L and push to regression
-    ctrl->portfolio_delta = Portfolio_ComputePnL(&ctrl->portfolio, current_price);
+    // compute unrealized P&L and estimate exit fees on open positions
+    // gross P&L is what Portfolio_ComputePnL returns (price delta * qty)
+    // net P&L subtracts estimated exit fees so the regression optimizes on real profitability
+    FPN<F> gross_pnl = Portfolio_ComputePnL(&ctrl->portfolio, current_price);
+    FPN<F> portfolio_value = Portfolio_ComputeValue(&ctrl->portfolio, current_price);
+    FPN<F> estimated_exit_fees = FPN_Mul(portfolio_value, ctrl->config.fee_rate);
+    ctrl->portfolio_delta = FPN_Sub(gross_pnl, estimated_exit_fees);
     RegressionFeederX_Push(&ctrl->feeder, ctrl->portfolio_delta);
 
     // regression + ROR + adaptive filter adjustment
