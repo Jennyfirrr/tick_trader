@@ -100,7 +100,25 @@ Three mechanisms adjust the buy gate:
 3. **Idle squeeze** - when portfolio is empty and price is above buy gate, shrinks offset 5% toward minimum each slow-path tick. Prevents the engine from sitting idle in a rising market.
 
 ### Paper trading balance
-Starts at `starting_balance` from config. Deducted on buy (`price * qty`), returned on sell (`exit_price * qty`). Balance check is branchless - ANDed into the fill mask alongside the spacing and capacity checks.
+Starts at `starting_balance` from config. Position size = `balance * risk_pct / price`. Cost deducted on buy (including entry fee), net proceeds returned on sell (after exit fee). Balance check is branchless — ANDed into the fill mask alongside spacing and capacity checks.
+
+### Fees
+Modeled at 0.1% per trade (configurable). Entry fee deducted from balance on buy, exit fee deducted from proceeds on sell. Realized P&L includes both fees in cost basis. Unrealized P&L in TUI shows both gross and net (after estimated round-trip fees). Regression feeds on net P&L so adaptive filters optimize on real profitability.
+
+### TP fee floor
+Minimum take profit = `entry * fee_rate * 3` (round-trip fees + safety margin). Prevents volatility-based TP from being set so tight that a "profitable" exit loses money after fees.
+
+### Risk management
+Six branchless checks ANDed into the fill mask (all computed, no branches):
+1. Not a duplicate (existing position at same price)
+2. Portfolio not full (16 slots)
+3. Entry spacing (min distance from existing positions)
+4. Can afford (balance >= cost + entry fee)
+5. Circuit breaker not tripped (total P&L > -max_drawdown_pct)
+6. Under exposure limit (deployed capital < max_exposure_pct)
+
+### Win/loss tracking
+Counts TP exits (wins) vs SL exits (losses). Displayed in TUI with win rate percentage. Useful for evaluating whether the strategy's entries are well-timed.
 
 ---
 

@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.4.2] - 2026-03-20 (branch: feature/risk-and-sizing)
+
+### Fixed
+- **Regression optimizes on net P&L** - was using gross unrealized P&L (before fees), causing
+  adaptive filters to tune based on illusory profits. Now subtracts estimated exit fees from
+  open positions before feeding to regression.
+- **Config hot-reload** - pressing `r` now reloads all fields (fee_rate, risk_pct, volume_multiplier,
+  entry_offset_pct, spacing_multiplier, all clamps, risk limits). Previously only reloaded
+  the original 6 fields. Also resets live adaptive filters to new config values.
+- **TUI "TRADES" label** - was showing total ticks, now shows actual buy count and exit count.
+
+### Added
+- **Win/loss tracking** - counts TP exits vs SL exits. TUI shows wins, losses, and win rate %.
+- **Buy counter** - tracks total entries for the session.
+- **Position net P&L** - each position shows both gross and net P&L (after round-trip fees).
+- **Position dollar value** - shows `val:$200.04` per position.
+- **Disconnect resilience** - snapshot saved before every reconnect attempt.
+
 ## [0.4.1] - 2026-03-20 (branch: feature/risk-and-sizing)
 
 ### Fixed
