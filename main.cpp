@@ -134,6 +134,9 @@ int main(int argc, char *argv[]) {
                 DataStream<FP> tick;
                 int ok = BinanceStream_ReadTick(&bs, &tick);
                 if (!ok) {
+                    // save snapshot before reconnect - positions survive
+                    PortfolioController_SaveSnapshot(&ctrl, snapshot_path);
+                    fprintf(stderr, "[ENGINE] connection lost - reconnecting (positions preserved)\n");
                     BinanceStream_Reconnect(&bs, &bcfg);
                     break;
                 }
@@ -165,6 +168,11 @@ int main(int argc, char *argv[]) {
         }
 
         if (BinanceStream_ShouldReconnect(&bs)) {
+            // 24-hour session boundary - planned reconnect
+            // save snapshot before force-close in case something goes wrong
+            PortfolioController_SaveSnapshot(&ctrl, snapshot_path);
+            fprintf(stderr, "[ENGINE] 24h session boundary - closing positions and reconnecting\n");
+
             // airtight reconnect procedure:
             // 1. buy gate already disabled (wind-down)
             // 2. force-close all remaining positions
