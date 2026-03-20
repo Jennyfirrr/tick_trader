@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.3.0] - 2026-03-20
+
+### Added
+- **Idle squeeze** - when portfolio is empty and price is above buy gate, the entry offset
+  shrinks 5% toward minimum each slow-path tick. Solves the trailing-rising-price problem
+  where the engine sits idle missing an uptrend. Once a position is entered, squeeze stops
+  and P&L-based adaptation takes over. All branchless (word-level mask-select).
+
+- **Paper trading balance** - configurable starting balance (default $10k in engine.cfg).
+  Deducts `price * qty` on buy, adds `exit_price * qty` on sell. Balance check is branchless
+  (one FPN_GreaterThanOrEqual ANDed into the existing fill mask). Persists in snapshot.
+
+- **Portfolio persistence** - binary snapshot (`portfolio.snapshot`) saves/loads portfolio state,
+  realized P&L, adaptive filter values, and balance. Written every slow-path cycle (~1/sec).
+  On restart, engine resumes with all positions and state intact. Magic number + version check
+  prevents loading stale or corrupt snapshots.
+
+- **TUI balance display** - shows current balance, starting amount, return %, realized P&L,
+  unrealized P&L, and total P&L with percentage.
+
+### Changed
+- Snapshot format bumped to version 2 (added balance field)
+- Default starting_balance in code is 1M (so tests aren't balance-limited), engine.cfg sets 10k
+
 ## [0.2.0] - 2026-03-20
 
 ### Added

@@ -29,6 +29,7 @@ template <unsigned F> struct ControllerConfig {
     FPN<F> max_shift;       // max drift from initial buy conditions
     FPN<F> take_profit_pct; // per-position take profit (e.g. 0.03 = 3%)
     FPN<F> stop_loss_pct;   // per-position stop loss (e.g. 0.015 = 1.5%)
+    FPN<F> starting_balance; // paper trading starting balance (e.g. 10000.0)
     // market microstructure filters (initial values - adapted at runtime by P&L regression)
     FPN<F> volume_multiplier;  // buy only when tick volume >= this * rolling_avg (e.g. 3.0)
     FPN<F> entry_offset_pct;   // buy gate offset below rolling mean (e.g. 0.0015 = 0.15%)
@@ -50,6 +51,7 @@ template <unsigned F> inline ControllerConfig<F> ControllerConfig_Default() {
     cfg.max_shift       = FPN_FromDouble<F>(5.00);
     cfg.take_profit_pct    = FPN_FromDouble<F>(0.03);
     cfg.stop_loss_pct      = FPN_FromDouble<F>(0.015);
+    cfg.starting_balance   = FPN_FromDouble<F>(1000000.0); // 1M default so tests arent balance-limited
     cfg.volume_multiplier  = FPN_FromDouble<F>(3.0);
     cfg.entry_offset_pct   = FPN_FromDouble<F>(0.0015);
     cfg.spacing_multiplier = FPN_FromDouble<F>(2.0);
@@ -101,6 +103,7 @@ template <unsigned F> inline ControllerConfig<F> ControllerConfig_Load(const cha
         else if (strcmp(key, "max_shift") == 0)        cfg.max_shift       = FPN_FromDouble<F>(atof(val));
         else if (strcmp(key, "take_profit_pct") == 0)  cfg.take_profit_pct = FPN_FromDouble<F>(atof(val) / 100.0);
         else if (strcmp(key, "stop_loss_pct") == 0)      cfg.stop_loss_pct      = FPN_FromDouble<F>(atof(val) / 100.0);
+        else if (strcmp(key, "starting_balance") == 0)  cfg.starting_balance   = FPN_FromDouble<F>(atof(val));
         else if (strcmp(key, "volume_multiplier") == 0)  cfg.volume_multiplier  = FPN_FromDouble<F>(atof(val));
         else if (strcmp(key, "entry_offset_pct") == 0)   cfg.entry_offset_pct   = FPN_FromDouble<F>(atof(val) / 100.0);
         else if (strcmp(key, "spacing_multiplier") == 0)  cfg.spacing_multiplier = FPN_FromDouble<F>(atof(val));
@@ -124,6 +127,7 @@ template <unsigned F> struct PortfolioController {
     Portfolio<F> portfolio;
     FPN<F> portfolio_delta;       // unrealized P&L (current open positions)
     FPN<F> realized_pnl;          // cumulative realized P&L (closed positions)
+    FPN<F> balance;               // paper trading balance (deducted on buy, added on sell)
 
     RegressionFeederX<F> feeder;
     RORRegressor<F> ror;
@@ -156,6 +160,7 @@ template <unsigned F> inline void PortfolioController_Init(PortfolioController<F
     Portfolio_Init(&ctrl->portfolio);
     ctrl->portfolio_delta = FPN_Zero<F>();
     ctrl->realized_pnl    = FPN_Zero<F>();
+    ctrl->balance          = config.starting_balance;
 
     ctrl->feeder  = RegressionFeederX_Init<F>();
     ctrl->ror     = RORRegressor_Init<F>();
@@ -325,8 +330,12 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl, OrderPool<F> 
             }
         }
 
-        // new position path: only if not found AND portfolio has room AND not too close
-        int is_new     = !found & !Portfolio_IsFull(&ctrl->portfolio) & !too_close;
+        // balance check: can we afford this position? (branchless)
+        FPN<F> cost = FPN_Mul(fill_price, fill_qty);
+        int can_afford = FPN_GreaterThanOrEqual(ctrl->balance, cost);
+
+        // new position path: only if not found AND portfolio has room AND not too close AND can afford
+        int is_new     = !found & !Portfolio_IsFull(&ctrl->portfolio) & !too_close & can_afford;
         if (is_new) {
             // volatility-based TP/SL: scale exit distances by rolling price stddev
             // in calm markets, exits tighten (take smaller profits faster)
@@ -364,6 +373,9 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl, OrderPool<F> 
             sl_price.sign = (vol_sl.sign & has_stats) | (sl_pct_dn.sign & !has_stats);
 
             Portfolio_AddPositionWithExits(&ctrl->portfolio, fill_qty, fill_price, tp_price, sl_price);
+
+            // deduct from paper trading balance
+            ctrl->balance = FPN_SubSat(ctrl->balance, cost);
 
             // log buy
             double price_d = FPN_ToDouble(fill_price);
@@ -404,6 +416,10 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl, OrderPool<F> 
         FPN<F> pos_pnl = FPN_Mul(FPN_Sub(rec->exit_price, pos->entry_price), pos->quantity);
         ctrl->realized_pnl = FPN_AddSat(ctrl->realized_pnl, pos_pnl);
 
+        // return proceeds to paper trading balance: exit_price * quantity
+        FPN<F> proceeds = FPN_Mul(rec->exit_price, pos->quantity);
+        ctrl->balance = FPN_AddSat(ctrl->balance, proceeds);
+
         const char *reason = (rec->reason == 0) ? "TP" : "SL";
         TradeLog_Sell(trade_log, rec->tick, exit_d, qty_d, entry_d, delta_pct, reason);
     }
@@ -411,6 +427,55 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl, OrderPool<F> 
 
     // update rolling market stats - tracks price/volume trends for dynamic gate adjustment
     RollingStats_Push(&ctrl->rolling, current_price, current_volume);
+
+    // IDLE SQUEEZE: when portfolio is empty, use price slope to loosen/tighten filters
+    // solves the chicken-and-egg problem: no positions -> no P&L -> no adaptation
+    // if price is trending up and we have nothing, we're missing the move -> squeeze offset down
+    // if price is trending down and we have nothing, we're correctly staying out -> no change
+    //
+    // branchless: empty_mask is all 1s when portfolio empty, all 0s when holding
+    // positive price slope -> squeeze offset toward offset_min
+    // the squeeze rate is proportional to the slope magnitude
+    {
+        constexpr unsigned N = FPN<F>::N;
+        int is_empty     = (ctrl->portfolio.active_bitmap == 0);
+        int slope_positive = !ctrl->rolling.volume_slope.sign;  // reuse sign bit of price movement
+        // actually check price slope via (price_avg > buy_conds_initial.price) as a proxy
+        // better: directly check if current price > buy gate price (we're trailing behind)
+        int trailing = FPN_GreaterThan(current_price, ctrl->buy_conds.price);
+
+        // squeeze fires when: portfolio empty AND current price above buy gate
+        int should_squeeze = is_empty & trailing;
+        uint64_t sq_mask = -(uint64_t)should_squeeze;
+
+        // squeeze step: move offset toward offset_min by a fixed step per slow-path tick
+        // step = (current_offset - offset_min) * 0.05 -> 5% closer to minimum each cycle
+        FPN<F> offset_gap  = FPN_Sub(ctrl->live_offset_pct, ctrl->config.offset_min);
+        FPN<F> squeeze_step = FPN_Mul(offset_gap, FPN_FromDouble<F>(0.05));
+
+        // mask squeeze to zero if we shouldnt squeeze
+        FPN<F> masked_squeeze;
+        for (unsigned i = 0; i < N; i++) {
+            masked_squeeze.w[i] = squeeze_step.w[i] & sq_mask;
+        }
+        masked_squeeze.sign = squeeze_step.sign & should_squeeze;
+
+        // apply: decrease offset (more aggressive)
+        ctrl->live_offset_pct = FPN_SubSat(ctrl->live_offset_pct, masked_squeeze);
+        ctrl->live_offset_pct = FPN_Max(ctrl->live_offset_pct, ctrl->config.offset_min);
+
+        // also squeeze volume multiplier toward vol_mult_min
+        FPN<F> vmult_gap = FPN_Sub(ctrl->live_vol_mult, ctrl->config.vol_mult_min);
+        FPN<F> vmult_step = FPN_Mul(vmult_gap, FPN_FromDouble<F>(0.05));
+        FPN<F> masked_vmult;
+        for (unsigned i = 0; i < N; i++) {
+            masked_vmult.w[i] = vmult_step.w[i] & sq_mask;
+        }
+        masked_vmult.sign = vmult_step.sign & should_squeeze;
+
+        ctrl->live_vol_mult = FPN_SubSat(ctrl->live_vol_mult, masked_vmult);
+        ctrl->live_vol_mult = FPN_Max(ctrl->live_vol_mult, ctrl->config.vol_mult_min);
+    }
 
     // update buy gate from rolling stats using LIVE adaptive filter values
     ctrl->buy_conds.price  = RollingStats_BuyPrice(&ctrl->rolling, ctrl->live_offset_pct);
@@ -479,17 +544,18 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl, OrderPool<F> 
 template <unsigned F>
 inline void PortfolioController_SaveSnapshot(const PortfolioController<F> *ctrl, const char *filepath) {
     Portfolio_Save(&ctrl->portfolio, ctrl->realized_pnl,
-                   ctrl->live_offset_pct, ctrl->live_vol_mult, filepath);
+                   ctrl->live_offset_pct, ctrl->live_vol_mult, ctrl->balance, filepath);
 }
 
 template <unsigned F>
 inline int PortfolioController_LoadSnapshot(PortfolioController<F> *ctrl, const char *filepath) {
-    FPN<F> realized, offset, vmult;
-    int ok = Portfolio_Load(&ctrl->portfolio, &realized, &offset, &vmult, filepath);
+    FPN<F> realized, offset, vmult, bal;
+    int ok = Portfolio_Load(&ctrl->portfolio, &realized, &offset, &vmult, &bal, filepath);
     if (ok) {
         ctrl->realized_pnl    = realized;
         ctrl->live_offset_pct = offset;
         ctrl->live_vol_mult   = vmult;
+        ctrl->balance         = bal;
         // skip warmup if we have positions - we're resuming a session
         if (ctrl->portfolio.active_bitmap != 0) {
             ctrl->state = CONTROLLER_ACTIVE;

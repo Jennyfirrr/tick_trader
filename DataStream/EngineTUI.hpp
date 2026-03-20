@@ -210,12 +210,16 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
     }
 
     double realized = FPN_ToDouble(ctrl->realized_pnl);
+    double balance  = FPN_ToDouble(ctrl->balance);
+    double starting = FPN_ToDouble(ctrl->config.starting_balance);
     double total_pnl = realized + pnl;
+    double return_pct = (starting != 0.0) ? (total_pnl / starting) * 100.0 : 0.0;
 
     printf("----------------------------------------------------------------\n");
+    printf("  BALANCE:        $%-12.4f  (started: $%.0f)\n", balance, starting);
     printf("  REALIZED P&L:   $%-+12.4f  (closed positions)\n", realized);
     printf("  UNREALIZED P&L: $%-+12.4f  (open positions)\n", pnl);
-    printf("  TOTAL P&L:      $%-+12.4f\n", total_pnl);
+    printf("  TOTAL P&L:      $%-+12.4f  (%+.2f%%)\n", total_pnl, return_pct);
     printf("  MODE: PAPER TRADING (simulated fills)\n");
     printf("----------------------------------------------------------------\n");
     printf("  TICKS: %-8lu  |  TRADES: %-8lu\n",

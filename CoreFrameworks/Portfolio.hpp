@@ -232,13 +232,15 @@ inline void PositionExitGate(Portfolio<F> *portfolio, FPN<F> current_price, Exit
 //   [sizeof(FPN<F>)] realized_pnl
 //   [sizeof(FPN<F>)] live_offset_pct
 //   [sizeof(FPN<F>)] live_vol_mult
+//   [sizeof(FPN<F>)] balance
 //======================================================================================================
 #define PORTFOLIO_SNAPSHOT_MAGIC 0x4B434954  // "TICK" in little-endian
-#define PORTFOLIO_SNAPSHOT_VERSION 1
+#define PORTFOLIO_SNAPSHOT_VERSION 2
 
 template <unsigned F>
 static inline int Portfolio_Save(const Portfolio<F> *portfolio, FPN<F> realized_pnl,
-                                  FPN<F> live_offset_pct, FPN<F> live_vol_mult, const char *filepath) {
+                                  FPN<F> live_offset_pct, FPN<F> live_vol_mult,
+                                  FPN<F> balance, const char *filepath) {
     FILE *f = fopen(filepath, "wb");
     if (!f) {
         fprintf(stderr, "[SNAPSHOT] failed to open %s for writing\n", filepath);
@@ -257,6 +259,7 @@ static inline int Portfolio_Save(const Portfolio<F> *portfolio, FPN<F> realized_
     fwrite(&realized_pnl, sizeof(FPN<F>), 1, f);
     fwrite(&live_offset_pct, sizeof(FPN<F>), 1, f);
     fwrite(&live_vol_mult, sizeof(FPN<F>), 1, f);
+    fwrite(&balance, sizeof(FPN<F>), 1, f);
 
     fflush(f);
     fclose(f);
@@ -265,7 +268,8 @@ static inline int Portfolio_Save(const Portfolio<F> *portfolio, FPN<F> realized_
 
 template <unsigned F>
 static inline int Portfolio_Load(Portfolio<F> *portfolio, FPN<F> *realized_pnl,
-                                  FPN<F> *live_offset_pct, FPN<F> *live_vol_mult, const char *filepath) {
+                                  FPN<F> *live_offset_pct, FPN<F> *live_vol_mult,
+                                  FPN<F> *balance, const char *filepath) {
     FILE *f = fopen(filepath, "rb");
     if (!f) {
         // no snapshot file is normal on first run
@@ -295,6 +299,7 @@ static inline int Portfolio_Load(Portfolio<F> *portfolio, FPN<F> *realized_pnl,
     if (fread(realized_pnl, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
     if (fread(live_offset_pct, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
     if (fread(live_vol_mult, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
+    if (fread(balance, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
 
     fclose(f);
 
