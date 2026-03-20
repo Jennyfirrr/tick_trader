@@ -209,8 +209,11 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
         total_value += value;
         total_qty   += qty;
 
-        printf("  #%-2d  $%-8.2f  qty:%.6f  val:$%.2f  TP:%+.0f  SL:-%0.f  %+.2f%% (net:%+.2f%%)\n",
-               idx, entry, qty, value, to_tp, to_sl, pos_pnl, net_pnl);
+        double price_diff = price - entry;
+        printf("  #%-2d  entry:$%.2f  now:$%.2f (%+.2f)  qty:%.6f  val:$%.2f\n",
+               idx, entry, price, price_diff, qty, value);
+        printf("       TP:%+.0f  SL:-%0.f  gross:%+.2f%%  net:%+.2f%%\n",
+               to_tp, to_sl, pos_pnl, net_pnl);
         displayed++;
         active &= active - 1;
     }
