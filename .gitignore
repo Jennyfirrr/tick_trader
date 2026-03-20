@@ -1,0 +1,20 @@
+# compiled binaries
+*.o
+*.out
+tests/controller_test
+
+# config with secrets
+secrets.cfg
+
+# trade logs
+*_order_history.csv
+
+# claude code
+.claude/
+CLAUDE.md
+
+# plan files
+plans/
+
+# OS
+.DS_Store

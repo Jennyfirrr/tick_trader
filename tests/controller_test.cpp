@@ -1,0 +1,770 @@
+//======================================================================================================
+// [CONTROLLER TEST SUITE]
+//======================================================================================================
+// tests for Portfolio (bitmap), PositionExitGate, PortfolioController, TradeLog, config parser
+// compile: g++ -std=c++17 -O2 -I.. -o controller_test controller_test.cpp
+//======================================================================================================
+#include <stdio.h>
+#include <string.h>
+#include <math.h>
+#include "../DataStream/MockGenerator.hpp"
+#include "../CoreFrameworks/PortfolioController.hpp"
+
+using namespace std;
+
+//======================================================================================================
+// [HELPERS]
+//======================================================================================================
+static int tests_passed = 0;
+static int tests_failed = 0;
+
+static void check(const char *name, int condition) {
+    if (condition) {
+        printf("  [PASS] %s\n", name);
+        tests_passed++;
+    } else {
+        printf("  [FAIL] %s\n", name);
+        tests_failed++;
+    }
+}
+
+constexpr unsigned FP = 64;
+
+//======================================================================================================
+// [TEST 1: CONFIG PARSER]
+//======================================================================================================
+static void test_config_parser() {
+    printf("\n--- Config Parser ---\n");
+
+    // write a test config file
+    FILE *f = fopen("/tmp/test_controller.cfg", "w");
+    fprintf(f, "# test config\n");
+    fprintf(f, "poll_interval=50\n");
+    fprintf(f, "warmup_ticks=32\n");
+    fprintf(f, "r2_threshold=0.40\n");
+    fprintf(f, "slope_scale_buy=0.75\n");
+    fprintf(f, "max_shift=3.00\n");
+    fprintf(f, "take_profit_pct=5.00\n");
+    fprintf(f, "stop_loss_pct=2.00\n");
+    fclose(f);
+
+    ControllerConfig<FP> cfg = ControllerConfig_Load<FP>("/tmp/test_controller.cfg");
+    check("poll_interval parsed", cfg.poll_interval == 50);
+    check("warmup_ticks parsed", cfg.warmup_ticks == 32);
+
+    double r2 = FPN_ToDouble(cfg.r2_threshold);
+    check("r2_threshold parsed", fabs(r2 - 0.40) < 0.01);
+
+    double slope = FPN_ToDouble(cfg.slope_scale_buy);
+    check("slope_scale_buy parsed", fabs(slope - 0.75) < 0.01);
+
+    double ms = FPN_ToDouble(cfg.max_shift);
+    check("max_shift parsed", fabs(ms - 3.0) < 0.01);
+
+    // take_profit_pct is divided by 100 in parser
+    double tp = FPN_ToDouble(cfg.take_profit_pct);
+    check("take_profit_pct parsed (5% -> 0.05)", fabs(tp - 0.05) < 0.001);
+
+    double sl = FPN_ToDouble(cfg.stop_loss_pct);
+    check("stop_loss_pct parsed (2% -> 0.02)", fabs(sl - 0.02) < 0.001);
+
+    // test defaults when file missing
+    ControllerConfig<FP> def = ControllerConfig_Load<FP>("/tmp/nonexistent_config.cfg");
+    check("missing file returns defaults", def.poll_interval == 100);
+
+    remove("/tmp/test_controller.cfg");
+}
+
+//======================================================================================================
+// [TEST 2: PORTFOLIO BITMAP BASICS]
+//======================================================================================================
+static void test_portfolio_bitmap() {
+    printf("\n--- Portfolio Bitmap Basics ---\n");
+
+    Portfolio<FP> port;
+    Portfolio_Init(&port);
+    check("init bitmap is 0", port.active_bitmap == 0);
+    check("count is 0", Portfolio_CountActive(&port) == 0);
+
+    // add positions
+    Portfolio_AddPosition(&port, FPN_FromDouble<FP>(10.0), FPN_FromDouble<FP>(100.0));
+    check("add sets bit", port.active_bitmap == 1);
+    check("count is 1", Portfolio_CountActive(&port) == 1);
+
+    Portfolio_AddPosition(&port, FPN_FromDouble<FP>(5.0), FPN_FromDouble<FP>(200.0));
+    check("second add sets bit 1", port.active_bitmap == 3);
+    check("count is 2", Portfolio_CountActive(&port) == 2);
+
+    // remove position 0
+    Portfolio_RemovePosition(&port, 0);
+    check("remove clears bit 0", port.active_bitmap == 2);
+    check("count is 1 after remove", Portfolio_CountActive(&port) == 1);
+    // data still at index 1
+    double q1 = FPN_ToDouble(port.positions[1].quantity);
+    check("position 1 data intact", fabs(q1 - 5.0) < 0.01);
+
+    // slot reuse: add new position, should get slot 0
+    Portfolio_AddPosition(&port, FPN_FromDouble<FP>(7.0), FPN_FromDouble<FP>(300.0));
+    check("slot 0 reused", port.active_bitmap == 3);
+    double q0 = FPN_ToDouble(port.positions[0].quantity);
+    check("new position in slot 0", fabs(q0 - 7.0) < 0.01);
+
+    // test full
+    check("not full at 2", !Portfolio_IsFull(&port));
+    Portfolio_ClearPositions(&port);
+    for (int i = 0; i < 16; i++) {
+        Portfolio_AddPosition(&port, FPN_FromDouble<FP>(1.0), FPN_FromDouble<FP>((double)i));
+    }
+    check("full at 16", Portfolio_IsFull(&port));
+    check("count is 16", Portfolio_CountActive(&port) == 16);
+
+    // add when full should be no-op
+    Portfolio_AddPosition(&port, FPN_FromDouble<FP>(1.0), FPN_FromDouble<FP>(999.0));
+    check("count still 16", Portfolio_CountActive(&port) == 16);
+}
+
+//======================================================================================================
+// [TEST 3: PORTFOLIO P&L]
+//======================================================================================================
+static void test_portfolio_pnl() {
+    printf("\n--- Portfolio P&L ---\n");
+
+    Portfolio<FP> port;
+    Portfolio_Init(&port);
+
+    // add positions: 10 shares at $100, -5 shares at $50
+    Portfolio_AddPosition(&port, FPN_FromDouble<FP>(10.0), FPN_FromDouble<FP>(100.0));
+    Portfolio_AddPosition(&port, FPN_FromDouble<FP>(-5.0), FPN_FromDouble<FP>(50.0));
+
+    // at $110: long P&L = (110-100)*10 = 100, short P&L = (110-50)*(-5) = -300, total = -200
+    FPN<FP> price = FPN_FromDouble<FP>(110.0);
+    double pnl = FPN_ToDouble(Portfolio_ComputePnL(&port, price));
+    check("mixed P&L correct", fabs(pnl - (-200.0)) < 1.0);
+
+    // empty portfolio P&L is zero
+    Portfolio_ClearPositions(&port);
+    pnl = FPN_ToDouble(Portfolio_ComputePnL(&port, price));
+    check("empty P&L is zero", fabs(pnl) < 0.01);
+}
+
+//======================================================================================================
+// [TEST 4: POSITION CONSOLIDATION]
+//======================================================================================================
+static void test_consolidation() {
+    printf("\n--- Position Consolidation ---\n");
+
+    Portfolio<FP> port;
+    Portfolio_Init(&port);
+
+    FPN<FP> price = FPN_FromDouble<FP>(98.50);
+
+    Portfolio_AddPosition(&port, FPN_FromDouble<FP>(100.0), price);
+    check("first add", Portfolio_CountActive(&port) == 1);
+
+    // find by price
+    int idx = Portfolio_FindByPrice(&port, price);
+    check("find by price works", idx == 0);
+
+    // consolidate
+    Portfolio_AddQuantity(&port, idx, FPN_FromDouble<FP>(200.0));
+    double qty = FPN_ToDouble(port.positions[0].quantity);
+    check("consolidated quantity", fabs(qty - 300.0) < 0.01);
+    check("still one position", Portfolio_CountActive(&port) == 1);
+
+    // different price is a separate position
+    FPN<FP> price2 = FPN_FromDouble<FP>(99.00);
+    Portfolio_AddPosition(&port, FPN_FromDouble<FP>(50.0), price2);
+    check("different price = new position", Portfolio_CountActive(&port) == 2);
+
+    // FPN_Equal determinism: same double -> same bits
+    FPN<FP> a = FPN_FromDouble<FP>(98.50);
+    FPN<FP> b = FPN_FromDouble<FP>(98.50);
+    check("FPN_Equal deterministic", FPN_Equal(a, b));
+}
+
+//======================================================================================================
+// [TEST 5: POSITION EXIT GATE (HOT PATH)]
+//======================================================================================================
+static void test_exit_gate() {
+    printf("\n--- Position Exit Gate ---\n");
+
+    Portfolio<FP> port;
+    Portfolio_Init(&port);
+    ExitBuffer<FP> buf;
+    ExitBuffer_Init(&buf);
+
+    // add position: entry $100, TP $103, SL $98.50
+    FPN<FP> entry = FPN_FromDouble<FP>(100.0);
+    FPN<FP> tp    = FPN_FromDouble<FP>(103.0);
+    FPN<FP> sl    = FPN_FromDouble<FP>(98.50);
+    Portfolio_AddPositionWithExits(&port, FPN_FromDouble<FP>(10.0), entry, tp, sl);
+
+    // price between TP and SL - no exit
+    PositionExitGate(&port, FPN_FromDouble<FP>(101.0), &buf, 100);
+    check("no exit between TP/SL", buf.count == 0);
+    check("position still active", port.active_bitmap == 1);
+
+    // price hits take profit
+    PositionExitGate(&port, FPN_FromDouble<FP>(103.50), &buf, 200);
+    check("TP exit triggered", buf.count == 1);
+    check("exit reason is TP", buf.records[0].reason == 0);
+    check("exit index correct", buf.records[0].position_index == 0);
+    check("exit tick correct", buf.records[0].tick == 200);
+    check("bit cleared", port.active_bitmap == 0);
+
+    // call again - should NOT re-trigger (bit is cleared)
+    PositionExitGate(&port, FPN_FromDouble<FP>(103.50), &buf, 201);
+    check("no re-trigger after exit", buf.count == 1); // still 1, not 2
+
+    // test stop loss
+    ExitBuffer_Clear(&buf);
+    Portfolio_AddPositionWithExits(&port, FPN_FromDouble<FP>(5.0),
+                                   FPN_FromDouble<FP>(100.0),
+                                   FPN_FromDouble<FP>(103.0),
+                                   FPN_FromDouble<FP>(98.50));
+    PositionExitGate(&port, FPN_FromDouble<FP>(97.0), &buf, 300);
+    check("SL exit triggered", buf.count == 1);
+    check("exit reason is SL", buf.records[0].reason == 1);
+
+    // test multiple positions, partial exit
+    ExitBuffer_Clear(&buf);
+    Portfolio_ClearPositions(&port);
+    // pos 0: TP $105
+    Portfolio_AddPositionWithExits(&port, FPN_FromDouble<FP>(10.0),
+                                   FPN_FromDouble<FP>(100.0),
+                                   FPN_FromDouble<FP>(105.0),
+                                   FPN_FromDouble<FP>(95.0));
+    // pos 1: TP $102
+    Portfolio_AddPositionWithExits(&port, FPN_FromDouble<FP>(5.0),
+                                   FPN_FromDouble<FP>(99.0),
+                                   FPN_FromDouble<FP>(102.0),
+                                   FPN_FromDouble<FP>(96.0));
+
+    // price $103: pos 1 exits (TP $102), pos 0 stays (TP $105)
+    PositionExitGate(&port, FPN_FromDouble<FP>(103.0), &buf, 400);
+    check("partial exit: 1 of 2", buf.count == 1);
+    check("correct position exited", buf.records[0].position_index == 1);
+    check("other position still active", (port.active_bitmap & 1) == 1);
+}
+
+//======================================================================================================
+// [TEST 6: EXIT BUFFER DRAIN]
+//======================================================================================================
+static void test_exit_buffer_drain() {
+    printf("\n--- Exit Buffer Drain ---\n");
+
+    Portfolio<FP> port;
+    Portfolio_Init(&port);
+
+    // add position, then manually populate exit buffer
+    Portfolio_AddPositionWithExits(&port, FPN_FromDouble<FP>(10.0),
+                                   FPN_FromDouble<FP>(100.0),
+                                   FPN_FromDouble<FP>(103.0),
+                                   FPN_FromDouble<FP>(98.50));
+    // clear bit (simulate hot-path exit)
+    Portfolio_RemovePosition(&port, 0);
+
+    // data still readable at index 0
+    double ep = FPN_ToDouble(port.positions[0].entry_price);
+    check("data readable after bit clear", fabs(ep - 100.0) < 0.01);
+}
+
+//======================================================================================================
+// [TEST 7: FILL CONSUMPTION TIMING]
+//======================================================================================================
+static void test_fill_timing() {
+    printf("\n--- Fill Consumption Timing ---\n");
+
+    ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+    cfg.warmup_ticks = 0; // skip warmup for this test
+    cfg.poll_interval = 1000; // slow path won't run during test
+
+    PortfolioController<FP> ctrl;
+    PortfolioController_Init(&ctrl, cfg);
+    ctrl.state = CONTROLLER_ACTIVE; // force active
+    ctrl.buy_conds.price  = FPN_FromDouble<FP>(100.0);
+    ctrl.buy_conds.volume = FPN_FromDouble<FP>(400.0);
+    ctrl.buy_conds_initial = ctrl.buy_conds;
+
+    OrderPool<FP> pool;
+    OrderPool_init(&pool, 64);
+
+    TradeLog log;
+    log.file = 0; // no file for this test
+    log.trade_count = 0;
+
+    // simulate BuyGate filling slot 0
+    pool.slots[0].price    = FPN_FromDouble<FP>(98.0);
+    pool.slots[0].quantity = FPN_FromDouble<FP>(500.0);
+    pool.bitmap = 1;
+
+    // call controller tick - should consume fill immediately
+    PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(98.0), FPN_FromDouble<FP>(500.0), &log);
+
+    check("position created same tick", Portfolio_CountActive(&ctrl.portfolio) == 1);
+    check("pool slot cleared", pool.bitmap == 0);
+
+    // verify TP/SL computed correctly
+    double tp = FPN_ToDouble(ctrl.portfolio.positions[0].take_profit_price);
+    double sl = FPN_ToDouble(ctrl.portfolio.positions[0].stop_loss_price);
+    double expected_tp = 98.0 * (1.0 + 0.03);  // 100.94
+    double expected_sl = 98.0 * (1.0 - 0.015); // 96.53
+    check("TP price computed", fabs(tp - expected_tp) < 0.1);
+    check("SL price computed", fabs(sl - expected_sl) < 0.1);
+
+    free(pool.slots);
+}
+
+//======================================================================================================
+// [TEST 8: POOL BACKPRESSURE]
+//======================================================================================================
+static void test_backpressure() {
+    printf("\n--- Pool Backpressure ---\n");
+
+    ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+    cfg.warmup_ticks = 0;
+    cfg.poll_interval = 1000;
+
+    PortfolioController<FP> ctrl;
+    PortfolioController_Init(&ctrl, cfg);
+    ctrl.state = CONTROLLER_ACTIVE;
+    ctrl.buy_conds.price  = FPN_FromDouble<FP>(100.0);
+    ctrl.buy_conds.volume = FPN_FromDouble<FP>(400.0);
+    ctrl.buy_conds_initial = ctrl.buy_conds;
+
+    OrderPool<FP> pool;
+    OrderPool_init(&pool, 64);
+
+    TradeLog log;
+    log.file = 0;
+    log.trade_count = 0;
+
+    // fill all 16 portfolio slots
+    for (int i = 0; i < 16; i++) {
+        pool.slots[i].price    = FPN_FromDouble<FP>(90.0 + i); // different prices
+        pool.slots[i].quantity = FPN_FromDouble<FP>(100.0);
+        pool.bitmap |= (1ULL << i);
+    }
+    PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(95.0), FPN_FromDouble<FP>(500.0), &log);
+    check("16 positions filled", Portfolio_CountActive(&ctrl.portfolio) == 16);
+    check("portfolio full", Portfolio_IsFull(&ctrl.portfolio));
+
+    // try to add more - pool slot should stay
+    pool.slots[20].price    = FPN_FromDouble<FP>(110.0);
+    pool.slots[20].quantity = FPN_FromDouble<FP>(100.0);
+    pool.bitmap |= (1ULL << 20);
+
+    PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(95.0), FPN_FromDouble<FP>(500.0), &log);
+    check("still 16 (backpressure)", Portfolio_CountActive(&ctrl.portfolio) == 16);
+    check("pool slot remains", (pool.bitmap & (1ULL << 20)) != 0);
+
+    free(pool.slots);
+}
+
+//======================================================================================================
+// [TEST 9: WARMUP PHASE]
+//======================================================================================================
+static void test_warmup() {
+    printf("\n--- Warmup Phase ---\n");
+
+    ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+    cfg.warmup_ticks = 10;
+
+    PortfolioController<FP> ctrl;
+    PortfolioController_Init(&ctrl, cfg);
+
+    check("starts in warmup", ctrl.state == CONTROLLER_WARMUP);
+    check("buy price is zero (disabled)", FPN_IsZero(ctrl.buy_conds.price));
+
+    OrderPool<FP> pool;
+    OrderPool_init(&pool, 64);
+    TradeLog log;
+    log.file = 0;
+    log.trade_count = 0;
+
+    // feed 10 ticks with known prices around $100
+    for (int i = 0; i < 10; i++) {
+        FPN<FP> price  = FPN_FromDouble<FP>(98.0 + (double)i * 0.5); // 98, 98.5, ..., 102.5
+        FPN<FP> volume = FPN_FromDouble<FP>(500.0 + (double)i * 10.0);
+        PortfolioController_Tick(&ctrl, &pool, price, volume, &log);
+    }
+
+    check("transitioned to active", ctrl.state == CONTROLLER_ACTIVE);
+    check("no positions during warmup", Portfolio_CountActive(&ctrl.portfolio) == 0);
+
+    double mean_p = FPN_ToDouble(ctrl.buy_conds.price);
+    // mean of 98, 98.5, 99, 99.5, 100, 100.5, 101, 101.5, 102, 102.5 = 100.25
+    check("buy price from observed mean", fabs(mean_p - 100.25) < 0.5);
+
+    double mean_v = FPN_ToDouble(ctrl.buy_conds.volume);
+    check("buy volume from observed mean", mean_v > 0);
+
+    // initial anchor should match
+    check("initial anchor set", FPN_Equal(ctrl.buy_conds.price, ctrl.buy_conds_initial.price));
+
+    free(pool.slots);
+}
+
+//======================================================================================================
+// [TEST 10: REGRESSION FEEDBACK]
+//======================================================================================================
+static void test_regression_feedback() {
+    printf("\n--- Regression Feedback ---\n");
+
+    ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+    cfg.warmup_ticks  = 10;
+    cfg.poll_interval = 1;   // slow path every tick for testing
+    cfg.r2_threshold  = FPN_FromDouble<FP>(0.01); // low threshold so adjustments happen
+
+    PortfolioController<FP> ctrl;
+    PortfolioController_Init(&ctrl, cfg);
+
+    OrderPool<FP> pool;
+    OrderPool_init(&pool, 64);
+
+    TradeLog log;
+    log.file = 0;
+    log.trade_count = 0;
+
+    // warmup
+    for (int i = 0; i < 10; i++) {
+        FPN<FP> price = FPN_FromDouble<FP>(100.0);
+        FPN<FP> vol   = FPN_FromDouble<FP>(500.0);
+        PortfolioController_Tick(&ctrl, &pool, price, vol, &log);
+    }
+    check("warmup done", ctrl.state == CONTROLLER_ACTIVE);
+
+    FPN<FP> initial_price = ctrl.buy_conds.price;
+
+    // feed ticks with positions that have clear uptrend P&L
+    // simulate fills manually
+    for (int i = 0; i < 5; i++) {
+        pool.slots[i].price    = FPN_FromDouble<FP>(99.0);
+        pool.slots[i].quantity = FPN_FromDouble<FP>(10.0);
+        pool.bitmap |= (1ULL << i);
+    }
+
+    // run many ticks with rising price (positions become increasingly profitable)
+    for (int i = 0; i < 200; i++) {
+        FPN<FP> price = FPN_FromDouble<FP>(99.0 + (double)i * 0.01);
+        FPN<FP> vol   = FPN_FromDouble<FP>(500.0);
+        PortfolioController_Tick(&ctrl, &pool, price, vol, &log);
+    }
+
+    // buy conditions should have shifted from initial
+    int shifted = !FPN_Equal(ctrl.buy_conds.price, initial_price);
+    check("buy conditions shifted", shifted);
+
+    free(pool.slots);
+}
+
+//======================================================================================================
+// [TEST 11: TRADE LOG]
+//======================================================================================================
+static void test_trade_log() {
+    printf("\n--- Trade Log ---\n");
+
+    remove("TEST_order_history.csv");
+
+    TradeLog log;
+    int ok = TradeLog_Init(&log, "TEST");
+    check("log init", ok);
+
+    TradeLog_Buy(&log, 100, 98.50, 600.0, 101.45, 97.02, 100.0, 400.0);
+    TradeLog_Sell(&log, 200, 101.23, 600.0, 98.50, 2.77, "TP");
+    TradeLog_Close(&log);
+
+    // read back and verify
+    FILE *f = fopen("TEST_order_history.csv", "r");
+    check("file created", f != 0);
+    if (f) {
+        char line[512];
+        fgets(line, sizeof(line), f); // header
+        check("header present", strstr(line, "tick,side") != 0);
+
+        fgets(line, sizeof(line), f); // buy row
+        check("buy row has BUY", strstr(line, "BUY") != 0);
+        check("buy row has tick", strstr(line, "100,") == line);
+
+        fgets(line, sizeof(line), f); // sell row
+        check("sell row has SELL", strstr(line, "SELL") != 0);
+        check("sell row has TP", strstr(line, "TP") != 0);
+
+        fclose(f);
+    }
+    remove("TEST_order_history.csv");
+}
+
+//======================================================================================================
+// [TEST 12: BRANCHLESS VERIFICATION]
+//======================================================================================================
+static void test_branchless() {
+    printf("\n--- Branchless Verification ---\n");
+
+    ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+    cfg.warmup_ticks  = 5;
+    cfg.poll_interval = 1;
+    cfg.r2_threshold  = FPN_FromDouble<FP>(0.80); // HIGH threshold
+
+    PortfolioController<FP> ctrl;
+    PortfolioController_Init(&ctrl, cfg);
+
+    OrderPool<FP> pool;
+    OrderPool_init(&pool, 64);
+    TradeLog log;
+    log.file = 0;
+    log.trade_count = 0;
+
+    // warmup
+    for (int i = 0; i < 5; i++) {
+        PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(100.0), FPN_FromDouble<FP>(500.0), &log);
+    }
+
+    FPN<FP> initial_price = ctrl.buy_conds.price;
+
+    // feed noisy data (should NOT shift because R^2 will be low)
+    MockGeneratorConfig mc;
+    mc.start_price = 100.0; mc.volatility = 5.0; mc.drift = 0.0;
+    mc.base_volume = 500.0; mc.volume_spike = 3.0; mc.min_price = 1.0;
+    mc.symbol = "NOISY"; mc.seed = 42;
+    MockGenerator gen;
+    MockGenerator_Init(&gen, mc);
+    char buf[FIX_MAX_MSG_LEN];
+
+    for (int i = 0; i < 100; i++) {
+        FIX_ParsedMessage msg;
+        MockGenerator_NextTick(&gen, buf, sizeof(buf), &msg);
+        DataStream<FP> stream = FIX_ToDataStream<FP>(&msg);
+        PortfolioController_Tick(&ctrl, &pool, stream.price, stream.volume, &log);
+    }
+
+    check("noisy data: conditions unchanged", FPN_Equal(ctrl.buy_conds.price, initial_price));
+
+    free(pool.slots);
+}
+
+//======================================================================================================
+// [TEST 13: MAX SHIFT CLAMP]
+//======================================================================================================
+static void test_max_shift() {
+    printf("\n--- Max Shift Clamp ---\n");
+
+    ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+    cfg.max_shift     = FPN_FromDouble<FP>(2.0); // tight clamp
+    cfg.r2_threshold  = FPN_FromDouble<FP>(0.01);
+    cfg.warmup_ticks  = 5;
+    cfg.poll_interval = 1;
+
+    PortfolioController<FP> ctrl;
+    PortfolioController_Init(&ctrl, cfg);
+
+    OrderPool<FP> pool;
+    OrderPool_init(&pool, 64);
+    TradeLog log;
+    log.file = 0;
+    log.trade_count = 0;
+
+    // warmup
+    for (int i = 0; i < 5; i++) {
+        PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(100.0), FPN_FromDouble<FP>(500.0), &log);
+    }
+
+    FPN<FP> initial = ctrl.buy_conds_initial.price;
+
+    // add positions and feed extreme trend
+    for (int i = 0; i < 5; i++) {
+        pool.slots[i].price    = FPN_FromDouble<FP>(99.0);
+        pool.slots[i].quantity = FPN_FromDouble<FP>(10.0);
+        pool.bitmap |= (1ULL << i);
+    }
+
+    for (int i = 0; i < 500; i++) {
+        FPN<FP> price = FPN_FromDouble<FP>(100.0 + (double)i * 0.1);
+        PortfolioController_Tick(&ctrl, &pool, price, FPN_FromDouble<FP>(500.0), &log);
+    }
+
+    double shift = fabs(FPN_ToDouble(ctrl.buy_conds.price) - FPN_ToDouble(initial));
+    check("shift clamped to max_shift", shift <= 2.1); // small tolerance
+
+    free(pool.slots);
+}
+
+//======================================================================================================
+// [TEST 14: EMPTY PORTFOLIO REGRESSION]
+//======================================================================================================
+static void test_empty_regression() {
+    printf("\n--- Empty Portfolio Regression ---\n");
+
+    ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+    cfg.warmup_ticks  = 5;
+    cfg.poll_interval = 1;
+    cfg.r2_threshold  = FPN_FromDouble<FP>(0.01);
+
+    PortfolioController<FP> ctrl;
+    PortfolioController_Init(&ctrl, cfg);
+
+    OrderPool<FP> pool;
+    OrderPool_init(&pool, 64);
+    TradeLog log;
+    log.file = 0;
+    log.trade_count = 0;
+
+    // warmup
+    for (int i = 0; i < 5; i++) {
+        PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(100.0), FPN_FromDouble<FP>(500.0), &log);
+    }
+
+    // no positions - P&L should be zero
+    check("portfolio empty", Portfolio_CountActive(&ctrl.portfolio) == 0);
+
+    // run ticks - should push zero, slope should flatten
+    for (int i = 0; i < 50; i++) {
+        PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(100.0), FPN_FromDouble<FP>(500.0), &log);
+    }
+
+    double pnl = FPN_ToDouble(ctrl.portfolio_delta);
+    check("P&L stays zero", fabs(pnl) < 0.01);
+
+    free(pool.slots);
+}
+
+//======================================================================================================
+// [TEST 15: TICK COUNTER]
+//======================================================================================================
+static void test_tick_counter() {
+    printf("\n--- Tick Counter ---\n");
+
+    ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+    cfg.warmup_ticks = 5;
+
+    PortfolioController<FP> ctrl;
+    PortfolioController_Init(&ctrl, cfg);
+
+    OrderPool<FP> pool;
+    OrderPool_init(&pool, 64);
+    TradeLog log;
+    log.file = 0;
+    log.trade_count = 0;
+
+    check("starts at 0", ctrl.total_ticks == 0);
+
+    for (int i = 0; i < 20; i++) {
+        PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(100.0), FPN_FromDouble<FP>(500.0), &log);
+    }
+    check("total_ticks = 20", ctrl.total_ticks == 20);
+
+    free(pool.slots);
+}
+
+//======================================================================================================
+// [TEST 16: FULL PIPELINE INTEGRATION]
+//======================================================================================================
+static void test_full_pipeline() {
+    printf("\n--- Full Pipeline Integration ---\n");
+
+    remove("INTG_order_history.csv");
+
+    ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+    cfg.warmup_ticks  = 20;
+    cfg.poll_interval = 10;
+    cfg.take_profit_pct = FPN_FromDouble<FP>(0.03);
+    cfg.stop_loss_pct   = FPN_FromDouble<FP>(0.015);
+
+    PortfolioController<FP> ctrl;
+    PortfolioController_Init(&ctrl, cfg);
+
+    OrderPool<FP> pool;
+    OrderPool_init(&pool, 64);
+
+    TradeLog log;
+    TradeLog_Init(&log, "INTG");
+
+    MockGeneratorConfig mc;
+    mc.start_price  = 100.0;
+    mc.volatility   = 1.50;   // high volatility so price dips below mean (triggering buys)
+    mc.drift        = 0.0;    // no drift - oscillates around mean
+    mc.base_volume  = 600.0;
+    mc.volume_spike = 2.0;
+    mc.min_price    = 1.0;
+    mc.symbol       = "INTG";
+    mc.seed         = 77777;
+
+    MockGenerator gen;
+    MockGenerator_Init(&gen, mc);
+    char buf[FIX_MAX_MSG_LEN];
+
+    int total_buys  = 0;
+    int total_exits = 0;
+
+    for (int i = 0; i < 500; i++) {
+        FIX_ParsedMessage msg;
+        MockGenerator_NextTick(&gen, buf, sizeof(buf), &msg);
+        DataStream<FP> stream = FIX_ToDataStream<FP>(&msg);
+
+        // hot path
+        uint16_t bitmap_before = ctrl.portfolio.active_bitmap;
+        BuyGate(&ctrl.buy_conds, &stream, &pool);
+        PositionExitGate(&ctrl.portfolio, stream.price, &ctrl.exit_buf, ctrl.total_ticks);
+        uint16_t exits_this_tick = __builtin_popcount(bitmap_before & ~ctrl.portfolio.active_bitmap);
+        total_exits += exits_this_tick;
+
+        // controller
+        int count_before = Portfolio_CountActive(&ctrl.portfolio);
+        PortfolioController_Tick(&ctrl, &pool, stream.price, stream.volume, &log);
+        int fills_this_tick = Portfolio_CountActive(&ctrl.portfolio) - count_before;
+        if (fills_this_tick > 0) total_buys += fills_this_tick;
+    }
+
+    printf("  buys: %d, exits: %d, active: %d\n", total_buys, total_exits, Portfolio_CountActive(&ctrl.portfolio));
+    check("some buys happened", total_buys > 0);
+    check("warmup completed", ctrl.state == CONTROLLER_ACTIVE);
+    check("total ticks = 500", ctrl.total_ticks == 500);
+
+    TradeLog_Close(&log);
+    free(pool.slots);
+
+    // check log file exists and has content
+    FILE *f = fopen("INTG_order_history.csv", "r");
+    check("trade log file created", f != 0);
+    if (f) {
+        int lines = 0;
+        char line[512];
+        while (fgets(line, sizeof(line), f)) lines++;
+        check("trade log has entries", lines > 1); // header + at least one trade
+        printf("  trade log lines: %d\n", lines);
+        fclose(f);
+    }
+    remove("INTG_order_history.csv");
+}
+
+//======================================================================================================
+// [MAIN]
+//======================================================================================================
+int main() {
+    printf("======================================\n");
+    printf("  CONTROLLER TEST SUITE\n");
+    printf("======================================\n");
+
+    test_config_parser();
+    test_portfolio_bitmap();
+    test_portfolio_pnl();
+    test_consolidation();
+    test_exit_gate();
+    test_exit_buffer_drain();
+    test_fill_timing();
+    test_backpressure();
+    test_warmup();
+    test_regression_feedback();
+    test_trade_log();
+    test_branchless();
+    test_max_shift();
+    test_empty_regression();
+    test_tick_counter();
+    test_full_pipeline();
+
+    printf("\n======================================\n");
+    printf("  RESULTS: %d passed, %d failed\n", tests_passed, tests_failed);
+    printf("======================================\n");
+
+    return tests_failed > 0 ? 1 : 0;
+}
