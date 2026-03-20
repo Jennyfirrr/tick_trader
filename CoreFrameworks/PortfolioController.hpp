@@ -30,6 +30,8 @@ template <unsigned F> struct ControllerConfig {
     FPN<F> take_profit_pct; // per-position take profit (e.g. 0.03 = 3%)
     FPN<F> stop_loss_pct;   // per-position stop loss (e.g. 0.015 = 1.5%)
     FPN<F> starting_balance; // paper trading starting balance (e.g. 10000.0)
+    FPN<F> fee_rate;         // per-trade fee rate (e.g. 0.001 = 0.1% for Binance)
+    FPN<F> risk_pct;         // fraction of balance to risk per position (e.g. 0.02 = 2%)
     // market microstructure filters (initial values - adapted at runtime by P&L regression)
     FPN<F> volume_multiplier;  // buy only when tick volume >= this * rolling_avg (e.g. 3.0)
     FPN<F> entry_offset_pct;   // buy gate offset below rolling mean (e.g. 0.0015 = 0.15%)
@@ -40,6 +42,9 @@ template <unsigned F> struct ControllerConfig {
     FPN<F> vol_mult_min;       // min volume_multiplier (most aggressive, e.g. 1.5)
     FPN<F> vol_mult_max;       // max volume_multiplier (most defensive, e.g. 6.0)
     FPN<F> filter_scale;       // how much P&L slope shifts the filters (e.g. 0.50)
+    // risk management
+    FPN<F> max_drawdown_pct;   // halt trading if total P&L drops below this % of starting balance (e.g. 0.10 = 10%)
+    FPN<F> max_exposure_pct;   // max fraction of balance deployed in positions (e.g. 0.50 = 50%)
 };
 //======================================================================================================
 template <unsigned F> inline ControllerConfig<F> ControllerConfig_Default() {
@@ -52,6 +57,8 @@ template <unsigned F> inline ControllerConfig<F> ControllerConfig_Default() {
     cfg.take_profit_pct    = FPN_FromDouble<F>(0.03);
     cfg.stop_loss_pct      = FPN_FromDouble<F>(0.015);
     cfg.starting_balance   = FPN_FromDouble<F>(1000000.0); // 1M default so tests arent balance-limited
+    cfg.fee_rate           = FPN_FromDouble<F>(0.001);    // 0.1% per trade (Binance default)
+    cfg.risk_pct           = FPN_FromDouble<F>(0.02);     // risk 2% of balance per position
     cfg.volume_multiplier  = FPN_FromDouble<F>(3.0);
     cfg.entry_offset_pct   = FPN_FromDouble<F>(0.0015);
     cfg.spacing_multiplier = FPN_FromDouble<F>(2.0);
@@ -60,6 +67,8 @@ template <unsigned F> inline ControllerConfig<F> ControllerConfig_Default() {
     cfg.vol_mult_min       = FPN_FromDouble<F>(1.5);     // 1.5x  - most aggressive
     cfg.vol_mult_max       = FPN_FromDouble<F>(6.0);     // 6.0x  - most defensive
     cfg.filter_scale       = FPN_FromDouble<F>(0.50);    // how fast filters adapt
+    cfg.max_drawdown_pct   = FPN_FromDouble<F>(0.10);    // halt at 10% drawdown
+    cfg.max_exposure_pct   = FPN_FromDouble<F>(0.50);    // max 50% of balance in positions
     return cfg;
 }
 //======================================================================================================
@@ -104,6 +113,8 @@ template <unsigned F> inline ControllerConfig<F> ControllerConfig_Load(const cha
         else if (strcmp(key, "take_profit_pct") == 0)  cfg.take_profit_pct = FPN_FromDouble<F>(atof(val) / 100.0);
         else if (strcmp(key, "stop_loss_pct") == 0)      cfg.stop_loss_pct      = FPN_FromDouble<F>(atof(val) / 100.0);
         else if (strcmp(key, "starting_balance") == 0)  cfg.starting_balance   = FPN_FromDouble<F>(atof(val));
+        else if (strcmp(key, "fee_rate") == 0)          cfg.fee_rate           = FPN_FromDouble<F>(atof(val) / 100.0);
+        else if (strcmp(key, "risk_pct") == 0)          cfg.risk_pct           = FPN_FromDouble<F>(atof(val) / 100.0);
         else if (strcmp(key, "volume_multiplier") == 0)  cfg.volume_multiplier  = FPN_FromDouble<F>(atof(val));
         else if (strcmp(key, "entry_offset_pct") == 0)   cfg.entry_offset_pct   = FPN_FromDouble<F>(atof(val) / 100.0);
         else if (strcmp(key, "spacing_multiplier") == 0)  cfg.spacing_multiplier = FPN_FromDouble<F>(atof(val));
@@ -112,6 +123,8 @@ template <unsigned F> inline ControllerConfig<F> ControllerConfig_Load(const cha
         else if (strcmp(key, "vol_mult_min") == 0)        cfg.vol_mult_min       = FPN_FromDouble<F>(atof(val));
         else if (strcmp(key, "vol_mult_max") == 0)        cfg.vol_mult_max       = FPN_FromDouble<F>(atof(val));
         else if (strcmp(key, "filter_scale") == 0)        cfg.filter_scale       = FPN_FromDouble<F>(atof(val));
+        else if (strcmp(key, "max_drawdown_pct") == 0)   cfg.max_drawdown_pct   = FPN_FromDouble<F>(atof(val) / 100.0);
+        else if (strcmp(key, "max_exposure_pct") == 0)    cfg.max_exposure_pct   = FPN_FromDouble<F>(atof(val) / 100.0);
     }
 
     fclose(f);
@@ -128,6 +141,7 @@ template <unsigned F> struct PortfolioController {
     FPN<F> portfolio_delta;       // unrealized P&L (current open positions)
     FPN<F> realized_pnl;          // cumulative realized P&L (closed positions)
     FPN<F> balance;               // paper trading balance (deducted on buy, added on sell)
+    FPN<F> total_fees;            // cumulative fees paid (tracked for display)
 
     RegressionFeederX<F> feeder;
     RORRegressor<F> ror;
@@ -161,6 +175,7 @@ template <unsigned F> inline void PortfolioController_Init(PortfolioController<F
     ctrl->portfolio_delta = FPN_Zero<F>();
     ctrl->realized_pnl    = FPN_Zero<F>();
     ctrl->balance          = config.starting_balance;
+    ctrl->total_fees       = FPN_Zero<F>();
 
     ctrl->feeder  = RegressionFeederX_Init<F>();
     ctrl->ror     = RORRegressor_Init<F>();
@@ -330,31 +345,46 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl, OrderPool<F> 
             }
         }
 
-        // balance check: can we afford this position? (branchless)
-        FPN<F> cost = FPN_Mul(fill_price, fill_qty);
-        int can_afford = FPN_GreaterThanOrEqual(ctrl->balance, cost);
+        // POSITION SIZING: compute quantity from balance and risk percentage
+        // qty = (balance * risk_pct) / price
+        // this replaces the stream quantity - we decide how much to buy, not the stream
+        FPN<F> risk_amount = FPN_Mul(ctrl->balance, ctrl->config.risk_pct);
+        FPN<F> sized_qty   = FPN_DivNoAssert(risk_amount, fill_price);
 
-        // new position path: only if not found AND portfolio has room AND not too close AND can afford
-        int is_new     = !found & !Portfolio_IsFull(&ctrl->portfolio) & !too_close & can_afford;
+        // balance check: can we afford this position + entry fee? (branchless)
+        FPN<F> cost      = FPN_Mul(fill_price, sized_qty);
+        FPN<F> entry_fee = FPN_Mul(cost, ctrl->config.fee_rate);
+        FPN<F> total_cost = FPN_AddSat(cost, entry_fee);
+        int can_afford = FPN_GreaterThanOrEqual(ctrl->balance, total_cost);
+
+        // CIRCUIT BREAKER: halt if total P&L has dropped below max_drawdown_pct of starting balance
+        // total_pnl = realized + unrealized, drawdown_limit = -(starting_balance * max_drawdown_pct)
+        FPN<F> total_pnl_check = FPN_AddSat(ctrl->realized_pnl, ctrl->portfolio_delta);
+        FPN<F> drawdown_limit  = FPN_Negate(FPN_Mul(ctrl->config.starting_balance, ctrl->config.max_drawdown_pct));
+        int not_blown = FPN_GreaterThan(total_pnl_check, drawdown_limit);
+
+        // EXPOSURE LIMIT: cap total deployed capital at max_exposure_pct of starting balance
+        // deployed = starting_balance - current_balance (how much is in positions)
+        FPN<F> deployed     = FPN_Sub(ctrl->config.starting_balance, ctrl->balance);
+        FPN<F> max_deployed = FPN_Mul(ctrl->config.starting_balance, ctrl->config.max_exposure_pct);
+        int under_limit = FPN_LessThan(FPN_AddSat(deployed, total_cost), max_deployed);
+
+        // new position: room AND spacing AND balance AND not blown AND under exposure limit
+        int is_new = !found & !Portfolio_IsFull(&ctrl->portfolio) & !too_close
+                   & can_afford & not_blown & under_limit;
         if (is_new) {
-            // volatility-based TP/SL: scale exit distances by rolling price stddev
-            // in calm markets, exits tighten (take smaller profits faster)
-            // in volatile markets, exits widen (give positions room to breathe)
-            // falls back to percentage-based if rolling stats not populated yet
+            // volatility-based TP/SL with fee floor
             FPN<F> stddev = ctrl->rolling.price_stddev;
             int has_stats = !FPN_IsZero(stddev);
 
-            // volatility path: TP = entry + stddev * tp_pct_as_multiplier, SL = entry - stddev * sl_pct_as_multiplier
-            // we reuse take_profit_pct and stop_loss_pct as stddev multipliers in this mode
-            // tp_pct=0.03 means TP is 0.03 * stddev above entry (configurable ratio)
-            // but that would be tiny - so we scale: tp = stddev * (tp_pct * 100) = stddev * 3.0
+            // volatility path: TP = entry + stddev * tp_mult, SL = entry - stddev * sl_mult
             FPN<F> hundred = FPN_FromDouble<F>(100.0);
             FPN<F> tp_mult = FPN_Mul(ctrl->config.take_profit_pct, hundred);
             FPN<F> sl_mult = FPN_Mul(ctrl->config.stop_loss_pct, hundred);
             FPN<F> tp_offset = FPN_Mul(stddev, tp_mult);
             FPN<F> sl_offset = FPN_Mul(stddev, sl_mult);
 
-            // percentage fallback: used when rolling stats arent ready yet
+            // percentage fallback when rolling stats arent ready
             FPN<F> one       = FPN_FromDouble<F>(1.0);
             FPN<F> tp_pct_up = FPN_Mul(fill_price, FPN_AddSat(one, ctrl->config.take_profit_pct));
             FPN<F> sl_pct_dn = FPN_Mul(fill_price, FPN_SubSat(one, ctrl->config.stop_loss_pct));
@@ -372,14 +402,23 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl, OrderPool<F> 
             tp_price.sign = (vol_tp.sign & has_stats) | (tp_pct_up.sign & !has_stats);
             sl_price.sign = (vol_sl.sign & has_stats) | (sl_pct_dn.sign & !has_stats);
 
-            Portfolio_AddPositionWithExits(&ctrl->portfolio, fill_qty, fill_price, tp_price, sl_price);
+            // TP FLOOR: ensure TP is above the round-trip fee breakeven point
+            // min_tp = entry + entry * fee_rate * 3 (2x for round-trip fees + 1x safety margin)
+            // if volatility TP is below this, use the floor instead
+            FPN<F> three = FPN_FromDouble<F>(3.0);
+            FPN<F> fee_floor_offset = FPN_Mul(fill_price, FPN_Mul(ctrl->config.fee_rate, three));
+            FPN<F> tp_floor = FPN_AddSat(fill_price, fee_floor_offset);
+            tp_price = FPN_Max(tp_price, tp_floor);
 
-            // deduct from paper trading balance
-            ctrl->balance = FPN_SubSat(ctrl->balance, cost);
+            Portfolio_AddPositionWithExits(&ctrl->portfolio, sized_qty, fill_price, tp_price, sl_price);
+
+            // deduct cost + entry fee from balance
+            ctrl->balance   = FPN_SubSat(ctrl->balance, total_cost);
+            ctrl->total_fees = FPN_AddSat(ctrl->total_fees, entry_fee);
 
             // log buy
             double price_d = FPN_ToDouble(fill_price);
-            double qty_d   = FPN_ToDouble(fill_qty);
+            double qty_d   = FPN_ToDouble(sized_qty);
             double tp_d    = FPN_ToDouble(tp_price);
             double sl_d    = FPN_ToDouble(sl_price);
             double bc_p    = FPN_ToDouble(ctrl->buy_conds.price);
@@ -412,13 +451,19 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl, OrderPool<F> 
         double delta_pct = 0.0;
         if (entry_d != 0.0) delta_pct = ((exit_d - entry_d) / entry_d) * 100.0;
 
-        // accumulate realized P&L: (exit - entry) * quantity
-        FPN<F> pos_pnl = FPN_Mul(FPN_Sub(rec->exit_price, pos->entry_price), pos->quantity);
+        // exit fee: fee_rate * (exit_price * quantity)
+        FPN<F> gross_proceeds = FPN_Mul(rec->exit_price, pos->quantity);
+        FPN<F> exit_fee = FPN_Mul(gross_proceeds, ctrl->config.fee_rate);
+        FPN<F> net_proceeds = FPN_SubSat(gross_proceeds, exit_fee);
+
+        // accumulate realized P&L: net proceeds - original cost (entry_price * quantity)
+        FPN<F> entry_cost = FPN_Mul(pos->entry_price, pos->quantity);
+        FPN<F> pos_pnl = FPN_Sub(net_proceeds, entry_cost);
         ctrl->realized_pnl = FPN_AddSat(ctrl->realized_pnl, pos_pnl);
 
-        // return proceeds to paper trading balance: exit_price * quantity
-        FPN<F> proceeds = FPN_Mul(rec->exit_price, pos->quantity);
-        ctrl->balance = FPN_AddSat(ctrl->balance, proceeds);
+        // return net proceeds to paper trading balance (after exit fee)
+        ctrl->balance    = FPN_AddSat(ctrl->balance, net_proceeds);
+        ctrl->total_fees = FPN_AddSat(ctrl->total_fees, exit_fee);
 
         const char *reason = (rec->reason == 0) ? "TP" : "SL";
         TradeLog_Sell(trade_log, rec->tick, exit_d, qty_d, entry_d, delta_pct, reason);
