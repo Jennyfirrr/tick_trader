@@ -219,15 +219,15 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
         if (displayed > 0)
             snprintf(pos_buf[pln++], POS_LINE_W, C_SURF "·" C_RESET);
         snprintf(pos_buf[pln++], POS_LINE_W,
-                 C_WHEAT "#%-2d   " C_FG "$%.2f" C_DIM " -> " C_WHEAT "$%.2f"
-                 C_RESET "  %s(%+.2f)" C_RESET,
+                 C_WHEAT "#%-2d " C_FG "$%.2f" C_DIM "->" C_WHEAT "$%.2f"
+                 " %s%+.2f" C_RESET,
                  idx, entry, price, C_PNL(price_diff), price_diff);
         snprintf(pos_buf[pln++], POS_LINE_W,
-                 C_SAND "      qty: " C_FG "%.6f" C_SAND "  val: " C_FG "$%.2f" C_RESET,
+                 C_SAND "    qty:" C_FG "%.6f" C_SAND " val:" C_FG "$%.2f" C_RESET,
                  qty, value);
         snprintf(pos_buf[pln++], POS_LINE_W,
-                 C_SAND "      TP: " C_FG "%+.0f" C_SAND "  SL: " C_FG "-%.0f"
-                 C_SAND "  gross: %s%+.2f%%" C_SAND "  net: %s%+.2f%%" C_RESET,
+                 C_SAND "    TP:" C_FG "%+.0f" C_SAND " SL:" C_FG "%.0f"
+                 C_SAND " g:" "%s%+.2f%%" C_SAND " n:" "%s%+.2f%%" C_RESET,
                  to_tp, to_sl, C_PNL(pos_pnl), pos_pnl, C_PNL(net_pnl), net_pnl);
         displayed++;
         active &= active - 1;
