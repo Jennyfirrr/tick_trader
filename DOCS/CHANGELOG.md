@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.6.2] - 2026-03-20
+
+### Fixed
+- **Price-independent normalization** — three values were using absolute dollar amounts
+  that would break on different assets/price levels:
+  - `max_shift`: was absolute $5, now fraction of `rolling->price_avg` (0.01% = ~$7 at
+    BTC $70k, ~$0.00005 at $0.50 token). Same config works on any asset.
+  - `min_long_slope`: was absolute $/tick, now compared against relative slope
+    (`slope / price_avg`). A threshold of -0.00005 means "block when price drops faster
+    than 0.005%/tick" regardless of price level.
+  - TUI trend thresholds: were hardcoded 0.5 and 0.001 (BTC-specific), now use
+    percentage-based slopes (±0.001%/tick) that display correctly for any asset.
+- TUI gate status now shows relative slope values matching the normalized comparison.
+
+### Notes
+- Values that were ALREADY correctly normalized: TP/SL floors (percentage of entry),
+  entry spacing (volatility-based via stddev), position sizing (percentage of balance).
+  Only max_shift, long slope, and TUI thresholds needed fixing.
+
 ## [0.6.1] - 2026-03-20 (branch: strategy-library)
 
 ### Fixed

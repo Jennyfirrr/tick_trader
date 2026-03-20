@@ -305,9 +305,10 @@ inline BuySideGateConditions<F> MeanReversion_BuySignal(MeanReversionState<F> *s
 
         FPN<F> shift = FPN_Mul(state->last_regression.model.slope, cfg->slope_scale_buy);
 
-        // clamp shift magnitude to max_shift (Min/Max are already branchless)
-        shift = FPN_Min(shift, cfg->max_shift);
-        shift = FPN_Max(shift, FPN_Negate(cfg->max_shift));
+        // clamp shift magnitude to max_shift (percentage of rolling avg, price-independent)
+        FPN<F> max_shift_abs = FPN_Mul(rolling->price_avg, cfg->max_shift);
+        shift = FPN_Min(shift, max_shift_abs);
+        shift = FPN_Max(shift, FPN_Negate(max_shift_abs));
 
         // mask shift to zero if not confident - word-level branchless mask
         FPN<F> masked_shift;
@@ -321,9 +322,9 @@ inline BuySideGateConditions<F> MeanReversion_BuySignal(MeanReversionState<F> *s
         // apply shift
         FPN<F> new_price = FPN_AddSat(conds.price, masked_shift);
 
-        // clamp to initial +/- max_shift
-        FPN<F> upper = FPN_AddSat(state->buy_conds_initial.price, cfg->max_shift);
-        FPN<F> lower = FPN_SubSat(state->buy_conds_initial.price, cfg->max_shift);
+        // clamp to initial +/- max_shift (percentage-based, scales with price)
+        FPN<F> upper = FPN_AddSat(state->buy_conds_initial.price, max_shift_abs);
+        FPN<F> lower = FPN_SubSat(state->buy_conds_initial.price, max_shift_abs);
         new_price = FPN_Max(new_price, lower);
         new_price = FPN_Min(new_price, upper);
 
@@ -332,13 +333,15 @@ inline BuySideGateConditions<F> MeanReversion_BuySignal(MeanReversionState<F> *s
 
     //==================================================================================================
     // MULTI-TIMEFRAME GATE: require long-window trend to be flat or rising
-    // when enabled (min_long_slope > 0), masks buy_conds.price to zero if the 512-tick
-    // window shows a negative slope — blocks buying dips inside broader crashes
+    // uses relative slope (slope / price_avg) so the threshold is price-independent:
+    // the same config value works whether the asset is $0.50 or $70,000
     // when disabled (min_long_slope = 0), gate always passes
     //==================================================================================================
     {
         int long_enabled = !FPN_IsZero(cfg->min_long_slope);
-        int long_pass = FPN_GreaterThanOrEqual(rolling_long->price_slope, cfg->min_long_slope);
+        // normalize slope by price: relative_slope = slope / price_avg (dimensionless fraction)
+        FPN<F> relative_long_slope = FPN_DivNoAssert(rolling_long->price_slope, rolling_long->price_avg);
+        int long_pass = FPN_GreaterThanOrEqual(relative_long_slope, cfg->min_long_slope);
         int long_ok = long_pass | !long_enabled;
 
         uint64_t signal_mask = -(uint64_t)long_ok;

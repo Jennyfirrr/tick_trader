@@ -554,7 +554,7 @@ static void test_max_shift() {
     printf("\n--- Max Shift Clamp ---\n");
 
     ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
-    cfg.max_shift     = FPN_FromDouble<FP>(2.0); // tight clamp
+    cfg.max_shift     = FPN_FromDouble<FP>(0.02); // tight clamp: 2% of price (~$2 at $100)
     cfg.r2_threshold  = FPN_FromDouble<FP>(0.01);
     cfg.warmup_ticks  = 5;
     cfg.poll_interval = 1;
@@ -593,7 +593,9 @@ static void test_max_shift() {
     double final_price = FPN_ToDouble(ctrl.buy_conds.price);
     double rolling_avg = FPN_ToDouble(ctrl.rolling.price_avg);
     double shift_from_rolling = fabs(final_price - rolling_avg);
-    check("shift clamped to max_shift", shift_from_rolling <= 2.5); // within max_shift of rolling avg
+    // max_shift is now a fraction of price: 0.02 * rolling_avg ≈ $2 at $100
+    double max_shift_abs = rolling_avg * 0.02;
+    check("shift clamped to max_shift", shift_from_rolling <= max_shift_abs + 0.5);
 
     free(pool.slots);
 }

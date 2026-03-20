@@ -272,19 +272,23 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
     printf(C_SAND "    avg price:  " C_FG "%-12.2f" C_DIM "  |  " C_SAND "stddev: " C_FG "%-10.2f" C_RESET "\n", roll_price_avg, roll_stddev); row++;
     printf(C_SAND "    range:      " C_FG "%-12.2f" C_DIM "  -  " C_FG "%-12.2f" C_RESET "\n", roll_p_min, roll_p_max); row++;
     double roll_price_slope = FPN_ToDouble(ctrl->rolling.price_slope);
+    // normalize slopes by price for display (percentage per tick, price-independent)
+    double slope_pct = (roll_price_avg != 0.0) ? (roll_price_slope / roll_price_avg) * 100.0 : 0.0;
     printf(C_SAND "    avg volume: " C_FG "%-12.8f" C_DIM "  |  " C_SAND "vol slope: " C_FG "%+.8f" C_RESET "\n", roll_vol_avg, roll_vol_slope); row++;
-    const char *trend_color = (roll_price_slope > 0.5) ? C_GREEN : (roll_price_slope < -0.5) ? C_RED : C_DIM;
-    const char *trend_str   = (roll_price_slope > 0.5) ? "UP" : (roll_price_slope < -0.5) ? "DOWN" : "FLAT";
-    printf(C_SAND "    price slope: " C_FG "%+.4f/tick" C_DIM "  |  " C_SAND "trend: " "%s%s" C_RESET "\n",
-           roll_price_slope, trend_color, trend_str); row++;
-    // long-window trend (512-tick)
+    const char *trend_color = (slope_pct > 0.001) ? C_GREEN : (slope_pct < -0.001) ? C_RED : C_DIM;
+    const char *trend_str   = (slope_pct > 0.001) ? "UP" : (slope_pct < -0.001) ? "DOWN" : "FLAT";
+    printf(C_SAND "    price slope: " C_FG "%+.6f%%/tick" C_DIM "  |  " C_SAND "trend: " "%s%s" C_RESET "\n",
+           slope_pct, trend_color, trend_str); row++;
+    // long-window trend (512-tick), also normalized by price
     double long_slope = FPN_ToDouble(ctrl->rolling_long.price_slope);
+    double long_avg   = FPN_ToDouble(ctrl->rolling_long.price_avg);
+    double long_slope_pct = (long_avg != 0.0) ? (long_slope / long_avg) * 100.0 : 0.0;
     int long_count = ctrl->rolling_long.count;
-    const char *long_trend_color = (long_slope > 0.001) ? C_GREEN : (long_slope < -0.001) ? C_RED : C_DIM;
-    const char *long_trend_str   = (long_slope > 0.001) ? "UP" : (long_slope < -0.001) ? "DOWN" : "FLAT";
-    printf(C_SAND "    long window " C_DIM "(%d-tick):" C_FG " %+.4f/tick"
+    const char *long_trend_color = (long_slope_pct > 0.001) ? C_GREEN : (long_slope_pct < -0.001) ? C_RED : C_DIM;
+    const char *long_trend_str   = (long_slope_pct > 0.001) ? "UP" : (long_slope_pct < -0.001) ? "DOWN" : "FLAT";
+    printf(C_SAND "    long window " C_DIM "(%d-tick):" C_FG " %+.6f%%/tick"
            C_DIM "  |  " "%s%s" C_RESET "\n",
-           long_count, long_slope, long_trend_color, long_trend_str); row++;
+           long_count, long_slope_pct, long_trend_color, long_trend_str); row++;
     printf(C_SURF "  ----------------------------------------------------------------" C_RESET "\n"); row++;
     // adaptive filter state
     double live_offset = FPN_ToDouble(ctrl->mean_rev.live_offset_pct) * 100.0;  // display as %
@@ -310,12 +314,14 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
     int long_gate_enabled = !FPN_IsZero(ctrl->config.min_long_slope);
     if (long_gate_enabled) {
         double min_ls = FPN_ToDouble(ctrl->config.min_long_slope);
-        int long_gate_ok = FPN_GreaterThanOrEqual(ctrl->rolling_long.price_slope, ctrl->config.min_long_slope);
+        // gate uses relative slope (slope/price_avg), match the comparison
+        double rel_slope = (long_avg != 0.0) ? long_slope / long_avg : 0.0;
+        int long_gate_ok = (rel_slope >= min_ls);
         if (long_gate_ok) {
             printf(C_SAND "    long trend: " C_GREEN "OK" C_RESET "\n"); row++;
         } else {
             printf(C_SAND "    long trend: " C_BOLD C_RED "BLOCKED" C_RESET
-                   C_DIM " (%+.4f < %+.4f)" C_RESET "\n", long_slope, min_ls); row++;
+                   C_DIM " (%+.6f < %+.6f)" C_RESET "\n", rel_slope, min_ls); row++;
         }
     }
     printf(C_SURF "  ----------------------------------------------------------------" C_RESET "\n"); row++;

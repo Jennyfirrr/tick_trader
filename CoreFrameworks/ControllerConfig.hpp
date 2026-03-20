@@ -58,7 +58,7 @@ template <unsigned F> inline ControllerConfig<F> ControllerConfig_Default() {
   cfg.warmup_ticks = MAX_WINDOW * 8; // 64 ticks, enough for one full ROR cycle
   cfg.r2_threshold = FPN_FromDouble<F>(0.30);
   cfg.slope_scale_buy = FPN_FromDouble<F>(0.50);
-  cfg.max_shift = FPN_FromDouble<F>(5.00);
+  cfg.max_shift = FPN_FromDouble<F>(0.0001); // 0.01% of price — e.g. $7 at BTC $70k
   cfg.take_profit_pct = FPN_FromDouble<F>(0.03);
   cfg.stop_loss_pct = FPN_FromDouble<F>(0.015);
   cfg.starting_balance =
