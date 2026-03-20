@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.4.6] - 2026-03-20
+
+### Added
+- **Equity line** - shows cash + open position value as total portfolio worth, updated live.
+- **Held total** - aggregate qty and dollar value of all open positions, displayed in the
+  P&L block alongside equity and balance.
+- **Position detail view** - two-line display per position: entry vs current price with dollar
+  diff on first line, TP/SL distances and gross/net P&L on second line.
+
 ## [0.4.5] - 2026-03-20 (branch: feature/risk-and-sizing)
 
 ### Added
