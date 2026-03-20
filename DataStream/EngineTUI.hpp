@@ -222,8 +222,6 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
     printf("  REALIZED P&L:   $%-+12.4f  (after fees)\n", realized);
     printf("  UNREALIZED P&L: $%-+12.4f  (open positions)\n", pnl);
     printf("  TOTAL P&L:      $%-+12.4f  (%+.2f%%)\n", total_pnl, return_pct);
-    printf("  FEES PAID:      $%-12.4f  (%.1f%% rate)\n", fees,
-           FPN_ToDouble(ctrl->config.fee_rate) * 100.0);
     double deployed = starting - balance;
     double exposure_pct = (starting != 0.0) ? (deployed / starting) * 100.0 : 0.0;
     double max_exp = FPN_ToDouble(ctrl->config.max_exposure_pct) * 100.0;

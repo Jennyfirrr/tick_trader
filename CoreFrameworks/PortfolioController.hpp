@@ -300,26 +300,15 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl, OrderPool<F> 
         uint32_t idx = __builtin_ctzll(fills);
 
         FPN<F> fill_price = pool->slots[idx].price;
-        FPN<F> fill_qty   = pool->slots[idx].quantity;
+        // ignore stream quantity - we use position sizing based on balance
+        // fill_price is the signal, not fill_qty
 
         // consolidation: find existing position at same price
-        // branchless path selection: found_mask is all 1s if existing position, all 0s if new
+        // with position sizing, consolidation is DISABLED - each fill at the same price
+        // would just be a duplicate signal. we only want one position per price level.
+        // the entry spacing check below handles preventing duplicate entries at nearby prices.
         int existing   = Portfolio_FindByPrice(&ctrl->portfolio, fill_price);
         int found      = (existing >= 0);
-        uint64_t found_mask = -(uint64_t)found;
-
-        // consolidation path: add quantity to existing position
-        // always compute the index (clamp to 0 if not found to avoid OOB, result is masked anyway)
-        int safe_idx = existing & (int)(found_mask & 0xF); // 0 if not found, actual index if found
-        FPN<F> old_qty = ctrl->portfolio.positions[safe_idx].quantity;
-        FPN<F> new_qty = FPN_AddSat(old_qty, fill_qty);
-        // apply consolidation: write new quantity only if found (word-level mask)
-        for (unsigned w = 0; w < FPN<F>::N; w++) {
-            ctrl->portfolio.positions[safe_idx].quantity.w[w] =
-                (new_qty.w[w] & found_mask) | (old_qty.w[w] & ~found_mask);
-        }
-        ctrl->portfolio.positions[safe_idx].quantity.sign =
-            (new_qty.sign & (int)found) | (old_qty.sign & (int)(!found));
 
         // entry spacing check: reject fills that are too close to existing positions
         // walks the portfolio bitmap to find the minimum distance from fill_price to any entry
@@ -456,9 +445,12 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl, OrderPool<F> 
         FPN<F> exit_fee = FPN_Mul(gross_proceeds, ctrl->config.fee_rate);
         FPN<F> net_proceeds = FPN_SubSat(gross_proceeds, exit_fee);
 
-        // accumulate realized P&L: net proceeds - original cost (entry_price * quantity)
+        // realized P&L: net proceeds - total cost (entry cost + entry fee)
+        // entry fee = entry_price * qty * fee_rate (reconstructed since we dont store it per position)
         FPN<F> entry_cost = FPN_Mul(pos->entry_price, pos->quantity);
-        FPN<F> pos_pnl = FPN_Sub(net_proceeds, entry_cost);
+        FPN<F> entry_fee_recon = FPN_Mul(entry_cost, ctrl->config.fee_rate);
+        FPN<F> total_entry_cost = FPN_AddSat(entry_cost, entry_fee_recon);
+        FPN<F> pos_pnl = FPN_Sub(net_proceeds, total_entry_cost);
         ctrl->realized_pnl = FPN_AddSat(ctrl->realized_pnl, pos_pnl);
 
         // return net proceeds to paper trading balance (after exit fee)
