@@ -9,6 +9,7 @@
 #define PORTFOLIO_HPP
 
 #include "../FixedPoint/FixedPointN.hpp"
+#include <stdio.h>
 //======================================================================================================
 // [STRUCTS]
 //======================================================================================================
@@ -215,6 +216,93 @@ inline void PositionExitGate(Portfolio<F> *portfolio, FPN<F> current_price, Exit
         active &= active - 1;
     }
 }
+//======================================================================================================
+// [PERSISTENCE]
+//======================================================================================================
+// binary snapshot of portfolio state - written on slow path, read once at startup
+// includes a magic number and version so we dont load garbage or stale formats
+// also saves realized P&L and adaptive filter state alongside the portfolio
+//
+// file format:
+//   [4 bytes] magic: "TICK"
+//   [4 bytes] version: 1
+//   [2 bytes] active_bitmap
+//   [2 bytes] padding
+//   [16 * sizeof(Position<F>)] positions array
+//   [sizeof(FPN<F>)] realized_pnl
+//   [sizeof(FPN<F>)] live_offset_pct
+//   [sizeof(FPN<F>)] live_vol_mult
+//======================================================================================================
+#define PORTFOLIO_SNAPSHOT_MAGIC 0x4B434954  // "TICK" in little-endian
+#define PORTFOLIO_SNAPSHOT_VERSION 1
+
+template <unsigned F>
+static inline int Portfolio_Save(const Portfolio<F> *portfolio, FPN<F> realized_pnl,
+                                  FPN<F> live_offset_pct, FPN<F> live_vol_mult, const char *filepath) {
+    FILE *f = fopen(filepath, "wb");
+    if (!f) {
+        fprintf(stderr, "[SNAPSHOT] failed to open %s for writing\n", filepath);
+        return 0;
+    }
+
+    uint32_t magic   = PORTFOLIO_SNAPSHOT_MAGIC;
+    uint32_t version = PORTFOLIO_SNAPSHOT_VERSION;
+
+    fwrite(&magic, 4, 1, f);
+    fwrite(&version, 4, 1, f);
+    fwrite(&portfolio->active_bitmap, 2, 1, f);
+    uint16_t pad = 0;
+    fwrite(&pad, 2, 1, f);
+    fwrite(portfolio->positions, sizeof(Position<F>), 16, f);
+    fwrite(&realized_pnl, sizeof(FPN<F>), 1, f);
+    fwrite(&live_offset_pct, sizeof(FPN<F>), 1, f);
+    fwrite(&live_vol_mult, sizeof(FPN<F>), 1, f);
+
+    fflush(f);
+    fclose(f);
+    return 1;
+}
+
+template <unsigned F>
+static inline int Portfolio_Load(Portfolio<F> *portfolio, FPN<F> *realized_pnl,
+                                  FPN<F> *live_offset_pct, FPN<F> *live_vol_mult, const char *filepath) {
+    FILE *f = fopen(filepath, "rb");
+    if (!f) {
+        // no snapshot file is normal on first run
+        return 0;
+    }
+
+    uint32_t magic, version;
+    if (fread(&magic, 4, 1, f) != 1 || magic != PORTFOLIO_SNAPSHOT_MAGIC) {
+        fprintf(stderr, "[SNAPSHOT] bad magic in %s - ignoring\n", filepath);
+        fclose(f);
+        return 0;
+    }
+    if (fread(&version, 4, 1, f) != 1 || version != PORTFOLIO_SNAPSHOT_VERSION) {
+        fprintf(stderr, "[SNAPSHOT] version mismatch in %s - ignoring\n", filepath);
+        fclose(f);
+        return 0;
+    }
+
+    uint16_t bitmap;
+    uint16_t pad;
+    if (fread(&bitmap, 2, 1, f) != 1) { fclose(f); return 0; }
+    if (fread(&pad, 2, 1, f) != 1) { fclose(f); return 0; }
+    if (fread(portfolio->positions, sizeof(Position<F>), 16, f) != 16) { fclose(f); return 0; }
+
+    portfolio->active_bitmap = bitmap;
+
+    if (fread(realized_pnl, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
+    if (fread(live_offset_pct, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
+    if (fread(live_vol_mult, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
+
+    fclose(f);
+
+    int count = __builtin_popcount(bitmap);
+    fprintf(stderr, "[SNAPSHOT] loaded %d positions from %s\n", count, filepath);
+    return 1;
+}
+
 //======================================================================================================
 //======================================================================================================
 //======================================================================================================

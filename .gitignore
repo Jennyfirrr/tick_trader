@@ -9,6 +9,13 @@ secrets.cfg
 # trade logs
 *_order_history.csv
 
+# runtime state
+portfolio.snapshot
+
+# engine binary
+engine
+tests/binance_test
+
 # claude code
 .claude/
 CLAUDE.md

@@ -538,7 +538,11 @@ static void test_branchless() {
         PortfolioController_Tick(&ctrl, &pool, stream.price, stream.volume, &log);
     }
 
-    check("noisy data: conditions unchanged", FPN_Equal(ctrl.buy_conds.price, initial_price));
+    // with rolling stats, buy_conds.price now updates dynamically on the slow path
+    // so it wont be exactly equal to initial - but it should stay near the mean price (~100.0)
+    // the key check is that the gate didnt drift wildly due to low R^2
+    double final_price = FPN_ToDouble(ctrl.buy_conds.price);
+    check("noisy data: conditions near initial", fabs(final_price - 100.0) < 10.0);
 
     free(pool.slots);
 }
@@ -667,8 +671,13 @@ static void test_full_pipeline() {
     ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
     cfg.warmup_ticks  = 20;
     cfg.poll_interval = 10;
-    cfg.take_profit_pct = FPN_FromDouble<FP>(0.03);
-    cfg.stop_loss_pct   = FPN_FromDouble<FP>(0.015);
+    cfg.take_profit_pct    = FPN_FromDouble<FP>(0.03);
+    cfg.stop_loss_pct      = FPN_FromDouble<FP>(0.015);
+    // loosen volume filter for mock data - mock volumes are uniform around base_volume
+    // so we need a low multiplier for some ticks to pass the filter
+    cfg.volume_multiplier  = FPN_FromDouble<FP>(1.2);
+    cfg.entry_offset_pct   = FPN_FromDouble<FP>(0.005); // 0.5% offset - mock data has high volatility
+    cfg.spacing_multiplier = FPN_FromDouble<FP>(0.5);    // tight spacing - mock price range is small
 
     PortfolioController<FP> ctrl;
     PortfolioController_Init(&ctrl, cfg);
@@ -684,7 +693,7 @@ static void test_full_pipeline() {
     mc.volatility   = 1.50;   // high volatility so price dips below mean (triggering buys)
     mc.drift        = 0.0;    // no drift - oscillates around mean
     mc.base_volume  = 600.0;
-    mc.volume_spike = 2.0;
+    mc.volume_spike = 3.0;    // higher spikes so some ticks pass the volume filter
     mc.min_price    = 1.0;
     mc.symbol       = "INTG";
     mc.seed         = 77777;
