@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.6.1] - 2026-03-20 (branch: strategy-library)
+
+### Fixed
+- **Multi-timeframe gate bypass on warmup** — `MeanReversion_Init` set buy conditions
+  without applying the multi-timeframe gate, leaving a 100-tick window where BuyGate
+  could fill during a downtrend. Fix: `MeanReversion_BuySignal` now runs immediately
+  after Init so the gate is active from tick 1.
+- **Multi-timeframe gate bypass on unpause** — pressing `p` to unpause restored
+  `buy_conds_initial` (pre-gate values), bypassing the long trend gate until the next
+  slow-path cycle. Fix: unpause now calls `MeanReversion_BuySignal` to recompute
+  conditions with all gates applied.
+- **TUI distance shows garbage when gate blocked** — distance was computed as
+  `price - 0.00 = $70,669` (99.97% away) when buy_conds.price was masked to zero.
+  Now shows `— (gate disabled)` when price is zero.
+- **Hot-path unconditional writes** — BuyGate wrote 48 bytes to pool slot every tick
+  even when no fill occurred. PositionExitGate wrote 24 bytes to exit buffer per
+  position per tick even when no exit triggered. Both replaced with predicted branches
+  (fills/exits are ~1/1000 ticks, branch predictor handles this at ~0.015ns amortized
+  vs ~8ns/tick for unconditional writes).
+
+### Changed
+- TUI left column reorganized with section headers (PORTFOLIO, P&L, RISK, STATS).
+- Long trend line compacted to fit within 64-char left column.
+- Gate status shows slope values only when BLOCKED, not when OK.
+- LONG TREND line indented as sub-item of market structure.
+- Latency profiling doc added (`DOCS/LATENCY_PROFILING.md`).
+
 ## [0.6.0] - 2026-03-20 (branch: strategy-library)
 
 ### Added

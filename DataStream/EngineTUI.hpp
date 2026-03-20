@@ -282,8 +282,8 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
     int long_count = ctrl->rolling_long.count;
     const char *long_trend_color = (long_slope > 0.001) ? C_GREEN : (long_slope < -0.001) ? C_RED : C_DIM;
     const char *long_trend_str   = (long_slope > 0.001) ? "UP" : (long_slope < -0.001) ? "DOWN" : "FLAT";
-    printf(C_SAND "  LONG TREND " C_DIM "(%d-tick):" C_RESET
-           C_SAND "   slope: " C_FG "%+.6f/tick" C_DIM "  |  " C_SAND "trend: " "%s%s" C_RESET "\n",
+    printf(C_SAND "    long window " C_DIM "(%d-tick):" C_FG " %+.4f/tick"
+           C_DIM "  |  " "%s%s" C_RESET "\n",
            long_count, long_slope, long_trend_color, long_trend_str); row++;
     printf(C_SURF "  ----------------------------------------------------------------" C_RESET "\n"); row++;
     // adaptive filter state
@@ -299,19 +299,23 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
         printf(C_SAND "    price <= " C_FG "%-12.2f" C_DIM "  (offset: %.3f%%)" C_RESET "\n", buy_p, live_offset); row++;
     }
     printf(C_SAND "    vol   >= " C_FG "%-12.8f" C_DIM "  (mult: %.2fx)" C_RESET "\n", buy_v, live_vmult); row++;
-    printf(C_SAND "    distance:   " C_FG "$%-10.2f" C_DIM "  (%.3f%% away)" C_RESET "\n", gate_dist, gate_dist_pct); row++;
-    printf(C_SAND "    spacing:    " C_FG "$%-10.2f" C_DIM "  (min between entries)" C_RESET "\n", spacing); row++;
+    if (buy_p > 0.01) {
+        printf(C_SAND "    distance:   " C_FG "$%-10.2f" C_DIM "  (%.3f%% away)" C_RESET "\n", gate_dist, gate_dist_pct); row++;
+        printf(C_SAND "    spacing:    " C_FG "$%-10.2f" C_DIM "  (min between entries)" C_RESET "\n", spacing); row++;
+    } else {
+        printf(C_SAND "    distance:   " C_DIM "—  (gate disabled)" C_RESET "\n"); row++;
+        printf(C_SAND "    spacing:    " C_FG "$%-10.2f" C_DIM "  (min between entries)" C_RESET "\n", spacing); row++;
+    }
     // multi-timeframe gate status
     int long_gate_enabled = !FPN_IsZero(ctrl->config.min_long_slope);
     if (long_gate_enabled) {
         double min_ls = FPN_ToDouble(ctrl->config.min_long_slope);
         int long_gate_ok = FPN_GreaterThanOrEqual(ctrl->rolling_long.price_slope, ctrl->config.min_long_slope);
         if (long_gate_ok) {
-            printf(C_SAND "    long trend: " C_GREEN "OK" C_RESET
-                   C_DIM "  (slope: %+.6f >= %+.6f)" C_RESET "\n", long_slope, min_ls); row++;
+            printf(C_SAND "    long trend: " C_GREEN "OK" C_RESET "\n"); row++;
         } else {
             printf(C_SAND "    long trend: " C_BOLD C_RED "BLOCKED" C_RESET
-                   C_DIM "  (slope: %+.6f < %+.6f)" C_RESET "\n", long_slope, min_ls); row++;
+                   C_DIM " (%+.4f < %+.4f)" C_RESET "\n", long_slope, min_ls); row++;
         }
     }
     printf(C_SURF "  ----------------------------------------------------------------" C_RESET "\n"); row++;
@@ -459,8 +463,10 @@ static inline char TUI_HandleInput(EngineTUI *tui, PortfolioController<F> *ctrl,
         // exit gate still runs so existing positions are protected
         int is_paused = FPN_IsZero(ctrl->buy_conds.price);
         if (is_paused) {
-            // unpause - restore initial conditions, regression will adjust from here
-            ctrl->buy_conds = ctrl->mean_rev.buy_conds_initial;
+            // unpause - recompute buy conditions with all gates applied
+            // (restoring buy_conds_initial would bypass the multi-timeframe gate)
+            ctrl->buy_conds = MeanReversion_BuySignal(&ctrl->mean_rev, &ctrl->rolling,
+                                                       &ctrl->rolling_long, &ctrl->config);
         } else {
             ctrl->buy_conds.price  = FPN_Zero<F>();
             ctrl->buy_conds.volume = FPN_Zero<F>();
