@@ -148,6 +148,11 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
 
     if (ctrl->warmup_count >= ctrl->config.warmup_ticks) {
       MeanReversion_Init(&ctrl->mean_rev, &ctrl->rolling, &ctrl->buy_conds);
+      // apply buy signal immediately so multi-timeframe gate is active from tick 1
+      // without this, there's a poll_interval gap where buy_conds are set but the
+      // gate hasn't been applied — BuyGate could trigger a fill in a downtrend
+      ctrl->buy_conds = MeanReversion_BuySignal(&ctrl->mean_rev, &ctrl->rolling,
+                                                 &ctrl->rolling_long, &ctrl->config);
       ctrl->state = CONTROLLER_ACTIVE;
     }
     return;
