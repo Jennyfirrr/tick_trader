@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.4.5] - 2026-03-20 (branch: feature/risk-and-sizing)
+
+### Added
+- **Price slope** in rolling stats - tracks price trend direction per window. TUI shows
+  slope value and trend label (UP/DOWN/FLAT).
+- **Profit factor** - gross wins / gross losses. The single most important strategy metric.
+  Below 1.0 = losing. Displayed live in TUI.
+- **Average win/loss size** - dollar amount per winning vs losing trade.
+- **Average hold time** - ticks between entry and exit across all closed positions.
+  Entry tick tracked per position slot.
+- **Total held positions line** - shows aggregate qty and dollar value across all open positions.
+- **SL floor** - stop loss distance must be at least half the TP distance. Prevents the $17 SL
+  on a $209 TP that was triggering on normal fluctuations. Minimum 2:1 reward-to-risk ratio.
+
+### Fixed
+- **Idle squeeze goes to zero** - was flooring at offset_min (0.05%) which left a permanent
+  gap in trending markets. Now squeezes to zero offset at 10% per cycle. Volume multiplier
+  squeezes to 1.0x.
+- **Stale buy gate clamp** - buy_conds_initial now tracks rolling stats so the max_shift
+  clamp window moves with the market.
+
 ## [0.4.4] - 2026-03-20 (branch: feature/risk-and-sizing)
 
 ### Fixed
