@@ -217,8 +217,9 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
         displayed++;
         active &= active - 1;
     }
+    // total line stays with the positions block
     if (displayed > 0) {
-        printf("  ---- TOTAL: qty:%.6f  val:$%.2f\n", total_qty, total_value);
+        printf("  ---- HELD: qty:%.6f  val:$%.2f\n", total_qty, total_value);
     }
     // clear remaining position lines from previous renders
     for (int i = displayed; i < 16; i++) {
@@ -234,6 +235,8 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
     double risk_amt = FPN_ToDouble(ctrl->config.risk_pct) * 100.0;
 
     printf("----------------------------------------------------------------\n");
+    double equity = balance + total_value;
+    printf("  EQUITY:         $%-12.4f  (cash + positions)\n", equity);
     printf("  BALANCE:        $%-12.4f  (started: $%.0f)\n", balance, starting);
     printf("  REALIZED P&L:   $%-+12.4f  (after fees)\n", realized);
     printf("  UNREALIZED P&L: $%-+12.4f  (open positions)\n", pnl);
