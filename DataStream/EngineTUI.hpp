@@ -184,6 +184,9 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
     // walk active bitmap and display each position
     uint16_t active = ctrl->portfolio.active_bitmap;
     int displayed = 0;
+    double total_value = 0.0;
+    double total_qty   = 0.0;
+    double fee_r = FPN_ToDouble(ctrl->config.fee_rate);
     while (active) {
         int idx = __builtin_ctz(active);
         const Position<F> *pos = &ctrl->portfolio.positions[idx];
@@ -198,14 +201,18 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
         double to_tp = tp - price;
         double to_sl = price - sl;
         double value = price * qty;
-        // net P&L: accounts for round-trip fees (entry + exit)
-        double fee_r = FPN_ToDouble(ctrl->config.fee_rate);
-        double net_pnl = pos_pnl - (fee_r * 200.0);  // 2x fee_rate as percentage points
+        double net_pnl = pos_pnl - (fee_r * 200.0);
+
+        total_value += value;
+        total_qty   += qty;
 
         printf("  #%-2d  $%-8.2f  qty:%.6f  val:$%.2f  TP:%+.0f  SL:-%0.f  %+.2f%% (net:%+.2f%%)\n",
                idx, entry, qty, value, to_tp, to_sl, pos_pnl, net_pnl);
         displayed++;
         active &= active - 1;
+    }
+    if (displayed > 0) {
+        printf("  ---- TOTAL: qty:%.6f  val:$%.2f\n", total_qty, total_value);
     }
     // clear remaining position lines from previous renders
     for (int i = displayed; i < 16; i++) {
