@@ -492,25 +492,30 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl, OrderPool<F> 
         int should_squeeze = is_empty & trailing;
         uint64_t sq_mask = -(uint64_t)should_squeeze;
 
-        // squeeze step: move offset toward offset_min by a fixed step per slow-path tick
-        // step = (current_offset - offset_min) * 0.05 -> 5% closer to minimum each cycle
-        FPN<F> offset_gap  = FPN_Sub(ctrl->live_offset_pct, ctrl->config.offset_min);
-        FPN<F> squeeze_step = FPN_Mul(offset_gap, FPN_FromDouble<F>(0.05));
+        // TWO-PHASE SQUEEZE:
+        // Phase 1: squeeze offset toward zero (not offset_min — go all the way)
+        // Phase 2: if offset is already at zero and still trailing, the buy gate
+        //   is at the rolling average which lags price. Nothing more to squeeze —
+        //   the rolling average will catch up naturally as new ticks enter the window.
+        //   But we can also squeeze the volume multiplier to 1.0 (accept any volume)
+        //   so the only remaining barrier is the price itself catching up.
+        FPN<F> zero = FPN_Zero<F>();
 
-        // mask squeeze to zero if we shouldnt squeeze
+        // squeeze offset toward zero: step = current_offset * 0.10 (10% per cycle, fast)
+        FPN<F> squeeze_step = FPN_Mul(ctrl->live_offset_pct, FPN_FromDouble<F>(0.10));
         FPN<F> masked_squeeze;
         for (unsigned i = 0; i < N; i++) {
             masked_squeeze.w[i] = squeeze_step.w[i] & sq_mask;
         }
         masked_squeeze.sign = squeeze_step.sign & should_squeeze;
 
-        // apply: decrease offset (more aggressive)
         ctrl->live_offset_pct = FPN_SubSat(ctrl->live_offset_pct, masked_squeeze);
-        ctrl->live_offset_pct = FPN_Max(ctrl->live_offset_pct, ctrl->config.offset_min);
+        ctrl->live_offset_pct = FPN_Max(ctrl->live_offset_pct, zero); // floor at zero, not offset_min
 
-        // also squeeze volume multiplier toward vol_mult_min
-        FPN<F> vmult_gap = FPN_Sub(ctrl->live_vol_mult, ctrl->config.vol_mult_min);
-        FPN<F> vmult_step = FPN_Mul(vmult_gap, FPN_FromDouble<F>(0.05));
+        // squeeze volume multiplier toward 1.0 (accept any trade size)
+        FPN<F> one = FPN_FromDouble<F>(1.0);
+        FPN<F> vmult_gap = FPN_Sub(ctrl->live_vol_mult, one);
+        FPN<F> vmult_step = FPN_Mul(vmult_gap, FPN_FromDouble<F>(0.10));
         FPN<F> masked_vmult;
         for (unsigned i = 0; i < N; i++) {
             masked_vmult.w[i] = vmult_step.w[i] & sq_mask;
@@ -518,7 +523,7 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl, OrderPool<F> 
         masked_vmult.sign = vmult_step.sign & should_squeeze;
 
         ctrl->live_vol_mult = FPN_SubSat(ctrl->live_vol_mult, masked_vmult);
-        ctrl->live_vol_mult = FPN_Max(ctrl->live_vol_mult, ctrl->config.vol_mult_min);
+        ctrl->live_vol_mult = FPN_Max(ctrl->live_vol_mult, one); // floor at 1.0x
     }
 
     // update buy gate from rolling stats using LIVE adaptive filter values
