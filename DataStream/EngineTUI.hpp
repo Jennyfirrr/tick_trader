@@ -712,6 +712,7 @@ struct TUISharedState {
     volatile sig_atomic_t quit_requested;
     volatile sig_atomic_t pause_requested;
     volatile sig_atomic_t reload_requested;
+    volatile sig_atomic_t regime_cycle_requested;
     EngineTUI tui;
     const char *config_path;
 };
@@ -1051,7 +1052,7 @@ static inline void TUI_Render_Snapshot(EngineTUI *tui, const TUISnapshot *s) {
     int pos_end_row = pos_start_row + pln;
     while (row < pos_end_row) { printf("\n"); row++; }
 
-    printf(C_PINK "  [q]" C_DIM "uit  " C_PINK "[p]" C_DIM "ause  " C_PINK "[r]" C_DIM "eload config" C_RESET "                \n"); row++;
+    printf(C_PINK "  [q]" C_DIM "uit  " C_PINK "[p]" C_DIM "ause  " C_PINK "[r]" C_DIM "eload  " C_PINK "[s]" C_DIM "witch regime" C_RESET "    \n"); row++;
 
     // right column positions
     int sep_col = 66;
@@ -1091,6 +1092,8 @@ static inline void *tui_thread_fn(void *arg) {
             __atomic_store_n(&shared->pause_requested, 1, __ATOMIC_RELEASE);
         else if (c == 'r' || c == 'R')
             __atomic_store_n(&shared->reload_requested, 1, __ATOMIC_RELEASE);
+        else if (c == 's' || c == 'S')
+            __atomic_store_n(&shared->regime_cycle_requested, 1, __ATOMIC_RELEASE);
 
         usleep(100000); // 10 FPS
     }
