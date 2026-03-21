@@ -4,6 +4,7 @@
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 1.0.4 | 2026-03-21 | Entry spacing floor 0.01%→0.03%, docs refresh |
 | 1.0.3 | 2026-03-21 | Wall clock durations, enhanced trade log CSV, metrics log |
 | 1.0.2 | 2026-03-21 | Sequential position numbering, warmup=128 |
 | 1.0.1 | 2026-03-21 | Bug fixes, shared functions, snapshot v5, Makefile |
