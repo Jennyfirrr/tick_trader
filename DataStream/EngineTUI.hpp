@@ -24,6 +24,7 @@
 #include "../CoreFrameworks/OrderGates.hpp"
 #ifdef USE_FTXUI
 #include <fcntl.h>
+#include <sys/ioctl.h>
 #endif
 
 using namespace std;
@@ -1087,17 +1088,37 @@ static inline void *tui_thread_fn(void *arg) {
 
     int current_layout = LAYOUT_STANDARD;
 
+    // cache terminal size — only update on change to prevent jitter
+    struct winsize ws;
+    ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws);
+    int term_w = ws.ws_col, term_h = ws.ws_row;
+    int frame_count = 0;
+
     while (!__atomic_load_n(&shared->quit_requested, __ATOMIC_ACQUIRE)) {
+        // re-check terminal size every 20 frames (~2 sec) to handle resize
+        if (++frame_count % 20 == 0) {
+            struct winsize ws2;
+            if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws2) == 0) {
+                if (ws2.ws_col != term_w || ws2.ws_row != term_h) {
+                    term_w = ws2.ws_col;
+                    term_h = ws2.ws_row;
+                    printf("\033[2J"); // clear on resize
+                }
+            }
+        }
+
         // read snapshot
         int idx = __atomic_load_n(&shared->active_idx, __ATOMIC_ACQUIRE);
         const TUISnapshot *s = &shared->snapshots[idx];
 
-        // render FTXUI element tree to a screen buffer
+        // render FTXUI element tree to a fixed-size screen buffer
         auto element = Layout_Render(s, current_layout);
-        auto screen = ftxui::Screen::Create(ftxui::Dimension::Full(), ftxui::Dimension::Full());
+        auto screen = ftxui::Screen::Create(
+            ftxui::Dimension::Fixed(term_w),
+            ftxui::Dimension::Fixed(term_h));
         ftxui::Render(screen, element);
 
-        // draw: cursor home + render + clear to end of screen (prevents ghost content)
+        // single atomic write: cursor home + content + clear remainder
         std::string output = "\033[H" + screen.ToString() + "\033[J";
         write(STDOUT_FILENO, output.data(), output.size());
 
