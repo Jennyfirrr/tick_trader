@@ -49,6 +49,7 @@
 #include "../CoreFrameworks/ControllerConfig.hpp"
 #include "../CoreFrameworks/Portfolio.hpp"
 #include "../ML_Headers/RollingStats.hpp"
+#include <time.h>
 
 #define REGIME_RANGING  0
 #define REGIME_TRENDING 1
@@ -63,7 +64,8 @@ template <unsigned F> struct RegimeState {
     int hysteresis_count;        // how many consecutive cycles the proposed regime has held
     int hysteresis_threshold;    // must hold for N cycles before switching (e.g. 5)
     int last_strategy_id;        // tracks which strategy was active before transition
-    uint64_t regime_start_tick;  // tick at which current regime started (for duration display)
+    uint64_t regime_start_tick;  // tick at which current regime started
+    time_t regime_start_time;    // wall clock time at regime start (for duration display)
 };
 
 //======================================================================================================
@@ -77,6 +79,7 @@ inline void Regime_Init(RegimeState<F> *state, int hysteresis_threshold) {
     state->hysteresis_threshold = hysteresis_threshold;
     state->last_strategy_id = STRATEGY_MEAN_REVERSION;
     state->regime_start_tick = 0;
+    state->regime_start_time = time(NULL);
 }
 
 //======================================================================================================

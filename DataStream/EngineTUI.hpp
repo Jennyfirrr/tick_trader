@@ -257,7 +257,8 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
                  C_SAND "    TP:" C_GREEN "$%.0f" C_RESET "%s"
                  C_SAND " SL:" C_RED "$%.0f" C_RESET,
                  tp, trail_status, sl);
-        double hold_min = (double)(ctrl->total_ticks - ctrl->entry_ticks[idx]) / 3.0 / 60.0;
+        double hold_min = (ctrl->entry_time[idx] > 0)
+            ? difftime(time(NULL), ctrl->entry_time[idx]) / 60.0 : 0.0;
         snprintf(pos_buf[pln++], POS_LINE_W,
                  C_SAND "    g:" "%s%+.2f%%" C_SAND " n:" "%s%+.2f%%" C_DIM " hold:%.0fm" C_RESET,
                  C_PNL(pos_pnl), pos_pnl, C_PNL(net_pnl), net_pnl, hold_min);
@@ -603,6 +604,7 @@ struct TUIPositionSnap {
     double value, gross_pnl, net_pnl;
     int is_trailing, above_orig_tp;
     uint64_t ticks_held;
+    double hold_minutes;  // wall clock hold duration
 };
 
 struct TUISnapshot {
@@ -762,6 +764,8 @@ static inline void TUI_CopySnapshot(TUISnapshot *snap,
         ps->is_trailing  = !FPN_Equal(pos->take_profit_price, pos->original_tp);
         ps->above_orig_tp = (price_d > ps->orig_tp) && (ps->entry != 0.0);
         ps->ticks_held   = ctrl->total_ticks - ctrl->entry_ticks[idx];
+        ps->hold_minutes = (ctrl->entry_time[idx] > 0)
+            ? difftime(time(NULL), ctrl->entry_time[idx]) / 60.0 : 0.0;
         snap->total_value += ps->value;
         snap->total_qty   += ps->qty;
         active &= active - 1;
@@ -790,8 +794,7 @@ static inline void TUI_CopySnapshot(TUISnapshot *snap,
     // regime
     snap->current_regime = ctrl->regime.current_regime;
     snap->strategy_id    = ctrl->strategy_id;
-    uint64_t regime_ticks = ctrl->total_ticks - ctrl->regime.regime_start_tick;
-    snap->regime_duration_min = (double)regime_ticks / 3.0 / 60.0; // ~3 ticks/sec
+    snap->regime_duration_min = difftime(time(NULL), ctrl->regime.regime_start_time) / 60.0;
 
     // config
     snap->cfg_tp  = FPN_ToDouble(ctrl->config.take_profit_pct) * 100.0;
@@ -860,10 +863,9 @@ static inline void TUI_Render_Snapshot(EngineTUI *tui, const TUISnapshot *s) {
         snprintf(pos_buf[pln++], SNAP_POS_W,
                  C_SAND "    TP:" C_GREEN "$%.0f" C_RESET "%s" C_SAND " SL:" C_RED "$%.0f" C_RESET,
                  ps->tp, trail_status, ps->sl);
-        double hold_min = (double)ps->ticks_held / 3.0 / 60.0; // ~3 ticks/sec
         snprintf(pos_buf[pln++], SNAP_POS_W,
                  C_SAND "    g:" "%s%+.2f%%" C_SAND " n:" "%s%+.2f%%" C_DIM " hold:%.0fm" C_RESET,
-                 C_PNL(ps->gross_pnl), ps->gross_pnl, C_PNL(ps->net_pnl), ps->net_pnl, hold_min);
+                 C_PNL(ps->gross_pnl), ps->gross_pnl, C_PNL(ps->net_pnl), ps->net_pnl, ps->hold_minutes);
         displayed++;
         if (pln >= SNAP_POS_MAX - 4) break;
     }

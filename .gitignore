@@ -8,6 +8,7 @@ secrets.cfg
 
 # trade logs
 *_order_history.csv
+*_metrics.csv
 
 # runtime state
 portfolio.snapshot

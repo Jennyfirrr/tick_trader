@@ -19,6 +19,7 @@
 #include "CoreFrameworks/PortfolioController.hpp"
 #include "MemHeaders/PoolAllocator.hpp"
 #include "DataStream/TradeLog.hpp"
+#include "DataStream/MetricsLog.hpp"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -48,7 +49,14 @@ static inline void engine_force_close_all(PortfolioController<FP> *ctrl, TradeLo
         double delta_pct = 0.0;
         if (entry_d != 0.0) delta_pct = ((exit_d - entry_d) / entry_d) * 100.0;
 
-        TradeLog_Sell(log, ctrl->total_ticks, exit_d, qty_d, entry_d, delta_pct, "SESSION_CLOSE");
+        { TradeLogRecord r = {};
+          r.tick = ctrl->total_ticks; r.price = exit_d; r.quantity = qty_d;
+          r.entry_price = entry_d; r.delta_pct = delta_pct;
+          r.balance = FPN_ToDouble(ctrl->balance);
+          r.strategy_id = ctrl->entry_strategy[idx];
+          r.regime = ctrl->regime.current_regime;
+          snprintf(r.reason, sizeof(r.reason), "SESSION_CLOSE");
+          TradeLog_Sell(log, &r); }
 
         Portfolio_RemovePosition(&ctrl->portfolio, idx);
         active &= active - 1;
@@ -110,6 +118,12 @@ int main(int argc, char *argv[]) {
     //==================================================================================================
     TradeLog log;
     TradeLog_Init(&log, bcfg.symbol);
+
+    // metrics log — diagnostics for verifying regime switching, strategy behavior
+    MetricsLog metrics;
+    char metrics_path[128];
+    snprintf(metrics_path, sizeof(metrics_path), "%s_metrics.csv", bcfg.symbol);
+    MetricsLog_Init(&metrics, metrics_path);
 
     //==================================================================================================
     // init TUI
@@ -297,7 +311,29 @@ int main(int argc, char *argv[]) {
             uint64_t t2 = __rdtscp(&tsc_aux);
             uint32_t buys_before = ctrl.total_buys;
 #endif
+            int regime_before = ctrl.regime.current_regime;
+            int strategy_before = ctrl.strategy_id;
+            uint32_t buys_before_metrics = ctrl.total_buys;
             PortfolioController_Tick(&ctrl, &pool, last_stream.price, last_stream.volume, &log);
+            // log regime/strategy changes and fills
+            if (ctrl.regime.current_regime != regime_before) {
+                char detail[128];
+                snprintf(detail, sizeof(detail), "%s->%s",
+                         _regime_str(regime_before), _regime_str(ctrl.regime.current_regime));
+                MetricsLog_Event(&metrics, &ctrl, FPN_ToDouble(last_stream.price), "REGIME_CHANGE", detail);
+            }
+            if (ctrl.strategy_id != strategy_before) {
+                char detail[128];
+                snprintf(detail, sizeof(detail), "%s->%s",
+                         _strategy_str(strategy_before), _strategy_str(ctrl.strategy_id));
+                MetricsLog_Event(&metrics, &ctrl, FPN_ToDouble(last_stream.price), "STRATEGY_SWITCH", detail);
+            }
+            if (ctrl.total_buys > buys_before_metrics) {
+                char detail[64];
+                snprintf(detail, sizeof(detail), "positions:%d strategy:%s",
+                         __builtin_popcount(ctrl.portfolio.active_bitmap), _strategy_str(ctrl.strategy_id));
+                MetricsLog_Event(&metrics, &ctrl, FPN_ToDouble(last_stream.price), "FILL", detail);
+            }
 #ifdef LATENCY_PROFILING
             uint64_t t3 = __rdtscp(&tsc_aux);
             uint64_t cycles = t3 - t0;
@@ -338,6 +374,7 @@ int main(int argc, char *argv[]) {
             // save portfolio snapshot every slow-path cycle (crash recovery)
             if (ctrl.tick_count == 0) {
                 PortfolioController_SaveSnapshot(&ctrl, snapshot_path);
+                MetricsLog_SlowPath(&metrics, &ctrl, FPN_ToDouble(last_stream.price));
             }
 #ifdef MULTICORE_TUI
             // copy TUI snapshot every 10 ticks (~3 updates/sec at BTC trade rate)
@@ -490,6 +527,7 @@ int main(int argc, char *argv[]) {
     TUI_Cleanup(&tui);
 #endif
     TradeLog_Close(&log);
+    MetricsLog_Close(&metrics);
     BinanceStream_Close(&bs);
     free(pool.slots);
     free(ctrl.rolling_long);

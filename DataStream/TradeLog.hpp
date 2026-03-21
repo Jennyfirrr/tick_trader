@@ -8,6 +8,16 @@
 #ifndef TRADE_LOG_HPP
 #define TRADE_LOG_HPP
 
+#include "../Strategies/StrategyInterface.hpp"
+
+// string helpers for CSV output (also used by MetricsLog)
+static inline const char *_strategy_str(int sid) {
+    return (sid == STRATEGY_MOMENTUM) ? "MOMENTUM" : "MEAN_REVERSION";
+}
+static inline const char *_regime_str(int rid) {
+    switch (rid) { case 1: return "TRENDING"; case 2: return "VOLATILE"; default: return "RANGING"; }
+}
+
 #include <stdio.h>
 #include <stdint.h>
 
@@ -18,6 +28,19 @@ struct TradeLog {
     FILE *file;
     uint64_t trade_count;
 };
+
+struct TradeLogRecord {
+    uint64_t tick;
+    double price, quantity, entry_price, delta_pct;
+    double tp, sl, buy_cond_p, buy_cond_v;
+    double stddev, avg, balance, fee_cost;
+    double spacing, gate_dist_pct;
+    int is_buy;          // 1=BUY, 0=SELL
+    int strategy_id;     // which strategy entered/exited
+    int regime;          // regime at time of trade
+    char reason[16];     // "TP", "SL", "TIME", "SESSION_CLOSE"
+};
+
 //======================================================================================================
 // [FUNCTIONS]
 //======================================================================================================
@@ -47,26 +70,36 @@ static inline int TradeLog_Init(TradeLog *log, const char *symbol) {
     log->trade_count = 0;
 
     if (!has_content) {
-        fprintf(log->file, "tick,side,price,quantity,entry_price,delta_pct,exit_reason,buy_price_cond,buy_vol_cond,take_profit,stop_loss\n");
+        fprintf(log->file, "tick,side,price,quantity,entry_price,delta_pct,exit_reason,"
+                "buy_price_cond,buy_vol_cond,take_profit,stop_loss,"
+                "stddev,avg,balance,fee_cost,spacing,gate_dist_pct,strategy,regime\n");
         fflush(log->file);
     }
 
     return 1;
 }
 //======================================================================================================
-static inline void TradeLog_Buy(TradeLog *log, uint64_t tick, double price, double quantity, double take_profit,
-                                double stop_loss, double buy_price_cond, double buy_vol_cond) {
+static inline void TradeLog_Buy(TradeLog *log, TradeLogRecord *r) {
     if (!log->file) return;
-    fprintf(log->file, "%lu,BUY,%.4f,%.4f,,,,,%.4f,%.4f,%.4f,%.4f\n", tick, price, quantity, buy_price_cond, buy_vol_cond,
-            take_profit, stop_loss);
+    fprintf(log->file, "%lu,BUY,%.4f,%.6f,,,,"
+            "%.4f,%.4f,%.4f,%.4f,"
+            "%.4f,%.2f,%.4f,%.4f,%.2f,%.4f,%s,%s\n",
+            (unsigned long)r->tick, r->price, r->quantity,
+            r->buy_cond_p, r->buy_cond_v, r->tp, r->sl,
+            r->stddev, r->avg, r->balance, r->fee_cost, r->spacing, r->gate_dist_pct,
+            _strategy_str(r->strategy_id), _regime_str(r->regime));
     fflush(log->file);
     log->trade_count++;
 }
 //======================================================================================================
-static inline void TradeLog_Sell(TradeLog *log, uint64_t tick, double price, double quantity, double entry_price,
-                                 double delta_pct, const char *reason) {
+static inline void TradeLog_Sell(TradeLog *log, TradeLogRecord *r) {
     if (!log->file) return;
-    fprintf(log->file, "%lu,SELL,%.4f,%.4f,%.4f,%.4f,%s,,,,\n", tick, price, quantity, entry_price, delta_pct, reason);
+    fprintf(log->file, "%lu,SELL,%.4f,%.6f,%.4f,%.4f,%s,"
+            ",,,,,"
+            ",,,%.4f,%.4f,,,%s,%s\n",
+            (unsigned long)r->tick, r->price, r->quantity, r->entry_price, r->delta_pct, r->reason,
+            r->balance, r->fee_cost,
+            _strategy_str(r->strategy_id), _regime_str(r->regime));
     fflush(log->file);
     log->trade_count++;
 }
@@ -87,14 +120,6 @@ static inline void TradeLog_Close(TradeLog *log) {
 //======================================================================================================
 #define TRADE_LOG_BUF_SIZE 64
 
-struct TradeLogRecord {
-    uint64_t tick;
-    double price, quantity, entry_price, delta_pct;
-    double tp, sl, buy_cond_p, buy_cond_v;
-    int is_buy;          // 1=BUY, 0=SELL
-    char reason[16];     // "TP", "SL", "TIME", "SESSION_CLOSE"
-};
-
 struct TradeLogBuffer {
     TradeLogRecord records[TRADE_LOG_BUF_SIZE];
     uint32_t head;
@@ -110,20 +135,18 @@ static inline void TradeLogBuffer_Init(TradeLogBuffer *buf) {
 static inline void TradeLogBuffer_PushBuy(TradeLogBuffer *buf, uint64_t tick,
                                            double price, double qty,
                                            double tp, double sl,
-                                           double bc_p, double bc_v) {
+                                           double bc_p, double bc_v,
+                                           double stddev, double avg, double balance,
+                                           double fee_cost, double spacing, double gate_dist_pct,
+                                           int strategy_id, int regime) {
     if (buf->count >= TRADE_LOG_BUF_SIZE) return; // overflow safety
     TradeLogRecord *r = &buf->records[buf->head];
-    r->tick = tick;
-    r->price = price;
-    r->quantity = qty;
-    r->tp = tp;
-    r->sl = sl;
-    r->buy_cond_p = bc_p;
-    r->buy_cond_v = bc_v;
-    r->is_buy = 1;
-    r->entry_price = 0;
-    r->delta_pct = 0;
-    r->reason[0] = '\0';
+    r->tick = tick; r->price = price; r->quantity = qty;
+    r->tp = tp; r->sl = sl; r->buy_cond_p = bc_p; r->buy_cond_v = bc_v;
+    r->stddev = stddev; r->avg = avg; r->balance = balance;
+    r->fee_cost = fee_cost; r->spacing = spacing; r->gate_dist_pct = gate_dist_pct;
+    r->is_buy = 1; r->strategy_id = strategy_id; r->regime = regime;
+    r->entry_price = 0; r->delta_pct = 0; r->reason[0] = '\0';
     buf->head = (buf->head + 1) & (TRADE_LOG_BUF_SIZE - 1);
     buf->count++;
 }
@@ -131,17 +154,17 @@ static inline void TradeLogBuffer_PushBuy(TradeLogBuffer *buf, uint64_t tick,
 static inline void TradeLogBuffer_PushSell(TradeLogBuffer *buf, uint64_t tick,
                                             double price, double qty,
                                             double entry_price, double delta_pct,
-                                            const char *reason) {
+                                            const char *reason,
+                                            double balance, double fee_cost,
+                                            int strategy_id, int regime) {
     if (buf->count >= TRADE_LOG_BUF_SIZE) return;
     TradeLogRecord *r = &buf->records[buf->head];
-    r->tick = tick;
-    r->price = price;
-    r->quantity = qty;
-    r->entry_price = entry_price;
-    r->delta_pct = delta_pct;
-    r->is_buy = 0;
+    r->tick = tick; r->price = price; r->quantity = qty;
+    r->entry_price = entry_price; r->delta_pct = delta_pct;
+    r->is_buy = 0; r->strategy_id = strategy_id; r->regime = regime;
+    r->balance = balance; r->fee_cost = fee_cost;
     r->tp = 0; r->sl = 0; r->buy_cond_p = 0; r->buy_cond_v = 0;
-    // copy reason string
+    r->stddev = 0; r->avg = 0; r->spacing = 0; r->gate_dist_pct = 0;
     int i = 0;
     while (reason[i] && i < 15) { r->reason[i] = reason[i]; i++; }
     r->reason[i] = '\0';
@@ -157,9 +180,9 @@ static inline void TradeLogBuffer_Drain(TradeLogBuffer *buf, TradeLog *log) {
         uint32_t idx = (start + i) & (TRADE_LOG_BUF_SIZE - 1);
         TradeLogRecord *r = &buf->records[idx];
         if (r->is_buy) {
-            TradeLog_Buy(log, r->tick, r->price, r->quantity, r->tp, r->sl, r->buy_cond_p, r->buy_cond_v);
+            TradeLog_Buy(log, r);
         } else {
-            TradeLog_Sell(log, r->tick, r->price, r->quantity, r->entry_price, r->delta_pct, r->reason);
+            TradeLog_Sell(log, r);
         }
     }
     buf->count = 0;

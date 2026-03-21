@@ -59,6 +59,7 @@ template <unsigned F> struct PortfolioController {
       total_hold_ticks;     // cumulative ticks held across all closed positions
   uint64_t entry_ticks[16]; // tick at which each position was entered (indexed
                             // by slot)
+  time_t entry_time[16];    // wall clock time at entry (for hold duration display)
   uint8_t entry_strategy[16]; // which strategy_id entered each position (for regime adjustment)
 
   int state;
@@ -97,6 +98,7 @@ inline void PortfolioController_Init(PortfolioController<F> *ctrl,
   ctrl->total_hold_ticks = 0;
   for (int i = 0; i < 16; i++) {
     ctrl->entry_ticks[i] = 0;
+    ctrl->entry_time[i] = 0;
     ctrl->entry_strategy[i] = STRATEGY_MEAN_REVERSION;
   }
 
@@ -347,6 +349,7 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
       ctrl->total_buys++;
       if (slot >= 0) {
         ctrl->entry_ticks[slot] = ctrl->total_ticks;
+        ctrl->entry_time[slot] = time(NULL);
         ctrl->entry_strategy[slot] = (uint8_t)ctrl->strategy_id;
         ctrl->portfolio.positions[slot].original_tp = tp_price;
         ctrl->portfolio.positions[slot].original_sl = sl_price;
@@ -357,11 +360,18 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
       ctrl->total_fees = FPN_AddSat(ctrl->total_fees, entry_fee);
 
       // buffer buy record (no file I/O on hot path)
-      TradeLogBuffer_PushBuy(&ctrl->trade_buf, ctrl->total_ticks,
+      { double _avg = FPN_ToDouble(ctrl->rolling.price_avg);
+        double _stddev = FPN_ToDouble(ctrl->rolling.price_stddev);
+        double _spacing = FPN_ToDouble(RollingStats_EntrySpacing(&ctrl->rolling, ctrl->config.spacing_multiplier));
+        double _bp = FPN_ToDouble(ctrl->buy_conds.price);
+        double _gdist = (_avg != 0.0) ? ((FPN_ToDouble(fill_price) - _bp) / _avg) * 100.0 : 0.0;
+        TradeLogBuffer_PushBuy(&ctrl->trade_buf, ctrl->total_ticks,
                               FPN_ToDouble(fill_price), FPN_ToDouble(sized_qty),
                               FPN_ToDouble(tp_price), FPN_ToDouble(sl_price),
-                              FPN_ToDouble(ctrl->buy_conds.price),
-                              FPN_ToDouble(ctrl->buy_conds.volume));
+                              _bp, FPN_ToDouble(ctrl->buy_conds.volume),
+                              _stddev, _avg, FPN_ToDouble(ctrl->balance),
+                              FPN_ToDouble(entry_fee), _spacing, _gdist,
+                              ctrl->strategy_id, ctrl->regime.current_regime); }
     }
 
     fills &= fills - 1;
@@ -440,7 +450,10 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
     ctrl->total_hold_ticks +=
         (rec->tick > entry_tick) ? (rec->tick - entry_tick) : 0;
     TradeLogBuffer_PushSell(&ctrl->trade_buf, rec->tick, exit_d, qty_d, entry_d,
-                            delta_pct, reason);
+                            delta_pct, reason,
+                            FPN_ToDouble(ctrl->balance), FPN_ToDouble(exit_fee),
+                            ctrl->entry_strategy[rec->position_index],
+                            ctrl->regime.current_regime);
   }
   ExitBuffer_Clear(&ctrl->exit_buf);
 
@@ -485,7 +498,9 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
           ctrl->total_hold_ticks += held;
 
           TradeLogBuffer_PushSell(&ctrl->trade_buf, ctrl->total_ticks, exit_d, qty_d,
-                                  entry_d, delta_pct, "TIME");
+                                  entry_d, delta_pct, "TIME",
+                                  FPN_ToDouble(ctrl->balance), FPN_ToDouble(exit_fee),
+                                  ctrl->entry_strategy[idx], ctrl->regime.current_regime);
           Portfolio_RemovePosition(&ctrl->portfolio, idx);
         }
       }
@@ -521,6 +536,7 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
       int old_strategy = ctrl->strategy_id;
       ctrl->strategy_id = Regime_ToStrategy(new_regime);
       ctrl->regime.regime_start_tick = ctrl->total_ticks;
+      ctrl->regime.regime_start_time = time(NULL);
       if (ctrl->strategy_id != old_strategy)
         Regime_AdjustPositions(&ctrl->portfolio, &ctrl->rolling,
                                 old_regime, new_regime, ctrl->entry_strategy, &ctrl->config);

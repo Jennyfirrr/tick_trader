@@ -470,8 +470,16 @@ static void test_trade_log() {
     int ok = TradeLog_Init(&log, "TEST");
     check("log init", ok);
 
-    TradeLog_Buy(&log, 100, 98.50, 600.0, 101.45, 97.02, 100.0, 400.0);
-    TradeLog_Sell(&log, 200, 101.23, 600.0, 98.50, 2.77, "TP");
+    { TradeLogRecord r = {};
+      r.tick = 100; r.price = 98.50; r.quantity = 600.0;
+      r.tp = 101.45; r.sl = 97.02; r.buy_cond_p = 100.0; r.buy_cond_v = 400.0;
+      r.is_buy = 1;
+      TradeLog_Buy(&log, &r); }
+    { TradeLogRecord r = {};
+      r.tick = 200; r.price = 101.23; r.quantity = 600.0;
+      r.entry_price = 98.50; r.delta_pct = 2.77;
+      snprintf(r.reason, sizeof(r.reason), "TP");
+      TradeLog_Sell(&log, &r); }
     TradeLog_Close(&log);
 
     // read back and verify
