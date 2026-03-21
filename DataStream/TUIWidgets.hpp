@@ -398,14 +398,19 @@ static inline Element Widget_PriceGraph(const TUISnapshot *s) {
     double range = mx - mn;
     if (range < 0.01) range = 0.01;
 
-    // build graph data (0-100 scaled)
-    auto graph_fn = [&](int width, int height) {
+    // copy data into a vector (captured by value in the lambda)
+    // the lambda is called later during Render — local vars would be dangling
+    std::vector<double> data(len);
+    for (int i = 0; i < len; i++)
+        data[i] = s->price_history[(start + i) % TUISnapshot::GRAPH_LEN];
+
+    auto graph_fn = [data, mn, range](int width, int height) {
         std::vector<int> out(width, 0);
+        int dlen = (int)data.size();
         for (int x = 0; x < width; x++) {
-            int idx = (int)((double)x / width * len);
-            if (idx >= len) idx = len - 1;
-            double v = s->price_history[(start + idx) % TUISnapshot::GRAPH_LEN];
-            out[x] = (int)(((v - mn) / range) * (height - 1));
+            int idx = (int)((double)x / width * dlen);
+            if (idx >= dlen) idx = dlen - 1;
+            out[x] = (int)(((data[idx] - mn) / range) * (height - 1));
         }
         return out;
     };
@@ -439,13 +444,17 @@ static inline Element Widget_PnLGraph(const TUISnapshot *s) {
     double range = mx - mn;
     if (range < 0.01) range = 0.01;
 
-    auto graph_fn = [&](int width, int height) {
+    std::vector<double> data(len);
+    for (int i = 0; i < len; i++)
+        data[i] = s->pnl_history[(start + i) % TUISnapshot::GRAPH_LEN];
+
+    auto graph_fn = [data, mn, range](int width, int height) {
         std::vector<int> out(width, 0);
+        int dlen = (int)data.size();
         for (int x = 0; x < width; x++) {
-            int idx = (int)((double)x / width * len);
-            if (idx >= len) idx = len - 1;
-            double v = s->pnl_history[(start + idx) % TUISnapshot::GRAPH_LEN];
-            out[x] = (int)(((v - mn) / range) * (height - 1));
+            int idx = (int)((double)x / width * dlen);
+            if (idx >= dlen) idx = dlen - 1;
+            out[x] = (int)(((data[idx] - mn) / range) * (height - 1));
         }
         return out;
     };
