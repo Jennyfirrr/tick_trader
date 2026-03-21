@@ -57,6 +57,15 @@ template <unsigned F> struct ControllerConfig {
   // time-based exit (disabled by default)
   uint32_t max_hold_ticks;    // close position if held longer than this (0 = disabled)
   FPN<F> min_hold_gain_pct;   // only time-exit if gain < this % (e.g. 0.001 = 0.1%)
+  // regime detection
+  FPN<F> regime_slope_threshold;  // relative slope magnitude for TRENDING (e.g. 0.001 = 0.1%/tick)
+  FPN<F> regime_r2_threshold;     // min R² for TRENDING (e.g. 0.70)
+  FPN<F> regime_volatile_stddev;  // stddev/price ratio for VOLATILE (e.g. 0.003 = 0.3%)
+  uint32_t regime_hysteresis;     // slow-path cycles before regime switch (e.g. 5)
+  // momentum strategy
+  FPN<F> momentum_breakout_mult;  // buy when price > avg + stddev * this (e.g. 1.5)
+  FPN<F> momentum_tp_mult;        // TP multiplier for momentum (e.g. 3.0 stddevs)
+  FPN<F> momentum_sl_mult;        // SL multiplier for momentum (e.g. 1.0 stddevs)
 };
 //======================================================================================================
 template <unsigned F> inline ControllerConfig<F> ControllerConfig_Default() {
@@ -92,6 +101,15 @@ template <unsigned F> inline ControllerConfig<F> ControllerConfig_Default() {
   cfg.sl_trail_mult = FPN_FromDouble<F>(2.0);     // trail SL 2 stddevs below price
   cfg.max_hold_ticks = 0;                          // 0 = disabled
   cfg.min_hold_gain_pct = FPN_FromDouble<F>(0.001); // 0.1% — only time-exit if below this gain
+  // regime detection
+  cfg.regime_slope_threshold = FPN_FromDouble<F>(0.001);  // 0.1%/tick relative slope = trending
+  cfg.regime_r2_threshold    = FPN_FromDouble<F>(0.70);   // 70% consistency for trending
+  cfg.regime_volatile_stddev = FPN_FromDouble<F>(0.003);  // 0.3% stddev/price = volatile
+  cfg.regime_hysteresis      = 5;                          // 5 slow-path cycles before switch
+  // momentum strategy
+  cfg.momentum_breakout_mult = FPN_FromDouble<F>(1.5);    // buy 1.5σ above avg
+  cfg.momentum_tp_mult       = FPN_FromDouble<F>(3.0);    // wider TP for trends
+  cfg.momentum_sl_mult       = FPN_FromDouble<F>(1.0);    // tighter SL than MR
   return cfg;
 }
 //======================================================================================================
@@ -208,6 +226,22 @@ inline ControllerConfig<F> ControllerConfig_Load(const char *filepath) {
       cfg.max_hold_ticks = (uint32_t)atol(val);
     else if (strcmp(key, "min_hold_gain_pct") == 0)
       cfg.min_hold_gain_pct = FPN_FromDouble<F>(atof(val) / 100.0);
+    // regime detection
+    else if (strcmp(key, "regime_slope_threshold") == 0)
+      cfg.regime_slope_threshold = FPN_FromDouble<F>(atof(val));
+    else if (strcmp(key, "regime_r2_threshold") == 0)
+      cfg.regime_r2_threshold = FPN_FromDouble<F>(atof(val) / 100.0);
+    else if (strcmp(key, "regime_volatile_stddev") == 0)
+      cfg.regime_volatile_stddev = FPN_FromDouble<F>(atof(val));
+    else if (strcmp(key, "regime_hysteresis") == 0)
+      cfg.regime_hysteresis = (uint32_t)atol(val);
+    // momentum strategy
+    else if (strcmp(key, "momentum_breakout_mult") == 0)
+      cfg.momentum_breakout_mult = FPN_FromDouble<F>(atof(val));
+    else if (strcmp(key, "momentum_tp_mult") == 0)
+      cfg.momentum_tp_mult = FPN_FromDouble<F>(atof(val));
+    else if (strcmp(key, "momentum_sl_mult") == 0)
+      cfg.momentum_sl_mult = FPN_FromDouble<F>(atof(val));
   }
 
   fclose(f);

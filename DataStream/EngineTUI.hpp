@@ -257,9 +257,10 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
                  C_SAND "    TP:" C_GREEN "$%.0f" C_RESET "%s"
                  C_SAND " SL:" C_RED "$%.0f" C_RESET,
                  tp, trail_status, sl);
+        double hold_min = (double)(ctrl->total_ticks - ctrl->entry_ticks[idx]) / 3.0 / 60.0;
         snprintf(pos_buf[pln++], POS_LINE_W,
-                 C_SAND "    g:" "%s%+.2f%%" C_SAND " n:" "%s%+.2f%%" C_RESET,
-                 C_PNL(pos_pnl), pos_pnl, C_PNL(net_pnl), net_pnl);
+                 C_SAND "    g:" "%s%+.2f%%" C_SAND " n:" "%s%+.2f%%" C_DIM " hold:%.0fm" C_RESET,
+                 C_PNL(pos_pnl), pos_pnl, C_PNL(net_pnl), net_pnl, hold_min);
         displayed++;
         active &= active - 1;
         if (pln >= POS_MAX_LINES - 4) break;  // safety
@@ -510,6 +511,10 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
                (unsigned long)tui->slow_count); row++;
     }
 #endif
+    // pad left column if right column (positions) extends further down
+    { int pos_end_row = pos_start_row + pln;
+      while (row < pos_end_row) { printf("\n"); row++; } }
+
     printf(C_PINK "  [q]" C_DIM "uit  " C_PINK "[p]" C_DIM "ause  " C_PINK "[r]" C_DIM "eload config" C_RESET "                \n"); row++;
 
     //==================================================================================================
@@ -551,15 +556,10 @@ static inline char TUI_HandleInput(EngineTUI *tui, PortfolioController<F> *ctrl,
     }
 
     if (c == 'p' || c == 'P') {
-        // toggle pause - zero out buy gate to stop new entries
-        // exit gate still runs so existing positions are protected
         int is_paused = FPN_IsZero(ctrl->buy_conds.price);
-        if (is_paused) {
-            // unpause - recompute buy conditions with all gates applied
-            // (restoring buy_conds_initial would bypass the multi-timeframe gate)
-            ctrl->buy_conds = MeanReversion_BuySignal(&ctrl->mean_rev, &ctrl->rolling,
-                                                       ctrl->rolling_long, &ctrl->config);
-        } else {
+        if (is_paused)
+            PortfolioController_Unpause(ctrl);
+        else {
             ctrl->buy_conds.price  = FPN_Zero<F>();
             ctrl->buy_conds.volume = FPN_Zero<F>();
         }
@@ -567,41 +567,15 @@ static inline char TUI_HandleInput(EngineTUI *tui, PortfolioController<F> *ctrl,
     }
 
     if (c == 'r' || c == 'R') {
-        // hot-swap config reload - all fields except symbol/testnet/warmup (need restart)
         ControllerConfig<F> new_cfg = ControllerConfig_Load<F>(config_path);
-        ctrl->config.poll_interval     = new_cfg.poll_interval;
-        ctrl->config.r2_threshold      = new_cfg.r2_threshold;
-        ctrl->config.slope_scale_buy   = new_cfg.slope_scale_buy;
-        ctrl->config.max_shift         = new_cfg.max_shift;
-        ctrl->config.take_profit_pct   = new_cfg.take_profit_pct;
-        ctrl->config.stop_loss_pct     = new_cfg.stop_loss_pct;
-        ctrl->config.fee_rate          = new_cfg.fee_rate;
-        ctrl->config.risk_pct          = new_cfg.risk_pct;
-        ctrl->config.volume_multiplier = new_cfg.volume_multiplier;
-        ctrl->config.entry_offset_pct  = new_cfg.entry_offset_pct;
-        ctrl->config.spacing_multiplier = new_cfg.spacing_multiplier;
-        ctrl->config.offset_min        = new_cfg.offset_min;
-        ctrl->config.offset_max        = new_cfg.offset_max;
-        ctrl->config.vol_mult_min      = new_cfg.vol_mult_min;
-        ctrl->config.vol_mult_max      = new_cfg.vol_mult_max;
-        ctrl->config.filter_scale      = new_cfg.filter_scale;
-        ctrl->config.max_drawdown_pct  = new_cfg.max_drawdown_pct;
-        ctrl->config.max_exposure_pct  = new_cfg.max_exposure_pct;
-        ctrl->config.offset_stddev_mult = new_cfg.offset_stddev_mult;
-        ctrl->config.offset_stddev_min  = new_cfg.offset_stddev_min;
-        ctrl->config.offset_stddev_max  = new_cfg.offset_stddev_max;
-        ctrl->config.min_long_slope     = new_cfg.min_long_slope;
-        ctrl->config.tp_hold_score      = new_cfg.tp_hold_score;
-        ctrl->config.tp_trail_mult      = new_cfg.tp_trail_mult;
-        ctrl->config.sl_trail_mult      = new_cfg.sl_trail_mult;
-        ctrl->config.max_hold_ticks     = new_cfg.max_hold_ticks;
-        ctrl->config.min_hold_gain_pct  = new_cfg.min_hold_gain_pct;
-        // reset live filters to new config values
-        ctrl->mean_rev.live_offset_pct  = new_cfg.entry_offset_pct;
-        ctrl->mean_rev.live_vol_mult   = new_cfg.volume_multiplier;
-        ctrl->mean_rev.live_stddev_mult = new_cfg.offset_stddev_mult;
+        PortfolioController_HotReload(ctrl, new_cfg);
         fprintf(stderr, "[TUI] config reloaded from %s\n", config_path);
         return 'r';
+    }
+
+    if (c == 's' || c == 'S') {
+        PortfolioController_CycleRegime(ctrl);
+        return 's';
     }
 
     return 0;
@@ -628,6 +602,7 @@ struct TUIPositionSnap {
     double entry, qty, tp, sl, orig_tp;
     double value, gross_pnl, net_pnl;
     int is_trailing, above_orig_tp;
+    uint64_t ticks_held;
 };
 
 struct TUISnapshot {
@@ -666,6 +641,10 @@ struct TUISnapshot {
     // risk
     double risk_amt, max_dd;
     int breaker_tripped;
+    // regime
+    int current_regime;   // REGIME_RANGING, REGIME_TRENDING, REGIME_VOLATILE
+    int strategy_id;      // STRATEGY_MEAN_REVERSION or STRATEGY_MOMENTUM
+    double regime_duration_min; // minutes in current regime
     // config display
     double cfg_tp, cfg_sl, cfg_fee;
     int trailing_enabled;
@@ -702,6 +681,7 @@ struct TUISharedState {
     volatile sig_atomic_t quit_requested;
     volatile sig_atomic_t pause_requested;
     volatile sig_atomic_t reload_requested;
+    volatile sig_atomic_t regime_cycle_requested;
     EngineTUI tui;
     const char *config_path;
 };
@@ -781,6 +761,7 @@ static inline void TUI_CopySnapshot(TUISnapshot *snap,
         ps->net_pnl   = ps->gross_pnl - (fee_r * 200.0);
         ps->is_trailing  = !FPN_Equal(pos->take_profit_price, pos->original_tp);
         ps->above_orig_tp = (price_d > ps->orig_tp) && (ps->entry != 0.0);
+        ps->ticks_held   = ctrl->total_ticks - ctrl->entry_ticks[idx];
         snap->total_value += ps->value;
         snap->total_qty   += ps->qty;
         active &= active - 1;
@@ -805,6 +786,12 @@ static inline void TUI_CopySnapshot(TUISnapshot *snap,
     snap->risk_amt   = FPN_ToDouble(ctrl->config.risk_pct) * 100.0;
     snap->max_dd     = FPN_ToDouble(ctrl->config.max_drawdown_pct) * 100.0;
     snap->breaker_tripped = (snap->total_pnl < -(starting * FPN_ToDouble(ctrl->config.max_drawdown_pct)));
+
+    // regime
+    snap->current_regime = ctrl->regime.current_regime;
+    snap->strategy_id    = ctrl->strategy_id;
+    uint64_t regime_ticks = ctrl->total_ticks - ctrl->regime.regime_start_tick;
+    snap->regime_duration_min = (double)regime_ticks / 3.0 / 60.0; // ~3 ticks/sec
 
     // config
     snap->cfg_tp  = FPN_ToDouble(ctrl->config.take_profit_pct) * 100.0;
@@ -873,9 +860,10 @@ static inline void TUI_Render_Snapshot(EngineTUI *tui, const TUISnapshot *s) {
         snprintf(pos_buf[pln++], SNAP_POS_W,
                  C_SAND "    TP:" C_GREEN "$%.0f" C_RESET "%s" C_SAND " SL:" C_RED "$%.0f" C_RESET,
                  ps->tp, trail_status, ps->sl);
+        double hold_min = (double)ps->ticks_held / 3.0 / 60.0; // ~3 ticks/sec
         snprintf(pos_buf[pln++], SNAP_POS_W,
-                 C_SAND "    g:" "%s%+.2f%%" C_SAND " n:" "%s%+.2f%%" C_RESET,
-                 C_PNL(ps->gross_pnl), ps->gross_pnl, C_PNL(ps->net_pnl), ps->net_pnl);
+                 C_SAND "    g:" "%s%+.2f%%" C_SAND " n:" "%s%+.2f%%" C_DIM " hold:%.0fm" C_RESET,
+                 C_PNL(ps->gross_pnl), ps->gross_pnl, C_PNL(ps->net_pnl), ps->net_pnl, hold_min);
         displayed++;
         if (pln >= SNAP_POS_MAX - 4) break;
     }
@@ -954,8 +942,17 @@ static inline void TUI_Render_Snapshot(EngineTUI *tui, const TUISnapshot *s) {
     printf(C_BOLD C_PEACH "  RISK:" C_RESET "\n"); row++;
     printf(C_SAND "    risk/pos:   " C_FG "%.1f%%" C_RESET C_DIM "  |  " C_SAND "breaker: %s%s" C_RESET C_DIM " (max dd: %.0f%%)" C_RESET "\n",
            s->risk_amt, s->breaker_tripped ? C_BOLD C_RED : C_GREEN, s->breaker_tripped ? "TRIPPED" : "OK", s->max_dd); row++;
-    printf(C_SAND "    strategy:   " C_FG "MEAN REVERSION" C_RESET C_DIM " (%s)  |  " C_YELLOW "PAPER" C_RESET "\n",
-           s->stddev_mode ? "stddev" : "pct"); row++;
+    {
+        const char *strat_name = (s->strategy_id == STRATEGY_MOMENTUM) ? "MOMENTUM" : "MEAN REVERSION";
+        const char *regime_name = (s->current_regime == REGIME_TRENDING) ? "TRENDING" :
+                                  (s->current_regime == REGIME_VOLATILE) ? "VOLATILE" : "RANGING";
+        const char *regime_color = (s->current_regime == REGIME_TRENDING) ? C_GREEN :
+                                   (s->current_regime == REGIME_VOLATILE) ? C_RED : C_DIM;
+        printf(C_SAND "    strategy:   " C_FG "%s" C_RESET C_DIM " (%s)  |  " C_YELLOW "PAPER" C_RESET "\n",
+               strat_name, s->stddev_mode ? "stddev" : "pct"); row++;
+        printf(C_SAND "    regime:     %s%s" C_RESET C_DIM " (%.0fm)" C_RESET "\n",
+               regime_color, regime_name, s->regime_duration_min); row++;
+    }
     printf(C_SURF "  ----------------------------------------------------------------" C_RESET "\n"); row++;
 
     // config
@@ -995,9 +992,10 @@ static inline void TUI_Render_Snapshot(EngineTUI *tui, const TUISnapshot *s) {
     printf(C_BOLD C_PEACH "  LATENCY " C_DIM "(profiling, multicore):" C_RESET "\n"); row++;
     if (s->hot_count > 0) {
         printf(C_SAND "    hot path:  " C_FG "avg %.0fns" C_DIM "  min " C_FG "%.0fns" C_DIM "  max " C_FG "%.0fns"
-               C_DIM "  p50 " C_FG "%.0fns" C_DIM "  p95 " C_FG "%.0fns"
                C_DIM "  (%lu ticks)" C_RESET "\n", s->hot_avg_ns, s->hot_min_ns, s->hot_max_ns,
-               s->hot_p50_ns, s->hot_p95_ns, (unsigned long)s->hot_count); row++;
+               (unsigned long)s->hot_count); row++;
+        printf(C_DIM "               p50 " C_FG "%.0fns" C_DIM "  p95 " C_FG "%.0fns" C_RESET "\n",
+               s->hot_p50_ns, s->hot_p95_ns); row++;
         printf(C_DIM "      buygate:  " C_FG "avg %.0fns" C_DIM "  max " C_FG "%.0fns" C_RESET "\n", s->bg_avg_ns, s->bg_max_ns); row++;
         printf(C_DIM "      exitgate: " C_FG "avg %.0fns" C_DIM "  max " C_FG "%.0fns"
                C_DIM "  (%.0fns/pos)" C_RESET "\n", s->eg_avg_ns, s->eg_max_ns, s->eg_per_pos_ns); row++;
@@ -1019,7 +1017,11 @@ static inline void TUI_Render_Snapshot(EngineTUI *tui, const TUISnapshot *s) {
     }
 #endif
 
-    printf(C_PINK "  [q]" C_DIM "uit  " C_PINK "[p]" C_DIM "ause  " C_PINK "[r]" C_DIM "eload config" C_RESET "                \n"); row++;
+    // pad left column if right column (positions) extends further down
+    int pos_end_row = pos_start_row + pln;
+    while (row < pos_end_row) { printf("\n"); row++; }
+
+    printf(C_PINK "  [q]" C_DIM "uit  " C_PINK "[p]" C_DIM "ause  " C_PINK "[r]" C_DIM "eload  " C_PINK "[s]" C_DIM "witch regime" C_RESET "    \n"); row++;
 
     // right column positions
     int sep_col = 66;
@@ -1059,6 +1061,8 @@ static inline void *tui_thread_fn(void *arg) {
             __atomic_store_n(&shared->pause_requested, 1, __ATOMIC_RELEASE);
         else if (c == 'r' || c == 'R')
             __atomic_store_n(&shared->reload_requested, 1, __ATOMIC_RELEASE);
+        else if (c == 's' || c == 'S')
+            __atomic_store_n(&shared->regime_cycle_requested, 1, __ATOMIC_RELEASE);
 
         usleep(100000); // 10 FPS
     }

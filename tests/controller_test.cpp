@@ -505,6 +505,8 @@ static void test_branchless() {
     cfg.warmup_ticks  = 5;
     cfg.poll_interval = 1;
     cfg.r2_threshold  = FPN_FromDouble<FP>(0.80); // HIGH threshold
+    cfg.regime_volatile_stddev = FPN_FromDouble<FP>(1.0); // disable volatile detection for this test
+    cfg.regime_hysteresis = 1000; // prevent regime switching during test
 
     PortfolioController<FP> ctrl = {};
     PortfolioController_Init(&ctrl, cfg);

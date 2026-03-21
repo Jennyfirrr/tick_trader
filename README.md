@@ -5,8 +5,8 @@ Tick-level crypto trading engine in C++. Branchless fixed-point arithmetic, bitm
 ## Quick Start
 
 ```bash
-# build
-g++ -std=c++17 -O2 -lssl -lcrypto -o engine main.cpp
+# build (multicore TUI, production)
+make
 
 # run (connects to Binance, paper trades BTC)
 ./engine

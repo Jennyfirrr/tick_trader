@@ -19,6 +19,8 @@
 #include "../DataStream/TradeLog.hpp"
 #include "../ML_Headers/RollingStats.hpp"
 #include "../Strategies/MeanReversion.hpp"
+#include "../Strategies/Momentum.hpp"
+#include "../Strategies/RegimeDetector.hpp"
 #include <stdio.h>
 //======================================================================================================
 // [CONTROLLER STRUCT]
@@ -57,6 +59,7 @@ template <unsigned F> struct PortfolioController {
       total_hold_ticks;     // cumulative ticks held across all closed positions
   uint64_t entry_ticks[16]; // tick at which each position was entered (indexed
                             // by slot)
+  uint8_t entry_strategy[16]; // which strategy_id entered each position (for regime adjustment)
 
   int state;
   FPN<F> price_sum;
@@ -65,6 +68,8 @@ template <unsigned F> struct PortfolioController {
 
   int strategy_id;
   MeanReversionState<F> mean_rev;
+  MomentumState<F> momentum;
+  RegimeState<F> regime;
   TradeLogBuffer trade_buf;  // buffered trade log — hot path pushes, slow path drains
 
   //================================================================================================
@@ -90,8 +95,10 @@ inline void PortfolioController_Init(PortfolioController<F> *ctrl,
   ctrl->gross_wins = FPN_Zero<F>();
   ctrl->gross_losses = FPN_Zero<F>();
   ctrl->total_hold_ticks = 0;
-  for (int i = 0; i < 16; i++)
+  for (int i = 0; i < 16; i++) {
     ctrl->entry_ticks[i] = 0;
+    ctrl->entry_strategy[i] = STRATEGY_MEAN_REVERSION;
+  }
 
   ctrl->rolling = RollingStats_Init<F>();
 
@@ -99,9 +106,11 @@ inline void PortfolioController_Init(PortfolioController<F> *ctrl,
   // LessThanOrEqual
   ctrl->buy_conds.price = FPN_Zero<F>();
   ctrl->buy_conds.volume = FPN_Zero<F>();
+  ctrl->buy_conds.gate_direction = 0;  // default: buy below (mean reversion)
 
-  // init strategy state
+  // init strategy states — both ready at startup so regime switch is instant
   ctrl->strategy_id = STRATEGY_MEAN_REVERSION;
+  // mean reversion
   ctrl->mean_rev.feeder = RegressionFeederX_Init<F>();
   ctrl->mean_rev.price_feeder = RegressionFeederX_Init<F>();
   ctrl->mean_rev.ror = RORRegressor_Init<F>();
@@ -110,6 +119,16 @@ inline void PortfolioController_Init(PortfolioController<F> *ctrl,
   ctrl->mean_rev.live_stddev_mult = config.offset_stddev_mult;
   ctrl->mean_rev.buy_conds_initial = ctrl->buy_conds;
   ctrl->mean_rev.has_regression = 0;
+  // momentum
+  ctrl->momentum.feeder = RegressionFeederX_Init<F>();
+  ctrl->momentum.price_feeder = RegressionFeederX_Init<F>();
+  ctrl->momentum.ror = RORRegressor_Init<F>();
+  ctrl->momentum.live_breakout_mult = config.momentum_breakout_mult;
+  ctrl->momentum.live_vol_mult = config.volume_multiplier;
+  ctrl->momentum.buy_conds_initial = ctrl->buy_conds;
+  ctrl->momentum.has_regression = 0;
+  // regime detector
+  Regime_Init(&ctrl->regime, config.regime_hysteresis);
 
   ExitBuffer_Init(&ctrl->exit_buf);
   TradeLogBuffer_Init(&ctrl->trade_buf);
@@ -157,12 +176,13 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
     RollingStats_Push(ctrl->rolling_long, current_price, current_volume);
 
     if (ctrl->warmup_count >= ctrl->config.warmup_ticks) {
+      // init both strategies so either can activate instantly on regime switch
       MeanReversion_Init(&ctrl->mean_rev, &ctrl->rolling, &ctrl->buy_conds);
-      // apply buy signal immediately so multi-timeframe gate is active from tick 1
-      // without this, there's a poll_interval gap where buy_conds are set but the
-      // gate hasn't been applied — BuyGate could trigger a fill in a downtrend
+      Momentum_Init(&ctrl->momentum, &ctrl->rolling, &ctrl->buy_conds);
+      // apply active strategy's buy signal immediately
       ctrl->buy_conds = MeanReversion_BuySignal(&ctrl->mean_rev, &ctrl->rolling,
                                                  ctrl->rolling_long, &ctrl->config);
+      ctrl->buy_conds.gate_direction = 0;
       ctrl->state = CONTROLLER_ACTIVE;
     }
     return;
@@ -263,11 +283,17 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
       FPN<F> stddev = ctrl->rolling.price_stddev;
       int has_stats = !FPN_IsZero(stddev);
 
-      // volatility path: TP = entry + stddev * tp_mult, SL = entry - stddev *
-      // sl_mult
+      // volatility path: TP = entry + stddev * tp_mult, SL = entry - stddev * sl_mult
+      // strategy-aware: momentum uses wider TP / tighter SL than mean reversion
       FPN<F> hundred = FPN_FromDouble<F>(100.0);
-      FPN<F> tp_mult = FPN_Mul(ctrl->config.take_profit_pct, hundred);
-      FPN<F> sl_mult = FPN_Mul(ctrl->config.stop_loss_pct, hundred);
+      FPN<F> tp_mult, sl_mult;
+      if (ctrl->strategy_id == STRATEGY_MOMENTUM) {
+          tp_mult = FPN_Mul(ctrl->config.momentum_tp_mult, hundred);
+          sl_mult = FPN_Mul(ctrl->config.momentum_sl_mult, hundred);
+      } else {
+          tp_mult = FPN_Mul(ctrl->config.take_profit_pct, hundred);
+          sl_mult = FPN_Mul(ctrl->config.stop_loss_pct, hundred);
+      }
       FPN<F> tp_offset = FPN_Mul(stddev, tp_mult);
       FPN<F> sl_offset = FPN_Mul(stddev, sl_mult);
 
@@ -321,6 +347,7 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
       ctrl->total_buys++;
       if (slot >= 0) {
         ctrl->entry_ticks[slot] = ctrl->total_ticks;
+        ctrl->entry_strategy[slot] = (uint8_t)ctrl->strategy_id;
         ctrl->portfolio.positions[slot].original_tp = tp_price;
         ctrl->portfolio.positions[slot].original_sl = sl_price;
       }
@@ -484,49 +511,256 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
   FPN<F> estimated_exit_fees = FPN_Mul(portfolio_value, ctrl->config.fee_rate);
   ctrl->portfolio_delta = FPN_Sub(gross_pnl, estimated_exit_fees);
 
-  // strategy: adapt filters and compute buy gate conditions
-  MeanReversion_Adapt(&ctrl->mean_rev, current_price, ctrl->portfolio_delta,
-                       ctrl->portfolio.active_bitmap, &ctrl->buy_conds,
-                       &ctrl->config);
-  // trailing TP/SL: after Adapt (which pushes price_feeder), adjust exit levels
-  // for positions running past their original TP
-  MeanReversion_ExitAdjust(&ctrl->portfolio, current_price, &ctrl->rolling,
-                            &ctrl->mean_rev, &ctrl->config);
-  ctrl->buy_conds = MeanReversion_BuySignal(&ctrl->mean_rev, &ctrl->rolling,
-                                             ctrl->rolling_long, &ctrl->config);
+  // regime detection: classify market state and switch strategy if needed
+  {
+    int old_regime = ctrl->regime.current_regime;
+    Regime_Classify(&ctrl->regime, &ctrl->rolling, ctrl->rolling_long,
+                    ctrl->mean_rev.last_regression.r_squared, &ctrl->config);
+    int new_regime = ctrl->regime.current_regime;
+    if (new_regime != old_regime) {
+      int old_strategy = ctrl->strategy_id;
+      ctrl->strategy_id = Regime_ToStrategy(new_regime);
+      ctrl->regime.regime_start_tick = ctrl->total_ticks;
+      if (ctrl->strategy_id != old_strategy)
+        Regime_AdjustPositions(&ctrl->portfolio, &ctrl->rolling,
+                                old_regime, new_regime, ctrl->entry_strategy, &ctrl->config);
+    }
+  }
+
+  // strategy dispatch: adapt filters + compute buy gate based on active strategy
+  switch (ctrl->strategy_id) {
+  case STRATEGY_MEAN_REVERSION:
+    MeanReversion_Adapt(&ctrl->mean_rev, current_price, ctrl->portfolio_delta,
+                         ctrl->portfolio.active_bitmap, &ctrl->buy_conds,
+                         &ctrl->config);
+    MeanReversion_ExitAdjust(&ctrl->portfolio, current_price, &ctrl->rolling,
+                              &ctrl->mean_rev, &ctrl->config);
+    ctrl->buy_conds = MeanReversion_BuySignal(&ctrl->mean_rev, &ctrl->rolling,
+                                               ctrl->rolling_long, &ctrl->config);
+    ctrl->buy_conds.gate_direction = 0;  // buy below (dips)
+    break;
+  case STRATEGY_MOMENTUM:
+    Momentum_Adapt(&ctrl->momentum, current_price, ctrl->portfolio_delta,
+                    ctrl->portfolio.active_bitmap, &ctrl->buy_conds,
+                    &ctrl->config);
+    Momentum_ExitAdjust(&ctrl->portfolio, current_price, &ctrl->rolling,
+                         &ctrl->momentum, &ctrl->config);
+    ctrl->buy_conds = Momentum_BuySignal(&ctrl->momentum, &ctrl->rolling,
+                                          ctrl->rolling_long, &ctrl->config);
+    ctrl->buy_conds.gate_direction = 1;  // buy above (breakouts)
+    break;
+  }
+
+  // volatile regime: pause buying entirely (existing positions keep running)
+  if (ctrl->regime.current_regime == REGIME_VOLATILE) {
+    ctrl->buy_conds.price = FPN_Zero<F>();
+    ctrl->buy_conds.volume = FPN_Zero<F>();
+  }
 }
 //======================================================================================================
-// [SNAPSHOT SAVE/LOAD]
+// [SHARED FUNCTIONS — used by both multicore and single-threaded TUI paths]
 //======================================================================================================
-// saves portfolio + realized P&L + adaptive filter state to a binary snapshot
-// call on the slow path or after any position change
+// these eliminate duplication between main.cpp and EngineTUI.hpp so adding a new
+// strategy only requires updating these functions, not both TUI paths.
 //======================================================================================================
+
+// unpause: dispatch to active strategy's BuySignal
+template <unsigned F>
+inline void PortfolioController_Unpause(PortfolioController<F> *ctrl) {
+    switch (ctrl->strategy_id) {
+    case STRATEGY_MOMENTUM:
+        ctrl->buy_conds = Momentum_BuySignal(&ctrl->momentum, &ctrl->rolling,
+                                               ctrl->rolling_long, &ctrl->config);
+        break;
+    default:
+        ctrl->buy_conds = MeanReversion_BuySignal(&ctrl->mean_rev, &ctrl->rolling,
+                                                    ctrl->rolling_long, &ctrl->config);
+        break;
+    }
+}
+
+// manual regime cycle: RANGING → TRENDING → VOLATILE → RANGING
+template <unsigned F>
+inline void PortfolioController_CycleRegime(PortfolioController<F> *ctrl) {
+    int old = ctrl->regime.current_regime;
+    int next = (old + 1) % 3;
+    ctrl->regime.current_regime = next;
+    ctrl->regime.proposed_regime = next;
+    ctrl->regime.regime_start_tick = ctrl->total_ticks;
+    int old_strategy = ctrl->strategy_id;
+    ctrl->strategy_id = Regime_ToStrategy(next);
+    if (ctrl->strategy_id != old_strategy)
+        Regime_AdjustPositions(&ctrl->portfolio, &ctrl->rolling,
+                                old, next, ctrl->entry_strategy, &ctrl->config);
+    // volatile: pause buying
+    if (next == REGIME_VOLATILE) {
+        ctrl->buy_conds.price = FPN_Zero<F>();
+        ctrl->buy_conds.volume = FPN_Zero<F>();
+    }
+    fprintf(stderr, "[ENGINE] regime manually set to %s\n",
+            next == REGIME_TRENDING ? "TRENDING" : next == REGIME_VOLATILE ? "VOLATILE" : "RANGING");
+}
+
+// config hot-reload: one function for all fields, called from both TUI paths
+template <unsigned F>
+inline void PortfolioController_HotReload(PortfolioController<F> *ctrl,
+                                           const ControllerConfig<F> &new_cfg) {
+    ctrl->config.poll_interval       = new_cfg.poll_interval;
+    ctrl->config.r2_threshold        = new_cfg.r2_threshold;
+    ctrl->config.slope_scale_buy     = new_cfg.slope_scale_buy;
+    ctrl->config.max_shift           = new_cfg.max_shift;
+    ctrl->config.take_profit_pct     = new_cfg.take_profit_pct;
+    ctrl->config.stop_loss_pct       = new_cfg.stop_loss_pct;
+    ctrl->config.fee_rate            = new_cfg.fee_rate;
+    ctrl->config.risk_pct            = new_cfg.risk_pct;
+    ctrl->config.volume_multiplier   = new_cfg.volume_multiplier;
+    ctrl->config.entry_offset_pct    = new_cfg.entry_offset_pct;
+    ctrl->config.spacing_multiplier  = new_cfg.spacing_multiplier;
+    ctrl->config.offset_min          = new_cfg.offset_min;
+    ctrl->config.offset_max          = new_cfg.offset_max;
+    ctrl->config.vol_mult_min        = new_cfg.vol_mult_min;
+    ctrl->config.vol_mult_max        = new_cfg.vol_mult_max;
+    ctrl->config.filter_scale        = new_cfg.filter_scale;
+    ctrl->config.max_drawdown_pct    = new_cfg.max_drawdown_pct;
+    ctrl->config.max_exposure_pct    = new_cfg.max_exposure_pct;
+    ctrl->config.offset_stddev_mult  = new_cfg.offset_stddev_mult;
+    ctrl->config.offset_stddev_min   = new_cfg.offset_stddev_min;
+    ctrl->config.offset_stddev_max   = new_cfg.offset_stddev_max;
+    ctrl->config.min_long_slope      = new_cfg.min_long_slope;
+    ctrl->config.tp_hold_score       = new_cfg.tp_hold_score;
+    ctrl->config.tp_trail_mult       = new_cfg.tp_trail_mult;
+    ctrl->config.sl_trail_mult       = new_cfg.sl_trail_mult;
+    ctrl->config.max_hold_ticks      = new_cfg.max_hold_ticks;
+    ctrl->config.min_hold_gain_pct   = new_cfg.min_hold_gain_pct;
+    // regime + momentum
+    ctrl->config.regime_slope_threshold = new_cfg.regime_slope_threshold;
+    ctrl->config.regime_r2_threshold    = new_cfg.regime_r2_threshold;
+    ctrl->config.regime_volatile_stddev = new_cfg.regime_volatile_stddev;
+    ctrl->config.regime_hysteresis      = new_cfg.regime_hysteresis;
+    ctrl->config.momentum_breakout_mult = new_cfg.momentum_breakout_mult;
+    ctrl->config.momentum_tp_mult       = new_cfg.momentum_tp_mult;
+    ctrl->config.momentum_sl_mult       = new_cfg.momentum_sl_mult;
+    // reset adaptive filters to new values
+    ctrl->mean_rev.live_offset_pct    = new_cfg.entry_offset_pct;
+    ctrl->mean_rev.live_vol_mult      = new_cfg.volume_multiplier;
+    ctrl->mean_rev.live_stddev_mult   = new_cfg.offset_stddev_mult;
+    ctrl->momentum.live_breakout_mult = new_cfg.momentum_breakout_mult;
+    ctrl->momentum.live_vol_mult      = new_cfg.volume_multiplier;
+    ctrl->regime.hysteresis_threshold = new_cfg.regime_hysteresis;
+}
+
+//======================================================================================================
+// [SNAPSHOT SAVE/LOAD - v5]
+//======================================================================================================
+// persists full controller state for crash recovery and session resume
+// v5 adds: entry_ticks, entry_strategy, strategy_id, regime, momentum state
+// backward compatible: v4 loads gracefully (missing fields get defaults)
+//======================================================================================================
+#define CONTROLLER_SNAPSHOT_VERSION 5
+
 template <unsigned F>
 inline void PortfolioController_SaveSnapshot(const PortfolioController<F> *ctrl,
                                              const char *filepath) {
-  Portfolio_Save(&ctrl->portfolio, ctrl->realized_pnl,
-                 ctrl->mean_rev.live_offset_pct, ctrl->mean_rev.live_vol_mult,
-                 ctrl->mean_rev.live_stddev_mult, ctrl->balance, filepath);
+  FILE *f = fopen(filepath, "wb");
+  if (!f) { fprintf(stderr, "[SNAPSHOT] failed to open %s for writing\n", filepath); return; }
+
+  uint32_t magic = PORTFOLIO_SNAPSHOT_MAGIC;
+  uint32_t version = CONTROLLER_SNAPSHOT_VERSION;
+  fwrite(&magic, 4, 1, f);
+  fwrite(&version, 4, 1, f);
+
+  // portfolio (same as v4)
+  fwrite(&ctrl->portfolio.active_bitmap, 2, 1, f);
+  uint16_t pad = 0;
+  fwrite(&pad, 2, 1, f);
+  fwrite(ctrl->portfolio.positions, sizeof(Position<F>), 16, f);
+
+  // realized P&L + balance (same as v4)
+  fwrite(&ctrl->realized_pnl, sizeof(FPN<F>), 1, f);
+  fwrite(&ctrl->balance, sizeof(FPN<F>), 1, f);
+
+  // MR state (same as v4 but reordered for clarity)
+  fwrite(&ctrl->mean_rev.live_offset_pct, sizeof(FPN<F>), 1, f);
+  fwrite(&ctrl->mean_rev.live_vol_mult, sizeof(FPN<F>), 1, f);
+  fwrite(&ctrl->mean_rev.live_stddev_mult, sizeof(FPN<F>), 1, f);
+
+  // v5 new fields
+  fwrite(ctrl->entry_ticks, sizeof(uint64_t), 16, f);
+  fwrite(ctrl->entry_strategy, sizeof(uint8_t), 16, f);
+  fwrite(&ctrl->strategy_id, sizeof(int), 1, f);
+  fwrite(&ctrl->regime.current_regime, sizeof(int), 1, f);
+  fwrite(&ctrl->momentum.live_breakout_mult, sizeof(FPN<F>), 1, f);
+  fwrite(&ctrl->momentum.live_vol_mult, sizeof(FPN<F>), 1, f);
+
+  fflush(f);
+  fclose(f);
 }
 
 template <unsigned F>
 inline int PortfolioController_LoadSnapshot(PortfolioController<F> *ctrl,
                                             const char *filepath) {
-  FPN<F> realized, offset, vmult, stdmult, bal;
-  int ok = Portfolio_Load(&ctrl->portfolio, &realized, &offset, &vmult, &stdmult,
-                          &bal, filepath);
-  if (ok) {
+  FILE *f = fopen(filepath, "rb");
+  if (!f) return 0;
+
+  uint32_t magic, version;
+  if (fread(&magic, 4, 1, f) != 1 || magic != PORTFOLIO_SNAPSHOT_MAGIC) {
+    fprintf(stderr, "[SNAPSHOT] bad magic in %s - ignoring\n", filepath);
+    fclose(f); return 0;
+  }
+  if (fread(&version, 4, 1, f) != 1) { fclose(f); return 0; }
+
+  // reject anything older than v4
+  if (version < 4) {
+    fprintf(stderr, "[SNAPSHOT] version %u too old in %s - ignoring\n", version, filepath);
+    fclose(f); return 0;
+  }
+
+  // portfolio (v4+)
+  uint16_t bitmap, pad;
+  if (fread(&bitmap, 2, 1, f) != 1) { fclose(f); return 0; }
+  if (fread(&pad, 2, 1, f) != 1) { fclose(f); return 0; }
+  if (fread(ctrl->portfolio.positions, sizeof(Position<F>), 16, f) != 16) { fclose(f); return 0; }
+  ctrl->portfolio.active_bitmap = bitmap;
+
+  if (version == 4) {
+    // v4 format: realized_pnl, live_offset_pct, live_vol_mult, live_stddev_mult, balance
+    FPN<F> realized, offset, vmult, stdmult, bal;
+    if (fread(&realized, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
+    if (fread(&offset, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
+    if (fread(&vmult, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
+    if (fread(&stdmult, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
+    if (fread(&bal, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
     ctrl->realized_pnl = realized;
     ctrl->mean_rev.live_offset_pct = offset;
     ctrl->mean_rev.live_vol_mult = vmult;
     ctrl->mean_rev.live_stddev_mult = stdmult;
     ctrl->balance = bal;
-    // skip warmup if we have positions - we're resuming a session
-    if (ctrl->portfolio.active_bitmap != 0) {
-      ctrl->state = CONTROLLER_ACTIVE;
-    }
+    // v4 defaults for new fields
+    ctrl->strategy_id = STRATEGY_MEAN_REVERSION;
+    ctrl->regime.current_regime = REGIME_RANGING;
+    fprintf(stderr, "[SNAPSHOT] loaded v4 snapshot — defaulting to RANGING/MR\n");
+  } else {
+    // v5 format
+    if (fread(&ctrl->realized_pnl, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
+    if (fread(&ctrl->balance, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
+    if (fread(&ctrl->mean_rev.live_offset_pct, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
+    if (fread(&ctrl->mean_rev.live_vol_mult, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
+    if (fread(&ctrl->mean_rev.live_stddev_mult, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
+    if (fread(ctrl->entry_ticks, sizeof(uint64_t), 16, f) != 16) { fclose(f); return 0; }
+    if (fread(ctrl->entry_strategy, sizeof(uint8_t), 16, f) != 16) { fclose(f); return 0; }
+    if (fread(&ctrl->strategy_id, sizeof(int), 1, f) != 1) { fclose(f); return 0; }
+    if (fread(&ctrl->regime.current_regime, sizeof(int), 1, f) != 1) { fclose(f); return 0; }
+    if (fread(&ctrl->momentum.live_breakout_mult, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
+    if (fread(&ctrl->momentum.live_vol_mult, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
   }
-  return ok;
+
+  // skip warmup if we have positions - we're resuming a session
+  if (ctrl->portfolio.active_bitmap != 0)
+    ctrl->state = CONTROLLER_ACTIVE;
+
+  int count = __builtin_popcount(bitmap);
+  fprintf(stderr, "[SNAPSHOT] loaded %d positions from %s (v%u)\n", count, filepath, version);
+  return 1;
 }
 //======================================================================================================
 //======================================================================================================
