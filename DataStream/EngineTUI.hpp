@@ -303,13 +303,13 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
         printf(C_SAND "    price <= " C_FG "%-12.2f" C_DIM "  (offset: %.3f%%)" C_RESET "\n", buy_p, live_offset); row++;
     }
     printf(C_SAND "    vol   >= " C_FG "%-12.8f" C_DIM "  (mult: %.2fx)" C_RESET "\n", buy_v, live_vmult); row++;
+    double spacing_pct = (roll_price_avg != 0.0) ? (spacing / roll_price_avg) * 100.0 : 0.0;
     if (buy_p > 0.01) {
         printf(C_SAND "    distance:   " C_FG "$%-10.2f" C_DIM "  (%.3f%% away)" C_RESET "\n", gate_dist, gate_dist_pct); row++;
-        printf(C_SAND "    spacing:    " C_FG "$%-10.2f" C_DIM "  (min between entries)" C_RESET "\n", spacing); row++;
     } else {
         printf(C_SAND "    distance:   " C_DIM "—  (gate disabled)" C_RESET "\n"); row++;
-        printf(C_SAND "    spacing:    " C_FG "$%-10.2f" C_DIM "  (min between entries)" C_RESET "\n", spacing); row++;
     }
+    printf(C_SAND "    spacing:    " C_FG "$%-10.2f" C_DIM "  (%.3f%% of avg)" C_RESET "\n", spacing, spacing_pct); row++;
     // multi-timeframe gate status
     int long_gate_enabled = !FPN_IsZero(ctrl->config.min_long_slope);
     if (long_gate_enabled) {
@@ -382,10 +382,10 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
     double avg_hold = (total_exits > 0) ? (double)ctrl->total_hold_ticks / total_exits : 0.0;
 
     printf(C_BOLD C_PEACH "  STATS:" C_RESET "\n"); row++;
-    printf(C_SAND "    ticks: " C_FG "%-8lu" C_RESET
-           C_DIM "  |  " C_SAND "buys: " C_FG "%-4u" C_RESET
-           C_DIM "  |  " C_SAND "exits: " C_FG "%-4u" C_RESET "\n",
-           (unsigned long)tick, ctrl->total_buys, total_exits); row++;
+    printf(C_SAND "    buys: " C_FG "%-4u" C_RESET
+           C_DIM "  |  " C_SAND "exits: " C_FG "%-4u" C_RESET
+           C_DIM "  |  " C_SAND "hold: " C_FG "%.0f ticks" C_RESET "\n",
+           ctrl->total_buys, total_exits, avg_hold); row++;
     printf(C_SAND "    wins: " C_GREEN "%-4u" C_RESET
            C_SAND "  losses: " C_RED "%-4u" C_RESET
            C_SAND "  rate: " "%s%.1f%%" C_RESET
@@ -394,9 +394,8 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
            (win_rate >= 50.0) ? C_GREEN : (total_exits > 0 ? C_RED : C_DIM), win_rate,
            (profit_factor >= 1.0) ? C_GREEN : (total_exits > 0 ? C_RED : C_DIM), profit_factor); row++;
     printf(C_SAND "    avg win: " C_GREEN "$%.4f" C_RESET
-           C_SAND "  avg loss: " C_RED "$%.4f" C_RESET
-           C_SAND "  hold: " C_FG "%.0f ticks" C_RESET "\n",
-           avg_win, avg_loss, avg_hold); row++;
+           C_SAND "  avg loss: " C_RED "$%.4f" C_RESET "\n",
+           avg_win, avg_loss); row++;
     printf(C_DIM "    log: btcusdt_order_history.csv" C_RESET "\n"); row++;
     printf(C_SAND "  ================================================" C_RESET "\n"); row++;
 #ifdef LATENCY_PROFILING
