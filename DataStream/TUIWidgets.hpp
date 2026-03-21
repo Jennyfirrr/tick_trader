@@ -300,7 +300,7 @@ static inline Element Widget_Positions(const TUISnapshot *s) {
         Color diff_color = diff >= 0 ? foxml::green : foxml::red;
 
         if (displayed > 0)
-            rows.push_back(text("  ·") | color(foxml::surf));
+            rows.push_back(separator() | color(foxml::surf));
 
         rows.push_back(hbox({
             text(fmt_i("#%-2d ", displayed)) | color(foxml::wheat),
@@ -381,10 +381,7 @@ static inline Element Widget_Latency(const TUISnapshot *s) {
 #endif
 
 //======================================================================================================
-// [PRICE + VOLUME CANVAS GRAPH]
-//======================================================================================================
-// uses ftxui::Canvas for smooth line drawing (braille characters, 2x4 subpixel resolution)
-// price = line graph (wheat), volume = filled bars (sage, bottom quarter)
+// [PRICE CHART — line + buy gate + TP/SL bands]
 //======================================================================================================
 static inline Element Widget_PriceGraph(const TUISnapshot *s) {
     if (s->graph_count < 2) return text("  (collecting data...)") | color(foxml::dim);
@@ -392,7 +389,7 @@ static inline Element Widget_PriceGraph(const TUISnapshot *s) {
     int len = s->graph_count;
     int start = (s->graph_head - len + TUISnapshot::GRAPH_LEN) % TUISnapshot::GRAPH_LEN;
 
-    // find min/max
+    // find min/max for price, include buy gate and TP/SL in range
     double pmn = 1e18, pmx = -1e18, vmx = 0;
     for (int i = 0; i < len; i++) {
         double p = s->price_history[(start + i) % TUISnapshot::GRAPH_LEN];
@@ -401,8 +398,15 @@ static inline Element Widget_PriceGraph(const TUISnapshot *s) {
         if (p > pmx) pmx = p;
         if (v > vmx) vmx = v;
     }
+    // extend range to include buy gate if visible
+    if (s->buy_p > 0 && s->buy_p < pmn) pmn = s->buy_p;
+    if (s->buy_p > pmx) pmx = s->buy_p;
     double prange = pmx - pmn;
     if (prange < 0.01) prange = 0.01;
+    // pad 5% on each side so lines don't clip at edges
+    pmn -= prange * 0.05;
+    pmx += prange * 0.05;
+    prange = pmx - pmn;
     if (vmx < 1e-10) vmx = 1e-10;
 
     // copy data
@@ -412,44 +416,106 @@ static inline Element Widget_PriceGraph(const TUISnapshot *s) {
         volumes[i] = s->volume_history[(start + i) % TUISnapshot::GRAPH_LEN];
     }
 
-    // canvas dimensions: each cell = 2 wide x 4 tall in braille
-    int cw = 120, ch = 48; // 60 cols x 12 rows in terminal cells
+    // capture snapshot values for lambda
+    double buy_gate = s->buy_p;
+    double nearest_tp = 0, nearest_sl = 0;
+    for (int i = 0; i < 16; i++) {
+        if (s->positions[i].idx >= 0) {
+            nearest_tp = s->positions[i].tp;
+            nearest_sl = s->positions[i].sl;
+            break;
+        }
+    }
 
-    auto canvas_fn = [prices, volumes, pmn, prange, vmx, cw, ch]() {
+    int cw = 160, ch = 48; // 80 cols x 12 rows
+
+    // price chart canvas
+    auto price_canvas = [prices, pmn, prange, cw, ch, buy_gate, nearest_tp, nearest_sl]() {
         ftxui::Canvas c(cw, ch);
         int dlen = (int)prices.size();
         if (dlen < 2) return canvas(std::move(c));
 
-        // volume bars (bottom quarter, sage color)
-        int vol_height = ch / 4;
-        for (int x = 0; x < cw; x++) {
-            int idx = (int)((double)x / cw * dlen);
-            if (idx >= dlen) idx = dlen - 1;
-            int vh = (int)((volumes[idx] / vmx) * vol_height);
-            for (int y = 0; y < vh; y++) {
-                c.DrawPoint(x, ch - 1 - y, true, ftxui::Color::RGB(180, 175, 140));
-            }
+        auto y_of = [&](double price) -> int {
+            return ch - 1 - (int)(((price - pmn) / prange) * (ch - 2));
+        };
+
+        // TP band (green, dotted)
+        if (nearest_tp > 0) {
+            int tp_y = y_of(nearest_tp);
+            if (tp_y >= 0 && tp_y < ch)
+                for (int x = 0; x < cw; x += 4)
+                    c.DrawPoint(x, tp_y, true, ftxui::Color::RGB(140, 195, 130));
         }
 
-        // price line (wheat color)
+        // SL band (red, dotted)
+        if (nearest_sl > 0) {
+            int sl_y = y_of(nearest_sl);
+            if (sl_y >= 0 && sl_y < ch)
+                for (int x = 0; x < cw; x += 4)
+                    c.DrawPoint(x, sl_y, true, ftxui::Color::RGB(210, 120, 120));
+        }
+
+        // buy gate line (clay, dashed)
+        if (buy_gate > 0) {
+            int bg_y = y_of(buy_gate);
+            if (bg_y >= 0 && bg_y < ch)
+                for (int x = 0; x < cw; x += 3)
+                    c.DrawPoint(x, bg_y, true, ftxui::Color::RGB(204, 142, 106));
+        }
+
+        // price line (wheat, solid)
         for (int x = 1; x < cw; x++) {
             int i0 = (int)((double)(x-1) / cw * dlen); if (i0 >= dlen) i0 = dlen - 1;
             int i1 = (int)((double)x / cw * dlen);     if (i1 >= dlen) i1 = dlen - 1;
-            int y0 = ch - 1 - (int)(((prices[i0] - pmn) / prange) * (ch - vol_height - 2));
-            int y1 = ch - 1 - (int)(((prices[i1] - pmn) / prange) * (ch - vol_height - 2));
-            c.DrawPointLine(x-1, y0, x, y1, ftxui::Color::RGB(220, 198, 150));
+            c.DrawPointLine(x-1, y_of(prices[i0]), x, y_of(prices[i1]),
+                            ftxui::Color::RGB(220, 198, 150));
+        }
+
+        // current price dot (bright)
+        if (dlen > 0) {
+            int last_y = y_of(prices[dlen - 1]);
+            c.DrawPoint(cw - 1, last_y, true, ftxui::Color::RGB(255, 230, 180));
+            c.DrawPoint(cw - 2, last_y, true, ftxui::Color::RGB(255, 230, 180));
         }
 
         return canvas(std::move(c));
     };
 
+    // volume bars canvas (separate, below price)
+    auto vol_canvas = [volumes, vmx, cw]() {
+        int vch = 16; // 4 rows
+        ftxui::Canvas c(cw, vch);
+        int dlen = (int)volumes.size();
+
+        for (int x = 0; x < cw; x++) {
+            int idx = (int)((double)x / cw * dlen);
+            if (idx >= dlen) idx = dlen - 1;
+            int vh = (int)((volumes[idx] / vmx) * (vch - 1));
+            for (int y = 0; y < vh; y++)
+                c.DrawPoint(x, vch - 1 - y, true, ftxui::Color::RGB(180, 175, 140));
+        }
+
+        return canvas(std::move(c));
+    };
+
+    // legend
+    Elements legend;
+    legend.push_back(text(fmt("$%.2f", pmx)) | color(foxml::dim));
+    if (buy_gate > 0)
+        legend.push_back(text(fmt("  gate $%.0f", buy_gate)) | color(foxml::clay));
+    if (nearest_tp > 0)
+        legend.push_back(text(fmt("  TP $%.0f", nearest_tp)) | color(foxml::green));
+    if (nearest_sl > 0)
+        legend.push_back(text(fmt("  SL $%.0f", nearest_sl)) | color(foxml::red));
+
     return vbox({
-        hbox({text("PRICE") | bold | color(foxml::peach),
-              text(fmt("  $%.2f", pmx)) | color(foxml::dim),
-              text("  ") | color(foxml::dim),
-              text("VOL") | color(foxml::sage)}),
-        canvas_fn() | flex,
-        hbox({text(fmt("  $%.2f", pmn)) | color(foxml::dim)}),
+        hbox({text("PRICE") | bold | color(foxml::peach), text("  ") | color(foxml::dim),
+              hbox(legend)}),
+        price_canvas() | flex,
+        hbox({text(fmt("$%.2f", pmn)) | color(foxml::dim),
+              filler(),
+              text("now") | color(foxml::dim)}),
+        vol_canvas(),
     }) | flex;
 }
 
