@@ -669,11 +669,12 @@ inline void PortfolioController_HotReload(PortfolioController<F> *ctrl,
 // [SNAPSHOT SAVE/LOAD - v5]
 //======================================================================================================
 // persists full controller state for crash recovery and session resume
+// v7 adds: session stats (buys, wins, losses, gross_wins/losses, hold_ticks, fees)
 // v6 adds: entry_time (wall clock) for hold duration across restarts
 // v5 adds: entry_ticks, entry_strategy, strategy_id, regime, momentum state
-// backward compatible: v4/v5 load gracefully (missing fields get defaults)
+// backward compatible: v4/v5/v6 load gracefully (missing fields get defaults)
 //======================================================================================================
-#define CONTROLLER_SNAPSHOT_VERSION 6
+#define CONTROLLER_SNAPSHOT_VERSION 7
 
 template <unsigned F>
 inline void PortfolioController_SaveSnapshot(const PortfolioController<F> *ctrl,
@@ -711,6 +712,15 @@ inline void PortfolioController_SaveSnapshot(const PortfolioController<F> *ctrl,
 
   // v6: wall clock entry times for hold duration display
   fwrite(ctrl->entry_time, sizeof(time_t), 16, f);
+
+  // v7: session stats
+  fwrite(&ctrl->total_buys, sizeof(uint32_t), 1, f);
+  fwrite(&ctrl->wins, sizeof(uint32_t), 1, f);
+  fwrite(&ctrl->losses, sizeof(uint32_t), 1, f);
+  fwrite(&ctrl->gross_wins, sizeof(FPN<F>), 1, f);
+  fwrite(&ctrl->gross_losses, sizeof(FPN<F>), 1, f);
+  fwrite(&ctrl->total_hold_ticks, sizeof(uint64_t), 1, f);
+  fwrite(&ctrl->total_fees, sizeof(FPN<F>), 1, f);
 
   fflush(f);
   fclose(f);
@@ -776,6 +786,17 @@ inline int PortfolioController_LoadSnapshot(PortfolioController<F> *ctrl,
     // v6: wall clock entry times
     if (version >= 6) {
       if (fread(ctrl->entry_time, sizeof(time_t), 16, f) != 16) { fclose(f); return 0; }
+    }
+
+    // v7: session stats
+    if (version >= 7) {
+      if (fread(&ctrl->total_buys, sizeof(uint32_t), 1, f) != 1) { fclose(f); return 0; }
+      if (fread(&ctrl->wins, sizeof(uint32_t), 1, f) != 1) { fclose(f); return 0; }
+      if (fread(&ctrl->losses, sizeof(uint32_t), 1, f) != 1) { fclose(f); return 0; }
+      if (fread(&ctrl->gross_wins, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
+      if (fread(&ctrl->gross_losses, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
+      if (fread(&ctrl->total_hold_ticks, sizeof(uint64_t), 1, f) != 1) { fclose(f); return 0; }
+      if (fread(&ctrl->total_fees, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
     }
   }
 
