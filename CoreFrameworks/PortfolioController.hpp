@@ -669,10 +669,11 @@ inline void PortfolioController_HotReload(PortfolioController<F> *ctrl,
 // [SNAPSHOT SAVE/LOAD - v5]
 //======================================================================================================
 // persists full controller state for crash recovery and session resume
+// v6 adds: entry_time (wall clock) for hold duration across restarts
 // v5 adds: entry_ticks, entry_strategy, strategy_id, regime, momentum state
-// backward compatible: v4 loads gracefully (missing fields get defaults)
+// backward compatible: v4/v5 load gracefully (missing fields get defaults)
 //======================================================================================================
-#define CONTROLLER_SNAPSHOT_VERSION 5
+#define CONTROLLER_SNAPSHOT_VERSION 6
 
 template <unsigned F>
 inline void PortfolioController_SaveSnapshot(const PortfolioController<F> *ctrl,
@@ -700,13 +701,16 @@ inline void PortfolioController_SaveSnapshot(const PortfolioController<F> *ctrl,
   fwrite(&ctrl->mean_rev.live_vol_mult, sizeof(FPN<F>), 1, f);
   fwrite(&ctrl->mean_rev.live_stddev_mult, sizeof(FPN<F>), 1, f);
 
-  // v5 new fields
+  // v5 fields
   fwrite(ctrl->entry_ticks, sizeof(uint64_t), 16, f);
   fwrite(ctrl->entry_strategy, sizeof(uint8_t), 16, f);
   fwrite(&ctrl->strategy_id, sizeof(int), 1, f);
   fwrite(&ctrl->regime.current_regime, sizeof(int), 1, f);
   fwrite(&ctrl->momentum.live_breakout_mult, sizeof(FPN<F>), 1, f);
   fwrite(&ctrl->momentum.live_vol_mult, sizeof(FPN<F>), 1, f);
+
+  // v6: wall clock entry times for hold duration display
+  fwrite(ctrl->entry_time, sizeof(time_t), 16, f);
 
   fflush(f);
   fclose(f);
@@ -756,7 +760,7 @@ inline int PortfolioController_LoadSnapshot(PortfolioController<F> *ctrl,
     ctrl->regime.current_regime = REGIME_RANGING;
     fprintf(stderr, "[SNAPSHOT] loaded v4 snapshot — defaulting to RANGING/MR\n");
   } else {
-    // v5 format
+    // v5+ format
     if (fread(&ctrl->realized_pnl, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
     if (fread(&ctrl->balance, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
     if (fread(&ctrl->mean_rev.live_offset_pct, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
@@ -768,11 +772,29 @@ inline int PortfolioController_LoadSnapshot(PortfolioController<F> *ctrl,
     if (fread(&ctrl->regime.current_regime, sizeof(int), 1, f) != 1) { fclose(f); return 0; }
     if (fread(&ctrl->momentum.live_breakout_mult, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
     if (fread(&ctrl->momentum.live_vol_mult, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
+
+    // v6: wall clock entry times
+    if (version >= 6) {
+      if (fread(ctrl->entry_time, sizeof(time_t), 16, f) != 16) { fclose(f); return 0; }
+    }
   }
 
   // skip warmup if we have positions - we're resuming a session
   if (ctrl->portfolio.active_bitmap != 0)
     ctrl->state = CONTROLLER_ACTIVE;
+
+  // v5 backward compat: entry_time wasn't saved, approximate from now
+  if (version < 6) {
+    uint16_t active = ctrl->portfolio.active_bitmap;
+    time_t now = time(NULL);
+    while (active) {
+      int idx = __builtin_ctz(active);
+      ctrl->entry_time[idx] = now;
+      active &= active - 1;
+    }
+    if (ctrl->portfolio.active_bitmap)
+      fprintf(stderr, "[SNAPSHOT] v%u: entry_time not saved, hold times start from now\n", version);
+  }
 
   int count = __builtin_popcount(bitmap);
   fprintf(stderr, "[SNAPSHOT] loaded %d positions from %s (v%u)\n", count, filepath, version);
