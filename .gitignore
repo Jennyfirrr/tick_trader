@@ -12,9 +12,15 @@ secrets.cfg
 # runtime state
 portfolio.snapshot
 
-# engine binary
+# engine binaries
 engine
+engine_prof
+engine_bench
+engine_latency_check
 tests/binance_test
+
+# backup configs
+*.cfg.bak
 
 # claude code
 .claude/
