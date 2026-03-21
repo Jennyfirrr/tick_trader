@@ -743,7 +743,13 @@ static inline BinanceConfig BinanceConfig_Load(const char *filepath) {
 
         *eq = '\0';
         const char *key = line;
-        const char *val = eq + 1;
+        char *val = eq + 1;
+
+        // strip inline comments and trailing whitespace from value
+        char *comment = strchr(val, '#');
+        if (comment) *comment = '\0';
+        int vlen = strlen(val);
+        while (vlen > 0 && (val[vlen-1] == ' ' || val[vlen-1] == '\t')) val[--vlen] = '\0';
 
         if (strcmp(key, "symbol") == 0) {
             strncpy(config.symbol, val, sizeof(config.symbol) - 1);
