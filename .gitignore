@@ -32,5 +32,9 @@ CLAUDE.md
 # plan files
 plans/
 
+# cmake
+build/
+_deps/
+
 # OS
 .DS_Store

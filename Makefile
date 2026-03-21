@@ -1,34 +1,30 @@
-CXX      = g++
-CXXFLAGS = -std=c++17 -O2
-LIBS     = -lssl -lcrypto
+BUILD_DIR = build
 
-# default: multicore TUI production build
-all: engine
+all: $(BUILD_DIR)
+	cmake --build $(BUILD_DIR) -j$$(nproc)
 
-engine:
-	$(CXX) $(CXXFLAGS) -DMULTICORE_TUI $(LIBS) -lpthread -o engine main.cpp
+$(BUILD_DIR):
+	cmake -B $(BUILD_DIR)
 
-# profiling builds
+# build variants
 profile:
-	$(CXX) $(CXXFLAGS) -DLATENCY_PROFILING -DMULTICORE_TUI $(LIBS) -lpthread -o engine main.cpp
+	cmake -B $(BUILD_DIR) -DLATENCY_PROFILING=ON && cmake --build $(BUILD_DIR) -j$$(nproc)
 
 profile-lite:
-	$(CXX) $(CXXFLAGS) -DLATENCY_PROFILING -DLATENCY_LITE -DMULTICORE_TUI $(LIBS) -lpthread -o engine main.cpp
+	cmake -B $(BUILD_DIR) -DLATENCY_LITE=ON && cmake --build $(BUILD_DIR) -j$$(nproc)
 
-# bench: profiling with TUI disabled, stats to stderr
 bench:
-	$(CXX) $(CXXFLAGS) -DLATENCY_PROFILING -DLATENCY_BENCH $(LIBS) -o engine main.cpp
-
-# single-threaded (no multicore TUI)
-single:
-	$(CXX) $(CXXFLAGS) $(LIBS) -o engine main.cpp
+	cmake -B $(BUILD_DIR) -DLATENCY_BENCH=ON && cmake --build $(BUILD_DIR) -j$$(nproc)
 
 # tests
-test:
-	$(CXX) $(CXXFLAGS) -I.. -o tests/controller_test tests/controller_test.cpp
-	./tests/controller_test
+test: all
+	cd $(BUILD_DIR) && ctest --output-on-failure
 
 clean:
-	rm -f engine engine_st tests/controller_test
+	rm -rf $(BUILD_DIR)
 
-.PHONY: all engine profile profile-lite bench single test clean
+# reconfigure (clears cmake cache)
+reconfigure:
+	rm -rf $(BUILD_DIR) && cmake -B $(BUILD_DIR)
+
+.PHONY: all profile profile-lite bench test clean reconfigure
