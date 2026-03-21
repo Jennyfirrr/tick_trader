@@ -145,10 +145,11 @@ inline int RollingStats_VolumeSignificant(const RollingStats<F, W> *rs, FPN<F> t
 //======================================================================================================
 template <unsigned F, unsigned W>
 inline FPN<F> RollingStats_EntrySpacing(const RollingStats<F, W> *rs, FPN<F> spacing_multiplier) {
-    // floor: at least 0.01% of avg price — prevents sub-dollar spacing when stddev is tiny
-    // (e.g. right after warmup with 64 ticks at similar prices)
+    // floor: at least 0.03% of avg price — prevents tight clustering when stddev is low
+    // (e.g. right after warmup or during calm markets with compressed volatility)
+    // 0.03% of $70k = ~$21, comparable to steady-state spacing with stddev ~$10
     FPN<F> vol_spacing = FPN_Mul(rs->price_stddev, spacing_multiplier);
-    FPN<F> min_floor = FPN_Mul(rs->price_avg, FPN_FromDouble<F>(0.0001));
+    FPN<F> min_floor = FPN_Mul(rs->price_avg, FPN_FromDouble<F>(0.0003));
     return FPN_Max(vol_spacing, min_floor);
 }
 

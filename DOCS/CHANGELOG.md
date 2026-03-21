@@ -4,6 +4,8 @@
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 1.0.3 | 2026-03-21 | Wall clock durations, enhanced trade log CSV, metrics log |
+| 1.0.2 | 2026-03-21 | Sequential position numbering, warmup=128 |
 | 1.0.1 | 2026-03-21 | Bug fixes, shared functions, snapshot v5, Makefile |
 | 1.0.0 | 2026-03-21 | Regime detection, momentum strategy, strategy dispatch |
 | 0.9.1 | 2026-03-21 | Entry spacing floor fix |
@@ -21,6 +23,6 @@
 
 ## Detailed Changelogs
 
-- [2026-03-21](changelogs/2026-03-21.md) — v0.7.1 through v1.0.1 (regime switching, latency profiling, multicore TUI)
+- [2026-03-21](changelogs/2026-03-21.md) — v0.7.1 through v1.0.3 (regime switching, latency profiling, multicore TUI)
 - [2026-03-20](changelogs/2026-03-20.md) — v0.2.0 through v0.7.0 (live trading, strategies, risk management)
 - [2026-03-19](changelogs/2026-03-19.md) — v0.1.0 (initial release)

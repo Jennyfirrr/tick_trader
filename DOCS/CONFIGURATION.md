@@ -22,7 +22,7 @@ All settings are in `engine.cfg` (key=value format). Lines starting with `#` are
 
 | Key | Default | Description |
 |---|---|---|
-| `warmup_ticks` | `64` | ticks to observe before trading |
+| `warmup_ticks` | `128` | ticks to observe before trading (fills rolling window) |
 
 ## Regression / Gate Adjustment
 
@@ -82,6 +82,47 @@ Control how far the adaptive filters can drift from initial values.
 | `vol_mult_min` | `1.50` | most aggressive volume multiplier |
 | `vol_mult_max` | `6.00` | most defensive volume multiplier |
 | `filter_scale` | `0.50` | how fast filters adapt to P&L slope |
+
+## Enhanced Buy Signal (Stddev Mode)
+
+| Key | Default | Description |
+|---|---|---|
+| `offset_stddev_mult` | `1.50` | stddev multiplier for buy offset (0 = use percentage mode) |
+| `offset_stddev_min` | `0.50` | adaptation lower bound (most aggressive) |
+| `offset_stddev_max` | `4.00` | adaptation upper bound (most defensive) |
+| `min_long_slope` | `-0.00005` | min long-window slope to allow buys (0 = disabled) |
+
+## Trailing Take-Profit
+
+| Key | Default | Description |
+|---|---|---|
+| `tp_hold_score` | `0.15` | min SNR*R² to hold past TP (0 = disabled) |
+| `tp_trail_mult` | `1.00` | trailing TP distance in stddevs below price |
+| `sl_trail_mult` | `2.00` | trailing SL distance in stddevs below price |
+
+## Time-Based Exit
+
+| Key | Default | Description |
+|---|---|---|
+| `max_hold_ticks` | `50000` | close position after this many ticks (0 = disabled) |
+| `min_hold_gain_pct` | `0.10` | only time-exit if gain < this % |
+
+## Regime Detection
+
+| Key | Default | Description |
+|---|---|---|
+| `regime_slope_threshold` | `0.001` | relative slope for TRENDING detection |
+| `regime_r2_threshold` | `70.00` | min R² consistency for TRENDING (%) |
+| `regime_volatile_stddev` | `0.003` | stddev/price ratio for VOLATILE detection |
+| `regime_hysteresis` | `5` | slow-path cycles before regime switch |
+
+## Momentum Strategy
+
+| Key | Default | Description |
+|---|---|---|
+| `momentum_breakout_mult` | `1.50` | buy when price > avg + stddev * this |
+| `momentum_tp_mult` | `3.00` | TP distance in stddevs (wider than MR) |
+| `momentum_sl_mult` | `1.00` | SL distance in stddevs (tighter than MR) |
 
 ## TUI
 

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Tick-level crypto trading engine. Single-threaded, poll-based event loop. Branchless fixed-point arithmetic on the hot path. Connects to Binance websocket for live market data, paper trades with simulated fills.
+Tick-level crypto trading engine. Regime-adaptive strategy switching between mean reversion and momentum. Branchless fixed-point arithmetic on the hot path. Connects to Binance websocket for live market data, paper trades with simulated fills. Optional multicore TUI (engine core 0, display core 1).
 
 ## Data Flow
 
@@ -13,159 +13,150 @@ Tick-level crypto trading engine. Single-threaded, poll-based event loop. Branch
                                                                     |
                                                               [DataStream<F>]
                                                                     |
-                           +----------------------------------------+
-                           |                    |                   |
-                        [BuyGate]      [PositionExitGate]   [PortfolioController]
-                           |                    |                   |
-                      [OrderPool]         [ExitBuffer]     [Regression + Adaptive Filters]
-                           |                    |                   |
-                           +--------------------+-------------------+
-                                                |
-                                         [Trade Decision]
-                                                |
-                                     [TradeLog CSV + TUI]
+                  +---------------------+---------------------------+
+                  |                     |                           |
+             [BuyGate]          [PositionExitGate]         [PortfolioController]
+          (direction-aware)    (bitmap walk, TP/SL)              |
+                  |                     |              +----------+-----------+
+             [OrderPool]          [ExitBuffer]         |                     |
+                  |                     |         [RegimeDetector]    [Strategy Dispatch]
+                  +---------------------+         RANGING/TRENDING    MR or Momentum
+                                        |         /VOLATILE           Adapt+BuySignal
+                                 [Trade Decision]                    +ExitAdjust
+                                        |
+                            [TradeLog CSV + MetricsLog + TUI]
 ```
 
 ## Event Loop (main.cpp)
 
-Single-threaded, poll-based. One iteration:
+Multicore by default (engine core 0, TUI core 1). One iteration:
 
-1. `BinanceStream_Poll()` - checks SSL_pending first (avoids SSL/poll mismatch), then poll() on socket + stdin
-2. **Burst drain** - if data arrived, read ALL buffered frames. Exit gates run on every intermediate price (catches TP/SL spikes mid-burst). Only the final price is used for BuyGate
-3. **TUI input** - handle q/p/r commands from stdin
-4. **Session lifecycle** - wind-down and reconnect checks
-5. **Engine tick** - BuyGate -> PositionExitGate -> PortfolioController_Tick
-6. **TUI render** - every N ticks, display dashboard
+1. `BinanceStream_Poll()` — checks SSL_pending first, then poll() on socket
+2. **Burst drain** — read ALL buffered frames. Exit gates run on every intermediate price
+3. **TUI input** — handle q/p/r/s commands (shared functions: Unpause, CycleRegime, HotReload)
+4. **Session lifecycle** — wind-down and reconnect checks
+5. **Engine tick** — BuyGate -> PositionExitGate -> PortfolioController_Tick
+6. **Metrics logging** — regime changes, strategy switches, fills logged to CSV
+7. **TUI snapshot** — every 10 ticks, copy state to double-buffered snapshot
 
-The engine runs identically whether data is arriving or not. Poll timeout ensures exit gates are always checked against last known price.
-
-## Hot Path (every tick)
+## Hot Path (every tick, p50 ~950ns)
 
 All branchless except unavoidable bitmap loops:
 
-| Function | Description | Branches |
+| Function | Description | Cost |
 |---|---|---|
-| BuyGate | price/volume threshold check, mask-write to pool | None |
-| PositionExitGate | bitmap walk, per-position TP/SL check | while(active) only |
-| Fill consumption | pool -> portfolio transfer, consolidation | while(fills) only |
-| Entry spacing | min distance check against existing positions | while(active_pos) only |
+| BuyGate | direction-aware price/volume check (0=below, 1=above) | ~80ns |
+| PositionExitGate | bitmap walk, per-position TP/SL | ~130ns/pos |
+| Fill consumption | pool -> portfolio, strategy-aware TP/SL sizing | ~750ns avg, ~4μs on fill |
 
-Bitmap loops are unavoidable (variable active count) but all inner logic is branchless - mask tricks with `-(uint64_t)pass`, word-level mask-select.
+## Slow Path (every poll_interval ticks, ~25μs)
 
-## Slow Path (every poll_interval ticks)
+1. Drain exit buffer, log sells with full context (strategy, regime, fees)
+2. Time-based exit: close positions held too long with low gain
+3. Update rolling stats (128-tick short + 512-tick long windows)
+4. **Regime detection**: classify market as RANGING, TRENDING, or VOLATILE
+5. **Position adjustment**: modify TP/SL on existing positions if regime changed
+6. **Strategy dispatch**: run active strategy's Adapt + ExitAdjust + BuySignal
+7. Compute unrealized P&L (net of estimated exit fees)
+8. VOLATILE regime: pause buying (set buy_conds to zero)
 
-Runs every N ticks (configurable, default 100):
+## Regime Detection
 
-1. Drain exit buffer, log sells, accumulate realized P&L
-2. Update rolling market stats (128-tick window)
-3. Update buy gate from rolling stats using live adaptive filter values
-4. Compute unrealized P&L, push to regression feeder
-5. Run regression + ROR (slope-of-slopes)
-6. Adjust buy gate price based on P&L slope
-7. Adjust adaptive filters (offset, volume multiplier) based on P&L slope
+Classifies market state from rolling statistics:
+
+| Regime | Condition | Strategy | Action |
+|--------|-----------|----------|--------|
+| RANGING | low slope OR low R² | Mean Reversion | Buy dips below avg |
+| TRENDING | high slope AND high R² | Momentum | Buy breakouts above avg |
+| VOLATILE | high stddev AND low R² | (paused) | No new entries |
+
+- Hysteresis: proposed regime must hold N slow-path cycles before switching
+- Cold start: stays RANGING until 64+ rolling samples available
+- Position adjustment on switch: MR→momentum widens TP/tightens SL; reverse for momentum→MR
+
+## Strategy System
+
+Each strategy implements 4 functions + state struct:
+
+```
+PREFIX_Init()       — set initial buy conditions from rolling stats
+PREFIX_Adapt()      — P&L regression feedback, idle squeeze
+PREFIX_BuySignal()  — compute buy gate conditions + gate_direction
+PREFIX_ExitAdjust() — trailing TP/SL logic
+```
+
+Dispatch via `switch(strategy_id)`. Both strategies initialized at warmup.
+Adding strategy #3: new header + dispatch case + unpause case + config fields.
+
+### Shared Functions (PortfolioController.hpp)
+
+Eliminate duplication between multicore and single-threaded paths:
+- `PortfolioController_HotReload()` — config reload
+- `PortfolioController_Unpause()` — dispatch to active strategy
+- `PortfolioController_CycleRegime()` — manual regime cycle for testing
+
+## Logging
+
+### Trade Log (`{symbol}_order_history.csv`)
+Every buy/sell with: tick, price, qty, entry, delta%, exit reason, TP, SL,
+buy gate conditions, stddev, avg, balance, fees, spacing, gate distance, strategy, regime.
+
+### Metrics Log (`{symbol}_metrics.csv`)
+Every slow-path cycle: full engine state snapshot. Events: REGIME_CHANGE, STRATEGY_SWITCH, FILL.
+Append mode — survives restarts.
+
+### Snapshot (`portfolio.snapshot`, v5)
+Binary state persistence: positions, entry_ticks, entry_strategy, strategy_id,
+regime state, MR + momentum adaptive values, balance, realized P&L.
+Backward compatible with v4.
 
 ## Network Stack (DataStream/BinanceCrypto.hpp)
 
-Six layers, all in one header:
-
-1. **TCP** - POSIX socket + getaddrinfo
-2. **TLS** - OpenSSL with SNI
-3. **WebSocket** - HTTP upgrade, frame parser with partial read handling
-4. **Ping/Pong** - transparent inside frame reader, masked client frames
-5. **JSON** - fixed-format scan for "p" and "q" fields
-6. **DataStream** - FPN_FromString conversion to fixed-point
-
-Endpoints:
-- `data-stream.binance.vision:443` - production, no geo-restriction
-- `stream.binance.com:9443` - production, geo-restricted
-- `stream.binance.us:9443` - US endpoint
-- `testnet.binance.vision:443` - testnet
-
-## Adaptive Filter System
-
-Three filters that adapt based on portfolio performance:
-
-### Entry Offset
-- Initial: buy at rolling_avg - 0.15%
-- Adapts: P&L positive -> shrinks (more aggressive), P&L negative -> grows (more defensive)
-- Clamps: [0.05%, 0.50%]
-
-### Volume Multiplier
-- Initial: require volume >= 3.0x rolling average
-- Adapts: P&L positive -> lowers (accept smaller trades), P&L negative -> raises (require larger trades)
-- Clamps: [1.5x, 6.0x]
-
-### Entry Spacing
-- Dynamic: min distance = rolling_stddev * spacing_multiplier
-- Based on recent price volatility, not fixed percentage
-- Prevents position clustering at similar price levels
-
-All adaptation is gated by R^2 confidence threshold - no adjustment when the regression fit is weak.
+Six layers, all in one header: TCP -> TLS (OpenSSL) -> WebSocket -> Ping/Pong -> JSON -> FPN.
 
 ## Session Lifecycle (24-hour cycle)
 
-Binance auto-disconnects after 24 hours. The engine manages this proactively:
-
 ```
-T+0:00:00   CONNECT + WARMUP (observe market, build rolling stats)
-T+0:XX:XX   ACTIVE (buy gate enabled, positions tracked)
-T+23:25:00  WIND DOWN (disable buy gate, exit gate still active)
-T+23:30:00  CLOSE ALL + RECONNECT (airtight procedure below)
+CONNECT -> WARMUP (128 ticks, ~43s) -> ACTIVE -> WIND DOWN (5 min) -> CLOSE ALL -> RECONNECT
 ```
-
-### Airtight Reconnect Procedure
-1. Disable buy gate
-2. Drain all remaining websocket frames, run exit gate on each
-3. Force-close every remaining position at last known price
-4. **VERIFY**: assert(portfolio.active_bitmap == 0) - halts if not zero
-5. Clear order pool
-6. SSL shutdown + close socket
-7. Reconnect TCP + TLS + WebSocket
-8. Reset controller to warmup
-
-The hard gate at step 4 ensures the engine never reconnects with orphaned positions.
-
-## Fixed-Point Arithmetic (FixedPoint/FixedPointN.hpp)
-
-All hot-path math uses `FPN<F>` with F=64 fractional bits (~19 decimal digits precision). No floats on the hot path.
-
-- Arbitrary width via template parameter
-- All comparisons return int (0/1) for branchless mask generation
-- Mul/Div use __uint128_t for intermediate carry
-- Endian swaps use __builtin_bswap16/64 (single instruction)
 
 ## File Map
 
 ```
 CoreFrameworks/
-  OrderGates.hpp          - BuyGate, SellGate (branchless threshold checks)
-  Portfolio.hpp           - bitmap-based position tracking, PositionExitGate
-  PortfolioController.hpp - feedback loop, regression, adaptive filters
+  OrderGates.hpp           BuyGate (direction-aware), SellGate
+  Portfolio.hpp            Position storage, ExitGate, bitmap ops, snapshot format
+  PortfolioController.hpp  Tick function, dispatch, shared functions, snapshot v5
+  ControllerConfig.hpp     Config struct, parser, defaults
+
+Strategies/
+  StrategyInterface.hpp    Strategy contract + enum definitions
+  MeanReversion.hpp        Buy dips, stddev-scaled offset, P&L adaptation
+  Momentum.hpp             Buy breakouts, trend-following, tighter SL
+  RegimeDetector.hpp       Market classification + position adjustment
 
 DataStream/
-  BinanceCrypto.hpp       - websocket data stream (TCP/TLS/WS/JSON/FPN)
-  EngineTUI.hpp           - ANSI terminal dashboard
-  FauxFIX.hpp             - FIX protocol parser (for mock data)
-  MockGenerator.hpp       - synthetic market data generator
-  TradeLog.hpp            - CSV trade logger
+  BinanceCrypto.hpp        WebSocket stream (TCP/TLS/WS/JSON)
+  EngineTUI.hpp            Terminal dashboard, multicore snapshot
+  TradeLog.hpp             CSV logger + ring buffer
+  MetricsLog.hpp           Slow-path diagnostics CSV
+  FauxFIX.hpp              FIX protocol parser (mock data)
 
 FixedPoint/
-  FixedPointN.hpp         - arbitrary-width fixed-point arithmetic
-
-MemHeaders/
-  PoolAllocator.hpp       - bitmap-based order pool
-  BuddyAllocator.hpp      - buddy allocator (unused currently)
+  FixedPointN.hpp          Arbitrary-width fixed-point arithmetic
+  FixedPoint64.hpp         Static 128-bit FP (experimental)
 
 ML_Headers/
-  LinearRegression3X.hpp  - 3-point OLS regression
-  ROR_regressor.hpp       - slope-of-slopes (rate of return regression)
-  RollingStats.hpp        - rolling price/volume statistics
-  GateControlNetwork.hpp  - gate control network
+  RollingStats.hpp         Price/volume moving avg, stddev, slope
+  LinearRegression3X.hpp   3-sample rolling regression
+  ROR_regressor.hpp        Slope-of-slopes (second derivative)
 
 tests/
-  controller_test.cpp     - 80 assertions, portfolio + controller + integration
-  binance_test.cpp        - live data integration test
+  controller_test.cpp      101 assertions
+  integration_test.cpp     Full pipeline test
+  binance_test.cpp         Live data integration test
 
-main.cpp                  - engine entry point, event loop
-engine.cfg                - unified configuration
+main.cpp                   Engine entry point, event loop
+engine.cfg                 Annotated configuration
+Makefile                   Build targets: make, make profile, make test
 ```
