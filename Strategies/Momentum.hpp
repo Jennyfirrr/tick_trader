@@ -13,20 +13,11 @@
 //   - SL trails aggressively — momentum failures reverse fast
 //   - TP uses a larger stddev multiplier than mean reversion
 //
-// adaptation: similar P&L regression but adapts breakout threshold and trailing tightness
-//   - positive P&L → loosen breakout threshold (buy earlier in the trend)
-//   - negative P&L → require stronger breakouts before entry
+// adaptation: P&L regression adjusts breakout threshold
+//   - positive P&L → lower breakout threshold (enter earlier in the trend)
+//   - negative P&L → raise threshold (wait for stronger confirmation)
 //
-// regime transition (complex mode):
-//   when switching FROM mean reversion → momentum:
-//     - existing MR positions keep their TP/SL (they were entered for a dip, not a trend)
-//     - OR: widen their TP and tighten SL to match momentum profile (see RegimeDetector)
-//   when switching FROM momentum → mean reversion:
-//     - existing momentum positions: tighten TP (trend is ending, take profit early)
-//     - widen SL slightly (allow for mean-reversion chop)
-//
-// all adaptation is branchless. strategy only runs on slow path.
-// BuyGate on hot path just reads buy_conds — same as mean reversion.
+// all adaptation is on the slow path. BuyGate just reads buy_conds with gate_direction=1.
 //======================================================================================================
 #ifndef MOMENTUM_HPP
 #define MOMENTUM_HPP
@@ -56,90 +47,253 @@ template <unsigned F> struct MomentumState {
 //======================================================================================================
 // [INIT]
 //======================================================================================================
-// called once when regime detector switches to momentum. sets initial buy conditions
-// to buy ABOVE the rolling average (opposite of mean reversion).
+// called at warmup completion. computes initial breakout buy conditions from rolling stats.
+// buy_price = avg + (stddev * breakout_mult) — price must rise ABOVE this to trigger BuyGate
 //======================================================================================================
 template <unsigned F>
 inline void Momentum_Init(MomentumState<F> *state,
                            const RollingStats<F> *rolling,
                            BuySideGateConditions<F> *buy_conds) {
-    // TODO: implement
-    // buy_price = avg + (stddev * breakout_mult)  ← ABOVE average, opposite of MR
-    // volume threshold same pattern as MR
-    // reset regression feeders
-    (void)state; (void)rolling; (void)buy_conds;
+    // breakout price: avg + stddev * breakout_mult
+    FPN<F> breakout_offset = FPN_Mul(rolling->price_stddev, state->live_breakout_mult);
+    FPN<F> buy_price = FPN_AddSat(rolling->price_avg, breakout_offset);
+
+    // volume gate: same pattern as MR — require significant volume on breakout
+    FPN<F> buy_vol = FPN_Mul(rolling->volume_avg, state->live_vol_mult);
+
+    buy_conds->price = buy_price;
+    buy_conds->volume = buy_vol;
+    buy_conds->gate_direction = 1; // buy ABOVE price
+    state->buy_conds_initial = *buy_conds;
+
+    // reset feeders for P&L tracking
+    state->feeder = RegressionFeederX_Init<F>();
+    state->price_feeder = RegressionFeederX_Init<F>();
+    state->ror = RORRegressor_Init<F>();
+    state->has_regression = 0;
 }
 
 //======================================================================================================
 // [ADAPT]
 //======================================================================================================
-// adjusts breakout threshold and volume multiplier based on P&L regression
-// same feedback loop as mean reversion but tuning different parameters
+// same feedback loop as MR but tuning breakout_mult instead of offset:
+//   1. idle squeeze: lower breakout threshold when no positions and price is running
+//   2. P&L regression: adjust breakout_mult based on profitability
+//      positive P&L slope → lower threshold (enter breakouts earlier)
+//      negative P&L slope → raise threshold (wait for stronger confirmation)
 //======================================================================================================
 template <unsigned F>
-inline void Momentum_Adapt(MomentumState<F> *state, FPN<F> current_price,
-                            FPN<F> portfolio_delta, uint16_t active_bitmap,
+inline void Momentum_Adapt(MomentumState<F> *state,
+                            FPN<F> current_price,
+                            FPN<F> portfolio_delta,
+                            uint16_t active_bitmap,
                             const BuySideGateConditions<F> *buy_conds,
                             const ControllerConfig<F> *cfg) {
-    // TODO: implement
-    // - push portfolio_delta to regression feeder
-    // - if confident (R² > threshold): adjust live_breakout_mult
-    //   positive slope → lower threshold (more aggressive, enter breakouts earlier)
-    //   negative slope → raise threshold (wait for stronger confirmation)
-    // - idle squeeze when no positions: lower breakout threshold toward minimum
-    (void)state; (void)current_price; (void)portfolio_delta;
-    (void)active_bitmap; (void)buy_conds; (void)cfg;
+    constexpr unsigned N = FPN<F>::N;
+
+    //==================================================================================================
+    // IDLE SQUEEZE: lower breakout threshold when no positions and price above buy gate
+    // for momentum, "trailing" means price is above our breakout level but we haven't bought
+    //==================================================================================================
+    {
+        int is_empty = (active_bitmap == 0);
+        // momentum: squeeze when price is BELOW buy gate (we're waiting for a breakout
+        // that already happened while we were too defensive)
+        int trailing = FPN_LessThan(current_price, buy_conds->price);
+        int should_squeeze = is_empty & trailing;
+        uint64_t sq_mask = -(uint64_t)should_squeeze;
+
+        // squeeze breakout_mult toward a minimum (0.5 stddev — very sensitive)
+        FPN<F> breakout_min = FPN_FromDouble<F>(0.5);
+        FPN<F> gap = FPN_Sub(state->live_breakout_mult, breakout_min);
+        FPN<F> step = FPN_Mul(gap, FPN_FromDouble<F>(0.10));
+        FPN<F> masked_step;
+        for (unsigned i = 0; i < N; i++) {
+            masked_step.w[i] = step.w[i] & sq_mask;
+        }
+        masked_step.sign = step.sign & should_squeeze;
+        state->live_breakout_mult = FPN_SubSat(state->live_breakout_mult, masked_step);
+        state->live_breakout_mult = FPN_Max(state->live_breakout_mult, breakout_min);
+
+        // squeeze volume multiplier toward 1.0 (same as MR)
+        FPN<F> one = FPN_FromDouble<F>(1.0);
+        FPN<F> vmult_gap = FPN_Sub(state->live_vol_mult, one);
+        FPN<F> vmult_step = FPN_Mul(vmult_gap, FPN_FromDouble<F>(0.10));
+        FPN<F> masked_vmult;
+        for (unsigned i = 0; i < N; i++) {
+            masked_vmult.w[i] = vmult_step.w[i] & sq_mask;
+        }
+        masked_vmult.sign = vmult_step.sign & should_squeeze;
+        state->live_vol_mult = FPN_SubSat(state->live_vol_mult, masked_vmult);
+        state->live_vol_mult = FPN_Max(state->live_vol_mult, one);
+    }
+
+    //==================================================================================================
+    // P&L REGRESSION: push portfolio delta, compute regression, adjust breakout_mult
+    //==================================================================================================
+    RegressionFeederX_Push(&state->feeder, portfolio_delta);
+    state->price_feeder; // price feeder pushed separately for trailing R²
+
+    if (state->feeder.count >= MAX_WINDOW) {
+        LinearRegression3XResult<F> reg = RegressionFeederX_Compute(&state->feeder);
+        state->last_regression = reg;
+        state->has_regression = 1;
+
+        int confident = FPN_GreaterThanOrEqual(reg.r_squared, cfg->r2_threshold);
+
+        // for momentum: NEGATIVE slope means we should raise the breakout threshold
+        // (be more selective about which breakouts to enter)
+        // POSITIVE slope means lower threshold (enter breakouts earlier)
+        // this is OPPOSITE to MR where negative slope tightens (raises) the offset
+        FPN<F> shift = FPN_Mul(reg.model.slope, cfg->slope_scale_buy);
+        // negate: positive P&L → lower breakout_mult (negative shift to subtract)
+        FPN<F> neg_shift = FPN_Negate(shift);
+
+        FPN<F> masked_shift;
+        uint64_t conf_mask = -(uint64_t)confident;
+        for (unsigned i = 0; i < N; i++) {
+            masked_shift.w[i] = neg_shift.w[i] & conf_mask;
+        }
+        masked_shift.sign = neg_shift.sign & confident;
+
+        FPN<F> adapt_scale = FPN_FromDouble<F>(0.1);
+        FPN<F> scaled_shift = FPN_Mul(masked_shift, adapt_scale);
+        state->live_breakout_mult = FPN_AddSat(state->live_breakout_mult, scaled_shift);
+
+        // clamp breakout_mult to reasonable range (0.5 — 5.0 stddevs)
+        FPN<F> breakout_min = FPN_FromDouble<F>(0.5);
+        FPN<F> breakout_max = FPN_FromDouble<F>(5.0);
+        state->live_breakout_mult = FPN_Max(state->live_breakout_mult, breakout_min);
+        state->live_breakout_mult = FPN_Min(state->live_breakout_mult, breakout_max);
+    }
+
+    (void)current_price;
 }
 
 //======================================================================================================
 // [BUY SIGNAL]
 //======================================================================================================
-// computes buy conditions for breakout entries
-// buy_price = avg + (stddev * live_breakout_mult)  ← price must be ABOVE this to buy
-// volume = vol_avg * live_vol_mult                 ← same volume confirmation as MR
-//
-// NOTE: BuyGate checks price <= buy_conds.price, so for momentum we need to invert.
-// Option A: set buy_conds.price very high and use a separate momentum gate
-// Option B: add a gate_direction flag to BuySideGateConditions (1 = buy below, -1 = buy above)
-// Option C: momentum sets a price floor instead — BuyGate needs a second condition
-//
-// this is the key design decision — BuyGate currently only checks price <= X.
-// momentum needs price >= X. see RegimeDetector.hpp for the proposed approach.
+// computes breakout buy conditions: buy_price = avg + (stddev * breakout_mult)
+// gate_direction = 1 means BuyGate checks price >= buy_price (buy above)
 //======================================================================================================
 template <unsigned F>
 inline BuySideGateConditions<F> Momentum_BuySignal(MomentumState<F> *state,
                                                      const RollingStats<F> *rolling,
                                                      const RollingStats<F, 512> *rolling_long,
                                                      const ControllerConfig<F> *cfg) {
-    // TODO: implement
-    // key issue: BuyGate checks price <= conds.price
-    // momentum needs price >= breakout_level
-    // proposed: add gate_direction to BuySideGateConditions
-    //   direction = 1:  BuyGate passes when price <= conds.price  (mean reversion, buy dips)
-    //   direction = -1: BuyGate passes when price >= conds.price  (momentum, buy breakouts)
-    (void)state; (void)rolling; (void)rolling_long; (void)cfg;
     BuySideGateConditions<F> conds;
-    conds.price = FPN_Zero<F>();
-    conds.volume = FPN_Zero<F>();
+
+    // breakout price: avg + stddev * live_breakout_mult
+    FPN<F> breakout_offset = FPN_Mul(rolling->price_stddev, state->live_breakout_mult);
+    conds.price = FPN_AddSat(rolling->price_avg, breakout_offset);
+
+    // volume: same pattern as MR
+    conds.volume = FPN_Mul(rolling->volume_avg, state->live_vol_mult);
+    conds.gate_direction = 1; // buy ABOVE price
+
+    // update initial conditions for shift clamp tracking
+    state->buy_conds_initial = conds;
+
+    // apply regression-based gate shift if available (same pattern as MR)
+    if (state->has_regression) {
+        int confident = FPN_GreaterThanOrEqual(state->last_regression.r_squared,
+                                                cfg->r2_threshold);
+        FPN<F> shift = FPN_Mul(state->last_regression.model.slope, cfg->slope_scale_buy);
+
+        // clamp to max_shift
+        FPN<F> max_shift_abs = FPN_Mul(rolling->price_avg, cfg->max_shift);
+        shift = FPN_Min(shift, max_shift_abs);
+        shift = FPN_Max(shift, FPN_Negate(max_shift_abs));
+
+        FPN<F> masked_shift;
+        uint64_t conf_mask = -(uint64_t)confident;
+        constexpr unsigned N = FPN<F>::N;
+        for (unsigned i = 0; i < N; i++) {
+            masked_shift.w[i] = shift.w[i] & conf_mask;
+        }
+        masked_shift.sign = shift.sign & confident;
+
+        conds.price = FPN_AddSat(conds.price, masked_shift);
+
+        // clamp to initial +/- max_shift
+        FPN<F> upper = FPN_AddSat(state->buy_conds_initial.price, max_shift_abs);
+        FPN<F> lower = FPN_SubSat(state->buy_conds_initial.price, max_shift_abs);
+        conds.price = FPN_Max(conds.price, lower);
+        conds.price = FPN_Min(conds.price, upper);
+    }
+
+    // multi-timeframe gate: same check as MR — block buys when long trend is negative
+    // for momentum this is especially important — don't buy breakouts in a downtrend
+    {
+        int long_enabled = !FPN_IsZero(cfg->min_long_slope);
+        FPN<F> relative_long_slope = FPN_DivNoAssert(rolling_long->price_slope, rolling_long->price_avg);
+        int long_pass = FPN_GreaterThanOrEqual(relative_long_slope, cfg->min_long_slope);
+
+        int long_blocked = long_enabled & !long_pass;
+        uint64_t block_mask = -(uint64_t)long_blocked;
+        constexpr unsigned N2 = FPN<F>::N;
+        for (unsigned i = 0; i < N2; i++) {
+            conds.price.w[i]  &= ~block_mask;
+            conds.volume.w[i] &= ~block_mask;
+        }
+        conds.price.sign  &= !long_blocked;
+        conds.volume.sign &= !long_blocked;
+    }
+
     return conds;
 }
 
 //======================================================================================================
 // [EXIT ADJUST]
 //======================================================================================================
-// momentum-specific trailing: tighter SL trail (failures reverse fast),
-// more aggressive TP trail (let winners run further than MR)
+// momentum trailing: tighter SL trail (failures reverse fast), wider TP trail (let runs extend)
+// uses the same hold_score = SNR * R² pattern as MR but with different multipliers
+// the key difference: momentum uses cfg->momentum_sl_mult (tighter) instead of cfg->sl_trail_mult
 //======================================================================================================
 template <unsigned F>
 inline void Momentum_ExitAdjust(Portfolio<F> *portfolio, FPN<F> current_price,
                                   const RollingStats<F> *rolling,
                                   MomentumState<F> *state,
                                   const ControllerConfig<F> *cfg) {
-    // TODO: implement
-    // same trailing TP pattern as MR but with different multipliers:
-    //   tp_trail_mult: higher (let trends run, e.g. 2.0x vs MR's 1.0x)
-    //   sl_trail_mult: tighter (cut losers fast, e.g. 0.5x vs MR's 2.0x)
-    (void)portfolio; (void)current_price; (void)rolling; (void)state; (void)cfg;
+    // skip if trailing disabled
+    if (FPN_IsZero(cfg->tp_hold_score)) return;
+    if (FPN_IsZero(rolling->price_stddev)) return;
+
+    // compute R² from price regression (same pattern as MR)
+    FPN<F> r_squared = FPN_Zero<F>();
+    FPN<F> reg_slope = FPN_Zero<F>();
+    if (state->price_feeder.count >= MAX_WINDOW) {
+        LinearRegression3XResult<F> price_reg = RegressionFeederX_Compute(&state->price_feeder);
+        r_squared = price_reg.r_squared;
+        reg_slope = price_reg.model.slope;
+    }
+
+    FPN<F> snr = FPN_DivNoAssert(reg_slope, rolling->price_stddev);
+    FPN<F> hold_score = FPN_Mul(snr, r_squared);
+    int should_trail = FPN_GreaterThanOrEqual(hold_score, cfg->tp_hold_score);
+
+    uint16_t active = portfolio->active_bitmap;
+    while (active) {
+        int idx = __builtin_ctz(active);
+        Position<F> *pos = &portfolio->positions[idx];
+
+        int above_tp = FPN_GreaterThan(current_price, pos->original_tp);
+
+        if (above_tp & should_trail) {
+            // momentum trailing: use tp_trail_mult for TP (same as MR)
+            // but use momentum_sl_mult for tighter SL (cut losers faster in trends)
+            FPN<F> tp_offset = FPN_Mul(rolling->price_stddev, cfg->tp_trail_mult);
+            FPN<F> trailing_tp = FPN_Sub(current_price, tp_offset);
+            pos->take_profit_price = FPN_Max(pos->take_profit_price, trailing_tp);
+
+            // tighter SL: momentum_sl_mult is typically smaller than sl_trail_mult
+            FPN<F> sl_offset = FPN_Mul(rolling->price_stddev, cfg->momentum_sl_mult);
+            FPN<F> trailing_sl = FPN_Sub(current_price, sl_offset);
+            pos->stop_loss_price = FPN_Max(pos->stop_loss_price, trailing_sl);
+        }
+
+        active &= active - 1;
+    }
 }
 
 #endif // MOMENTUM_HPP
