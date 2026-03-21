@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.8.1] - 2026-03-21
+
+### Fixed
+- **TUI snapshot update rate** — snapshot was tied to the slow-path cycle (every 100
+  ticks ≈ 33 seconds). TUI re-rendered the same stale data 330 times before getting
+  fresh numbers, making it appear frozen. Now updates every 10 ticks (~3 updates/sec).
+  Snapshot copy (~1μs) amortized to 0.1μs per tick. Portfolio save stays on slow path.
+  Display-only — no impact on hot path, gates, or strategy decisions.
+
 ## [0.8.0] - 2026-03-21
 
 ### Added
