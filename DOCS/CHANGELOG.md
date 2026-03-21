@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.7.0] - 2026-03-20 (branch: trailing-tp)
+
+### Added
+- **Trailing take-profit (SNR × R² gated)** — when price exceeds the original TP and
+  the trend is both strong AND consistent, TP ratchets up to trail the price. Captures
+  extended runs instead of exiting at the first target. Disabled by default
+  (`tp_hold_score=0` = fixed TP, current behavior).
+  - Hold score = `(price_slope / price_stddev) * R²` — composite signal requiring
+    both magnitude (SNR) and consistency (R²). Choppy whipsaws (high SNR, low R²)
+    and slow bleeds (low SNR, high R²) both produce low scores → don't trail.
+  - Trailing SL ratchets up alongside TP to lock in gains. Prevents "let winners turn
+    into losers."
+  - `original_tp` and `original_sl` fields added to Position struct — set at fill,
+    never modified. Used to detect when a position is "running" (price > original TP).
+  - Price regression feeder added to MeanReversionState for R² computation.
+  - Division-by-zero guard: flat market (stddev=0) skips trailing entirely.
+  - 9 new tests (92 → 101): trailing disabled, trailing activates on strong trend,
+    TP ratchet never decreases, original TP/SL stored at fill.
+  - Config: `tp_hold_score`, `tp_trail_mult`, `sl_trail_mult` (all disabled by default).
+
+### Changed
+- Position struct grows from 4 to 6 FPN fields (+original_tp, +original_sl).
+  Snapshot format bumped to version 4.
+- Slow-path call order: Adapt → ExitAdjust → BuySignal (ExitAdjust runs after Adapt
+  pushes the price feeder so R² uses current data).
+
+### Notes
+- Price feeder cold start: R² unavailable for first 8 slow-path cycles (~4 min) after
+  warmup. Trailing disabled until then — conservative startup.
+- Config reload with active trailing: raised TPs persist (locks in gains).
+- Zero hot-path changes. PositionExitGate still just checks `price >= TP`.
+
 ## [0.6.2] - 2026-03-20
 
 ### Fixed

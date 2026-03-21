@@ -50,6 +50,10 @@ template <unsigned F> struct ControllerConfig {
   FPN<F> offset_stddev_min;   // adaptation lower bound for stddev mode (e.g. 0.5)
   FPN<F> offset_stddev_max;   // adaptation upper bound for stddev mode (e.g. 4.0)
   FPN<F> min_long_slope;      // min long-window price slope to allow buys (0 = disabled)
+  // trailing take-profit (disabled by default)
+  FPN<F> tp_hold_score;       // min SNR*R² to hold past TP (0 = disabled, fixed TP)
+  FPN<F> tp_trail_mult;       // trailing distance: stddev * this (e.g. 1.0)
+  FPN<F> sl_trail_mult;       // trailing SL distance: stddev * this (e.g. 2.0)
 };
 //======================================================================================================
 template <unsigned F> inline ControllerConfig<F> ControllerConfig_Default() {
@@ -80,6 +84,9 @@ template <unsigned F> inline ControllerConfig<F> ControllerConfig_Default() {
   cfg.offset_stddev_min = FPN_FromDouble<F>(0.5); // 0.5 stddev - most aggressive
   cfg.offset_stddev_max = FPN_FromDouble<F>(4.0); // 4.0 stddev - most defensive
   cfg.min_long_slope = FPN_Zero<F>();             // 0 = disabled
+  cfg.tp_hold_score = FPN_Zero<F>();              // 0 = disabled, use fixed TP
+  cfg.tp_trail_mult = FPN_FromDouble<F>(1.0);     // trail 1 stddev below price
+  cfg.sl_trail_mult = FPN_FromDouble<F>(2.0);     // trail SL 2 stddevs below price
   return cfg;
 }
 //======================================================================================================
@@ -180,6 +187,18 @@ inline ControllerConfig<F> ControllerConfig_Load(const char *filepath) {
     }
     else if (strcmp(key, "min_long_slope") == 0)
       cfg.min_long_slope = FPN_FromDouble<F>(atof(val));
+    else if (strcmp(key, "tp_hold_score") == 0) {
+      double v = atof(val); if (v < 0) v = 0;
+      cfg.tp_hold_score = FPN_FromDouble<F>(v);
+    }
+    else if (strcmp(key, "tp_trail_mult") == 0) {
+      double v = atof(val); if (v < 0) v = 0;
+      cfg.tp_trail_mult = FPN_FromDouble<F>(v);
+    }
+    else if (strcmp(key, "sl_trail_mult") == 0) {
+      double v = atof(val); if (v < 0) v = 0;
+      cfg.sl_trail_mult = FPN_FromDouble<F>(v);
+    }
   }
 
   fclose(f);

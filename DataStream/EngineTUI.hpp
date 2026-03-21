@@ -232,10 +232,22 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
         snprintf(pos_buf[pln++], POS_LINE_W,
                  C_SAND "    qty:" C_FG "%.6f" C_SAND " val:" C_FG "$%.2f" C_RESET,
                  qty, value);
+        int is_trailing = !FPN_Equal(pos->take_profit_price, pos->original_tp);
+        double orig_tp_d = FPN_ToDouble(pos->original_tp);
+        int above_orig_tp = (price > orig_tp_d) && (entry != 0.0);
+        // status: "HOLDING" when above original TP and trailing keeps it open
+        const char *trail_status = "";
+        if (above_orig_tp && is_trailing)
+            trail_status = C_BOLD C_YELLOW " HOLDING" C_RESET;
+        else if (is_trailing)
+            trail_status = C_YELLOW " trail" C_RESET;
         snprintf(pos_buf[pln++], POS_LINE_W,
-                 C_SAND "    TP:" C_FG "%+.0f" C_SAND " SL:" C_FG "%.0f"
-                 C_SAND " g:" "%s%+.2f%%" C_SAND " n:" "%s%+.2f%%" C_RESET,
-                 to_tp, to_sl, C_PNL(pos_pnl), pos_pnl, C_PNL(net_pnl), net_pnl);
+                 C_SAND "    TP:" C_GREEN "$%.0f" C_RESET "%s"
+                 C_SAND " SL:" C_RED "$%.0f" C_RESET,
+                 tp, trail_status, sl);
+        snprintf(pos_buf[pln++], POS_LINE_W,
+                 C_SAND "    g:" "%s%+.2f%%" C_SAND " n:" "%s%+.2f%%" C_RESET,
+                 C_PNL(pos_pnl), pos_pnl, C_PNL(net_pnl), net_pnl);
         displayed++;
         active &= active - 1;
         if (pln >= POS_MAX_LINES - 4) break;  // safety
@@ -251,7 +263,7 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
 
     printf(C_SAND "  ================================================================" C_RESET "\n"); row++;
     printf(C_BOLD C_PEACH "     /\\_/\\   FOXML TRADER" C_RESET
-           C_DIM "                       tick: " C_RESET C_FG "%-8lu" C_RESET "\n", (unsigned long)tick); row++;
+           C_RESET "\n"); row++;
     printf(C_BOLD C_PEACH "    ( o.o )  " C_WHEAT "engine v0.6" C_RESET "\n"); row++;
     printf(C_BOLD C_PEACH "     > ^ <" C_RESET "\n"); row++;
     printf(C_SAND "  ================================================================" C_RESET "\n"); row++;
@@ -369,6 +381,38 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
     const char *offset_mode_str = stddev_mode ? "stddev" : "pct";
     printf(C_SAND "    strategy:   " C_FG "MEAN REVERSION" C_RESET
            C_DIM " (" C_FG "%s" C_DIM ")  |  " C_YELLOW "PAPER" C_RESET "\n", offset_mode_str); row++;
+    printf(C_SURF "  ----------------------------------------------------------------" C_RESET "\n"); row++;
+
+    // ==== CONFIG section ====
+    double cfg_tp = FPN_ToDouble(ctrl->config.take_profit_pct) * 100.0;
+    double cfg_sl = FPN_ToDouble(ctrl->config.stop_loss_pct) * 100.0;
+    double cfg_fee = FPN_ToDouble(ctrl->config.fee_rate) * 100.0;
+    double cfg_hold = FPN_ToDouble(ctrl->config.tp_hold_score);
+    int trailing_enabled = !FPN_IsZero(ctrl->config.tp_hold_score);
+
+    printf(C_BOLD C_PEACH "  CONFIG:" C_RESET "\n"); row++;
+    printf(C_SAND "    TP: " C_FG "%.1f%%" C_RESET
+           C_SAND "  SL: " C_FG "%.1f%%" C_RESET
+           C_SAND "  risk: " C_FG "%.1f%%" C_RESET
+           C_SAND "  fee: " C_FG "%.1f%%" C_RESET "\n",
+           cfg_tp, cfg_sl, risk_amt, cfg_fee); row++;
+    if (stddev_mode) {
+        double cfg_sm = FPN_ToDouble(ctrl->config.offset_stddev_mult);
+        printf(C_SAND "    offset: " C_FG "stddev %.1fx" C_RESET, cfg_sm);
+    } else {
+        double cfg_op = FPN_ToDouble(ctrl->config.entry_offset_pct) * 100.0;
+        printf(C_SAND "    offset: " C_FG "%.3f%%" C_RESET, cfg_op);
+    }
+    if (trailing_enabled) {
+        double cfg_tm = FPN_ToDouble(ctrl->config.tp_trail_mult);
+        double cfg_sm = FPN_ToDouble(ctrl->config.sl_trail_mult);
+        printf(C_SAND "  trail: " C_FG "%.1f" C_DIM "σ" C_RESET
+               C_SAND " sl: " C_FG "%.1f" C_DIM "σ" C_RESET
+               C_SAND " score: " C_FG "%.2f" C_RESET, cfg_tm, cfg_sm, cfg_hold);
+    } else {
+        printf(C_DIM "  trailing: off" C_RESET);
+    }
+    printf("\n"); row++;
     printf(C_SURF "  ----------------------------------------------------------------" C_RESET "\n"); row++;
 
     // ==== STATS section ====

@@ -98,6 +98,7 @@ inline void PortfolioController_Init(PortfolioController<F> *ctrl,
   // init strategy state
   ctrl->strategy_id = STRATEGY_MEAN_REVERSION;
   ctrl->mean_rev.feeder = RegressionFeederX_Init<F>();
+  ctrl->mean_rev.price_feeder = RegressionFeederX_Init<F>();
   ctrl->mean_rev.ror = RORRegressor_Init<F>();
   ctrl->mean_rev.live_offset_pct = config.entry_offset_pct;
   ctrl->mean_rev.live_vol_mult = config.volume_multiplier;
@@ -309,8 +310,11 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
       int slot = Portfolio_AddPositionWithExits(&ctrl->portfolio, sized_qty,
                                                 fill_price, tp_price, sl_price);
       ctrl->total_buys++;
-      if (slot >= 0)
+      if (slot >= 0) {
         ctrl->entry_ticks[slot] = ctrl->total_ticks;
+        ctrl->portfolio.positions[slot].original_tp = tp_price;
+        ctrl->portfolio.positions[slot].original_sl = sl_price;
+      }
 
       // deduct cost + entry fee from balance
       ctrl->balance = FPN_SubSat(ctrl->balance, total_cost);
@@ -426,6 +430,10 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
   MeanReversion_Adapt(&ctrl->mean_rev, current_price, ctrl->portfolio_delta,
                        ctrl->portfolio.active_bitmap, &ctrl->buy_conds,
                        &ctrl->config);
+  // trailing TP/SL: after Adapt (which pushes price_feeder), adjust exit levels
+  // for positions running past their original TP
+  MeanReversion_ExitAdjust(&ctrl->portfolio, current_price, &ctrl->rolling,
+                            &ctrl->mean_rev, &ctrl->config);
   ctrl->buy_conds = MeanReversion_BuySignal(&ctrl->mean_rev, &ctrl->rolling,
                                              &ctrl->rolling_long, &ctrl->config);
 }
