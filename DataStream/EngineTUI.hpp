@@ -23,8 +23,7 @@
 #include "../CoreFrameworks/PortfolioController.hpp"
 #include "../CoreFrameworks/OrderGates.hpp"
 #ifdef USE_FTXUI
-#include <thread>
-#include <atomic>
+#include <fcntl.h>
 #endif
 
 using namespace std;
@@ -1067,69 +1066,63 @@ static inline void *tui_thread_fn(void *arg) {
     TUISharedState *shared = (TUISharedState *)arg;
 
 #ifdef USE_FTXUI
-    // FTXUI render loop — replaces printf TUI entirely
+    // DOM-only FTXUI rendering with manual terminal management
+    // set terminal to raw mode + non-blocking stdin
+    struct termios old_term, raw_term;
+    tcgetattr(STDIN_FILENO, &old_term);
+    raw_term = old_term;
+    raw_term.c_lflag &= ~(ICANON | ECHO);
+    raw_term.c_cc[VMIN] = 0;
+    raw_term.c_cc[VTIME] = 0;
+    tcsetattr(STDIN_FILENO, TCSANOW, &raw_term);
+
+    // make stdin non-blocking with fcntl (belt + suspenders)
+    int stdin_flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+    fcntl(STDIN_FILENO, F_SETFL, stdin_flags | O_NONBLOCK);
+
+    // hide cursor, clear screen
+    printf("\033[?25l\033[2J");
+    fflush(stdout);
+
     int current_layout = LAYOUT_STANDARD;
 
-    auto screen = ftxui::ScreenInteractive::Fullscreen();
-
-    auto renderer = ftxui::Renderer([&]() -> ftxui::Element {
+    while (!__atomic_load_n(&shared->quit_requested, __ATOMIC_ACQUIRE)) {
+        // read snapshot
         int idx = __atomic_load_n(&shared->active_idx, __ATOMIC_ACQUIRE);
         const TUISnapshot *s = &shared->snapshots[idx];
-        return Layout_Render(s, current_layout);
-    });
 
-    auto component = ftxui::CatchEvent(renderer, [&](ftxui::Event event) {
-        if (event == ftxui::Event::Character('q') || event == ftxui::Event::Character('Q')) {
-            __atomic_store_n(&shared->quit_requested, 1, __ATOMIC_RELEASE);
-            screen.Exit();
-            return true;
-        }
-        if (event == ftxui::Event::Character('p') || event == ftxui::Event::Character('P')) {
-            __atomic_store_n(&shared->pause_requested, 1, __ATOMIC_RELEASE);
-            return true;
-        }
-        if (event == ftxui::Event::Character('r') || event == ftxui::Event::Character('R')) {
-            __atomic_store_n(&shared->reload_requested, 1, __ATOMIC_RELEASE);
-            return true;
-        }
-        if (event == ftxui::Event::Character('s') || event == ftxui::Event::Character('S')) {
-            __atomic_store_n(&shared->regime_cycle_requested, 1, __ATOMIC_RELEASE);
-            return true;
-        }
-        if (event == ftxui::Event::Character('l') || event == ftxui::Event::Character('L')) {
-            current_layout = (current_layout + 1) % LAYOUT_COUNT;
-            return true;
-        }
-        if (event == ftxui::Event::Custom) {
-            return true; // consume refresh events — triggers re-render
-        }
-        return false;
-    });
+        // render FTXUI element tree to a screen buffer
+        auto element = Layout_Render(s, current_layout);
+        auto screen = ftxui::Screen::Create(ftxui::Dimension::Full(), ftxui::Dimension::Full());
+        ftxui::Render(screen, element);
 
-    // refresh thread: posts Custom events at 10 FPS to trigger re-renders
-    // FTXUI's event loop runs continuously for responsive keyboard handling
-    std::atomic<bool> refresh_running{true};
-    std::thread refresh_thread([&] {
-        while (refresh_running.load()) {
-            usleep(100000); // 10 FPS
-            // check if engine wants to quit (e.g. 24h reconnect, signal)
-            if (__atomic_load_n(&shared->quit_requested, __ATOMIC_ACQUIRE)) {
-                screen.Exit();
-                break;
-            }
-            screen.PostEvent(ftxui::Event::Custom);
+        // draw: cursor home + print rendered screen
+        std::string output = "\033[H" + screen.ToString();
+        write(STDOUT_FILENO, output.data(), output.size());
+
+        // non-blocking keyboard read
+        char c = 0;
+        if (read(STDIN_FILENO, &c, 1) == 1) {
+            if (c == 'q' || c == 'Q')
+                __atomic_store_n(&shared->quit_requested, 1, __ATOMIC_RELEASE);
+            else if (c == 'p' || c == 'P')
+                __atomic_store_n(&shared->pause_requested, 1, __ATOMIC_RELEASE);
+            else if (c == 'r' || c == 'R')
+                __atomic_store_n(&shared->reload_requested, 1, __ATOMIC_RELEASE);
+            else if (c == 's' || c == 'S')
+                __atomic_store_n(&shared->regime_cycle_requested, 1, __ATOMIC_RELEASE);
+            else if (c == 'l' || c == 'L')
+                current_layout = (current_layout + 1) % LAYOUT_COUNT;
         }
-    });
 
-    // run FTXUI event loop (blocks until screen.Exit())
-    screen.Loop(component);
+        usleep(100000); // 10 FPS
+    }
 
-    // check if engine should quit (user pressed 'q' in FTXUI)
-    if (!__atomic_load_n(&shared->quit_requested, __ATOMIC_ACQUIRE))
-        __atomic_store_n(&shared->quit_requested, 1, __ATOMIC_RELEASE);
-
-    refresh_running.store(false);
-    refresh_thread.join();
+    // restore terminal
+    fcntl(STDIN_FILENO, F_SETFL, stdin_flags);
+    tcsetattr(STDIN_FILENO, TCSANOW, &old_term);
+    printf("\033[?25h\033[2J"); // show cursor, clear screen
+    fflush(stdout);
 
 #else
     // legacy printf TUI
