@@ -99,8 +99,10 @@ static inline Element Widget_Header(const TUISnapshot *s) {
     std::string state_str = s->state_warmup ? "WARMUP" : (s->is_paused ? "PAUSED" : "ACTIVE");
     Color state_color = s->state_warmup ? foxml::yellow : (s->is_paused ? foxml::yellow : foxml::green);
 
+    // uptime from first call (start_time in snapshot is 0 — TUI manages its own clock)
+    static time_t tui_start = time(NULL);
     time_t now = time(NULL);
-    int uptime_sec = (int)difftime(now, s->start_time);
+    int uptime_sec = (int)difftime(now, tui_start);
     int hrs = uptime_sec / 3600, mins = (uptime_sec % 3600) / 60, secs = uptime_sec % 60;
     char uptime_buf[16];
     snprintf(uptime_buf, sizeof(uptime_buf), "%02d:%02d:%02d", hrs, mins, secs);
