@@ -37,6 +37,8 @@ static inline Element Layout_Standard(const TUISnapshot *s) {
     left_col.push_back(Widget_Risk(s));
     left_col.push_back(separator() | color(foxml::surf));
     left_col.push_back(Widget_Stats(s));
+    left_col.push_back(separator() | color(foxml::surf));
+    left_col.push_back(Widget_Config(s));
 #ifdef LATENCY_PROFILING
     left_col.push_back(separator() | color(foxml::surf));
     left_col.push_back(Widget_Latency(s));

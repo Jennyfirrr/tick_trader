@@ -248,6 +248,38 @@ static inline Element Widget_Stats(const TUISnapshot *s) {
 }
 
 //======================================================================================================
+// [CONFIG WIDGET]
+//======================================================================================================
+static inline Element Widget_Config(const TUISnapshot *s) {
+    std::string offset_str = s->stddev_mode
+        ? fmt("stddev %.2fx", s->cfg_offset_val)
+        : fmt("%.3f%%", s->cfg_offset_val);
+
+    Elements rows;
+    rows.push_back(text("CONFIG") | bold | color(foxml::peach));
+    rows.push_back(hbox({
+        text("  TP: ") | color(foxml::sand), text(fmt("%.1f%%", s->cfg_tp)) | color(foxml::fg),
+        text("  SL: ") | color(foxml::sand), text(fmt("%.1f%%", s->cfg_sl)) | color(foxml::fg),
+        text("  risk: ") | color(foxml::sand), text(fmt("%.1f%%", s->risk_amt)) | color(foxml::fg),
+        text("  fee: ") | color(foxml::sand), text(fmt("%.1f%%", s->cfg_fee)) | color(foxml::fg),
+    }));
+    rows.push_back(hbox({
+        text("  offset: ") | color(foxml::sand), text(offset_str) | color(foxml::fg),
+    }));
+    if (s->trailing_enabled) {
+        rows.push_back(hbox({
+            text("  trail: ") | color(foxml::sand), text(fmt("%.1f", s->cfg_trail_mult)) | color(foxml::fg),
+            text("σ") | color(foxml::dim),
+            text("  sl: ") | color(foxml::sand), text(fmt("%.1f", s->cfg_sl_trail_mult)) | color(foxml::fg),
+            text("σ") | color(foxml::dim),
+            text("  score: ") | color(foxml::sand), text(fmt("%.2f", s->cfg_hold_score)) | color(foxml::fg),
+        }));
+    }
+
+    return vbox(rows);
+}
+
+//======================================================================================================
 // [POSITIONS WIDGET]
 //======================================================================================================
 static inline Element Widget_Positions(const TUISnapshot *s) {
@@ -306,7 +338,7 @@ static inline Element Widget_Positions(const TUISnapshot *s) {
     if (displayed == 0)
         rows.push_back(text("  (none)") | color(foxml::dim));
 
-    return vbox(rows) | frame | flex;
+    return vbox(rows) | vscroll_indicator | frame | flex;
 }
 
 //======================================================================================================
