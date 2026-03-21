@@ -2,6 +2,13 @@
 
 ## [0.7.1] - 2026-03-21 (branch: time-based-exit)
 
+### Fixed
+- **BinanceConfig parser breaks on inline comments** — adding documented comments to
+  engine.cfg caused the symbol to be parsed as `"btcusdt                  # binance
+  trading pair"` instead of `"btcusdt"`. Binance rejected this as an invalid stream
+  name. Parser now strips `#` comments and trailing whitespace from all values, matching
+  the ControllerConfig parser's behavior.
+
 ### Added
 - **Time-based exit** — closes positions held longer than `max_hold_ticks` when gain
   is below `min_hold_gain_pct`. Frees capital trapped in positions where TP became
