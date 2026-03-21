@@ -321,15 +321,17 @@ int main(int argc, char *argv[]) {
             }
 #endif
 
-            // save snapshot + copy TUI snapshot every slow-path cycle
+            // save portfolio snapshot every slow-path cycle (crash recovery)
             if (ctrl.tick_count == 0) {
                 PortfolioController_SaveSnapshot(&ctrl, snapshot_path);
+            }
 #ifdef MULTICORE_TUI
-                // copy display state to back buffer, then atomic swap
+            // copy TUI snapshot every 10 ticks (~3 updates/sec at BTC trade rate)
+            // decoupled from slow path so the display stays responsive
+            if (ctrl.total_ticks % 10 == 0) {
                 int back = !__atomic_load_n(&shared.active_idx, __ATOMIC_ACQUIRE);
                 TUI_CopySnapshot(&shared.snapshots[back], &ctrl, &last_stream);
 #ifdef LATENCY_PROFILING
-                // copy latency stats to snapshot (engine-side stats → display)
                 if (tui.hot_count > 0) {
                     shared.snapshots[back].hot_avg_ns = (double)tui.hot_sum / tui.hot_count / tui.tsc_per_ns;
                     shared.snapshots[back].hot_min_ns = (double)tui.hot_min / tui.tsc_per_ns;
@@ -344,8 +346,8 @@ int main(int argc, char *argv[]) {
                 }
 #endif
                 __atomic_store_n(&shared.active_idx, back, __ATOMIC_RELEASE);
-#endif
             }
+#endif
         }
 
         //==============================================================================================
