@@ -1,6 +1,8 @@
 # Tick Trader
 
-Tick-level crypto trading engine in C++. Branchless fixed-point arithmetic, bitmap-based portfolio management, regime-adaptive strategy switching. Single-symbol, single-threaded hot path with optional multicore TUI.
+Tick-level crypto trading engine in C++. Branchless fixed-point arithmetic, bitmap-based portfolio management, regime-adaptive strategy switching. Single-symbol, single-threaded hot path with multicore FTXUI dashboard.
+
+![Tick Trader TUI](assets/tui-screenshot.png)
 
 ## Quick Start
 
