@@ -1,5 +1,66 @@
 # Changelog
 
+## [0.9.0] - 2026-03-21
+
+### Added
+- **Per-component latency profiling** — hot path broken down into BuyGate, ExitGate,
+  and PortfolioController_Tick with separate avg/max for each. Fill vs no-fill PCTick
+  separation shows true fill cost (~4μs) vs no-fill cost (~750ns). Per-position ExitGate
+  cost tracks ns/pos across the bitmap walk.
+
+- **Percentile tracking** — p50 and p95 via log2 histogram (21 buckets, one `clz`
+  per tick). Proved that p50 ≈ avg ≈ p95 (~950ns), meaning the latency is consistent
+  and not caused by outlier OS interrupts dragging the mean.
+
+- **LATENCY_LITE mode** — 2 rdtscp calls instead of 4 (total only, no per-component).
+  Reduces measurement overhead by ~70ns per tick. Min dropped from 133ns to 61ns,
+  proving each `__rdtscp` pipeline drain costs ~36ns.
+
+- **BUSY_POLL mode** (experimental) — spin-poll instead of sleeping in `poll()`.
+  Tested to determine if cold caches caused the ~1μs p50. Result: made things worse
+  because `poll(0)` syscalls trash L1 cache on every iteration. Confirmed the ~950ns
+  floor is dominated by the post-`poll()` kernel→userspace transition.
+
+- **FP64 native 128-bit specializations** (experimental, `USE_NATIVE_128`) — FPN<64>
+  operations forward to FixedPoint64.hpp which uses `__uint128_t` for single-instruction
+  comparisons. Result: added ~20ns overhead from struct conversion (FPN word array ↔
+  FP64 __uint128_t). Not recommended unless the FPN struct itself is changed to use
+  __uint128_t internally.
+
+- **FixedPoint64.hpp** — static fixed-point header with native `__uint128_t` magnitude.
+  Complete API matching FixedPointN.hpp (37 functions). Copied from learn_cpp library.
+
+### Changed
+- **PortfolioController struct reorder** — hot-path fields (`prev_bitmap`, `tick_count`,
+  `buy_conds`, `exit_buf`) moved to top of struct adjacent to `portfolio`. Cold buffers
+  (`RollingStats`, `TradeLogBuffer`, `MeanReversionState`) pushed to end. ExitGate
+  per-position cost improved from 368ns to 129ns.
+
+- **Heap-allocate rolling_long** — `RollingStats<F, 512>` (24KB) changed from inline
+  struct member to heap pointer. Reduces inline struct size from 36KB to ~12KB. All
+  `ctrl->rolling_long.field` → `ctrl->rolling_long->field`. Safe reinit on 24h reconnect
+  (frees old allocation before malloc).
+
+- **README.md** — build modes section expanded with all compile flags (MULTICORE_TUI,
+  LATENCY_PROFILING, LATENCY_LITE, LATENCY_BENCH, BUSY_POLL, USE_NATIVE_128). Hot path
+  architecture updated with measured latency numbers.
+
+### Latency Investigation Summary
+| Optimization | Result |
+|---|---|
+| Per-component profiling | PCTick is 63% of hot path |
+| Struct reorder | ExitGate/pos: 368→129ns, PCTick unchanged |
+| Heap rolling_long | -24KB inline, no latency change |
+| Prefetch / warm poll | No effect (poll sleeps, evicts data) |
+| Busy-poll (BUSY_POLL) | Worse (poll(0) syscalls trash cache) |
+| 4→2 rdtscp (LATENCY_LITE) | min 133→61ns, avg 1200→782ns |
+| FP64 native (USE_NATIVE_128) | Worse (+20ns conversion overhead) |
+
+**Conclusion:** ~950ns p50 is the floor for this architecture. Dominated by `poll()`
+syscall return (kernel→user transition, pipeline flush, TLB/icache rebuild). Would
+require kernel bypass (io_uring/DPDK) to go lower. Acceptable for BTC at 3 ticks/sec
+(0.0003% CPU utilization).
+
 ## [0.8.1] - 2026-03-21
 
 ### Fixed
