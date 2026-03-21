@@ -71,7 +71,7 @@ template <unsigned F> struct ControllerConfig {
 template <unsigned F> inline ControllerConfig<F> ControllerConfig_Default() {
   ControllerConfig<F> cfg;
   cfg.poll_interval = 100;
-  cfg.warmup_ticks = MAX_WINDOW * 8; // 64 ticks, enough for one full ROR cycle
+  cfg.warmup_ticks = 128; // fill rolling window before trading (128 ticks ≈ 43s at BTC rate)
   cfg.r2_threshold = FPN_FromDouble<F>(0.30);
   cfg.slope_scale_buy = FPN_FromDouble<F>(0.50);
   cfg.max_shift = FPN_FromDouble<F>(0.0001); // 0.01% of price — e.g. $7 at BTC $70k
