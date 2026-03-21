@@ -387,17 +387,22 @@ inline void MeanReversion_ExitAdjust(Portfolio<F> *portfolio,
     // which falsely activates trailing. skip when no volatility data.
     if (FPN_IsZero(rolling->price_stddev)) return;
 
-    // compute SNR: signal-to-noise ratio of price trend
-    FPN<F> snr = FPN_DivNoAssert(rolling->price_slope, rolling->price_stddev);
-
-    // compute R² from price regression (only if feeder has enough data)
-    // R² measures trend CONSISTENCY — high R² means prices move in a straight line
+    // compute R² and slope from price regression (8-sample window, ~4 min)
+    // uses the SHORT regression window, not the 128-tick rolling window (~70 min),
+    // so trailing reacts to what's happening NOW, not historical trend
     // cold start: R² = 0 for first 8 slow-path cycles after warmup. trailing disabled until then.
     FPN<F> r_squared = FPN_Zero<F>();
+    FPN<F> reg_slope = FPN_Zero<F>();
     if (state->price_feeder.count >= MAX_WINDOW) {
         LinearRegression3XResult<F> price_reg = RegressionFeederX_Compute(&state->price_feeder);
         r_squared = price_reg.r_squared;
+        reg_slope = price_reg.model.slope;
     }
+
+    // compute SNR using regression slope (not rolling slope)
+    // regression slope = recent ~4 min trend. rolling slope = ~70 min average.
+    // for trailing decisions, recent trend is what matters.
+    FPN<F> snr = FPN_DivNoAssert(reg_slope, rolling->price_stddev);
 
     // hold_score = SNR * R²
     // negative slope → negative SNR → negative score → never exceeds positive threshold → correct
