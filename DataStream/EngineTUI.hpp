@@ -22,6 +22,9 @@
 
 #include "../CoreFrameworks/PortfolioController.hpp"
 #include "../CoreFrameworks/OrderGates.hpp"
+#ifdef USE_FTXUI
+#include <fcntl.h>
+#endif
 
 using namespace std;
 
@@ -640,6 +643,13 @@ struct TUISnapshot {
     TUIPositionSnap positions[16];
     // P&L
     double realized, unrealized, total_pnl, return_pct;
+    // graph history (ring buffers, updated every snapshot copy)
+    static constexpr int GRAPH_LEN = 120;  // ~2 min at 1 update/sec
+    double price_history[GRAPH_LEN];
+    double volume_history[GRAPH_LEN];
+    double pnl_history[GRAPH_LEN];
+    int graph_head;
+    int graph_count;
     // risk
     double risk_amt, max_dd;
     int breaker_tripped;
@@ -1046,10 +1056,77 @@ static inline char TUI_ReadKey(EngineTUI *tui) {
 //======================================================================================================
 // [TUI THREAD FUNCTION]
 //======================================================================================================
+#ifdef USE_FTXUI
+#include <ftxui/component/component.hpp>
+#include <ftxui/component/screen_interactive.hpp>
+#include <ftxui/component/loop.hpp>
+#include "TUILayout.hpp"
+#endif
+
 static inline void *tui_thread_fn(void *arg) {
     TUISharedState *shared = (TUISharedState *)arg;
 
-    // TUI thread owns the terminal
+#ifdef USE_FTXUI
+    // DOM-only FTXUI rendering with manual terminal management
+    // set terminal to raw mode + non-blocking stdin
+    struct termios old_term, raw_term;
+    tcgetattr(STDIN_FILENO, &old_term);
+    raw_term = old_term;
+    raw_term.c_lflag &= ~(ICANON | ECHO);
+    raw_term.c_cc[VMIN] = 0;
+    raw_term.c_cc[VTIME] = 0;
+    tcsetattr(STDIN_FILENO, TCSANOW, &raw_term);
+
+    // make stdin non-blocking with fcntl (belt + suspenders)
+    int stdin_flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+    fcntl(STDIN_FILENO, F_SETFL, stdin_flags | O_NONBLOCK);
+
+    // hide cursor, clear screen
+    printf("\033[?25l\033[2J");
+    fflush(stdout);
+
+    int current_layout = LAYOUT_STANDARD;
+
+    while (!__atomic_load_n(&shared->quit_requested, __ATOMIC_ACQUIRE)) {
+        // read snapshot
+        int idx = __atomic_load_n(&shared->active_idx, __ATOMIC_ACQUIRE);
+        const TUISnapshot *s = &shared->snapshots[idx];
+
+        // render FTXUI element tree to a screen buffer
+        auto element = Layout_Render(s, current_layout);
+        auto screen = ftxui::Screen::Create(ftxui::Dimension::Full(), ftxui::Dimension::Full());
+        ftxui::Render(screen, element);
+
+        // draw: cursor home + render + clear to end of screen (prevents ghost content)
+        std::string output = "\033[H" + screen.ToString() + "\033[J";
+        write(STDOUT_FILENO, output.data(), output.size());
+
+        // non-blocking keyboard read
+        char c = 0;
+        if (read(STDIN_FILENO, &c, 1) == 1) {
+            if (c == 'q' || c == 'Q')
+                __atomic_store_n(&shared->quit_requested, 1, __ATOMIC_RELEASE);
+            else if (c == 'p' || c == 'P')
+                __atomic_store_n(&shared->pause_requested, 1, __ATOMIC_RELEASE);
+            else if (c == 'r' || c == 'R')
+                __atomic_store_n(&shared->reload_requested, 1, __ATOMIC_RELEASE);
+            else if (c == 's' || c == 'S')
+                __atomic_store_n(&shared->regime_cycle_requested, 1, __ATOMIC_RELEASE);
+            else if (c == 'l' || c == 'L')
+                current_layout = (current_layout + 1) % LAYOUT_COUNT;
+        }
+
+        usleep(100000); // 10 FPS
+    }
+
+    // restore terminal
+    fcntl(STDIN_FILENO, F_SETFL, stdin_flags);
+    tcsetattr(STDIN_FILENO, TCSANOW, &old_term);
+    printf("\033[?25h\033[2J"); // show cursor, clear screen
+    fflush(stdout);
+
+#else
+    // legacy printf TUI
     TUI_Init(&shared->tui, 1, 10);
 
     while (!__atomic_load_n(&shared->quit_requested, __ATOMIC_ACQUIRE)) {
@@ -1070,6 +1147,8 @@ static inline void *tui_thread_fn(void *arg) {
     }
 
     TUI_Cleanup(&shared->tui);
+#endif // USE_FTXUI
+
     return NULL;
 }
 

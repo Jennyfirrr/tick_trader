@@ -59,24 +59,36 @@ No duplicate code to sync — shared functions handle config reload, unpause, an
 
 ## Build
 
+Requires: g++ (C++17), OpenSSL, CMake 3.14+. FTXUI is fetched automatically.
+
 ```bash
-make              # multicore TUI production
-make profile      # per-component latency breakdown (4 rdtscp/tick)
-make profile-lite # total-only latency (2 rdtscp/tick, less overhead)
+make              # build (cmake + FTXUI, multicore TUI)
+make test         # run 101 tests
+make profile      # with per-component latency profiling
+make profile-lite # total-only latency (lower overhead)
 make bench        # headless profiling to stderr
-make single       # single-threaded (no multicore TUI)
-make test         # build and run 101 tests
-make clean
+make clean        # remove build directory
 ```
 
-### Compile Flags
+### CMake Options
 
-| Flag | Effect |
-|------|--------|
-| `MULTICORE_TUI` | Engine on core 0, TUI on core 1. Requires `-lpthread` |
-| `LATENCY_PROFILING` | RDTSCP timing with per-component breakdown, p50/p95 histogram |
-| `LATENCY_LITE` | Total-only timing (2 rdtscp vs 4), ~70ns less measurement overhead |
-| `LATENCY_BENCH` | Profiling with TUI disabled, dumps stats to stderr |
+| Option | Default | Effect |
+|--------|---------|--------|
+| `LATENCY_PROFILING` | OFF | RDTSCP timing with per-component breakdown |
+| `LATENCY_LITE` | OFF | Total-only timing (2 rdtscp vs 4) |
+| `LATENCY_BENCH` | OFF | Headless profiling to stderr |
+
+## TUI
+
+FTXUI-based terminal dashboard with FoxML color theme. Engine runs on core 0,
+TUI renders on core 1 from a double-buffered snapshot (zero engine contention).
+
+Features:
+- 3 preset layouts: Standard, Positions Focus, Compact (cycle with `l`)
+- Live price + P&L sparkline graphs (120-point ring buffer)
+- Scrollable position list with hold time, trailing status
+- Exposure gauge, regime status with duration
+- Auto-resizes to terminal dimensions
 
 ## TUI Controls
 
@@ -86,6 +98,7 @@ make clean
 | `p` | Pause/unpause buying (exit gate keeps running) |
 | `r` | Hot-reload engine.cfg |
 | `s` | Cycle regime (RANGING→TRENDING→VOLATILE) for testing |
+| `l` | Cycle layout (Standard→Positions→Compact) |
 
 ## Project Structure
 

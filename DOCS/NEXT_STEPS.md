@@ -86,13 +86,34 @@ Webhook/email on: position opened, TP/SL hit, circuit breaker tripped, disconnec
 
 ## Priority 5: Scaling
 
-### 5.1 Multiple symbols
-Multiple websocket connections (one per symbol, each with own controller). Or combined
-stream endpoint with symbol demux.
+### 5.1 Multi-currency with shared portfolio
+One core per currency, each with its own hot path, rolling stats, and strategy dispatch.
+Shared portfolio managed by a central Portfolio Manager on a dedicated core.
+
+**Architecture:**
+```
+Core 0: BTC engine (own hot path, own strategy, own regime detector)
+Core 1: ETH engine (own hot path, own strategy, own regime detector)
+Core 2: Portfolio Manager (shared balance, exposure limits, fill/exit requests)
+Core 3: TUI (reads from all engines via per-engine snapshots)
+```
+
+**Key design decisions:**
+- Per-currency position slots: positions 0-7 for BTC, 8-15 for ETH (partition bitmap)
+- Balance access via lock-free message queue to Portfolio Manager (no hot-path locking)
+- Exposure limit is cross-currency: Portfolio Manager enforces total deployed < max
+- Each engine has local position tracking, central manager has the source of truth
+
+**What changes:** Portfolio.hpp (partitioned bitmap), new PortfolioManager.hpp (message
+queue + balance allocation), main.cpp (multi-thread spawn), TUI (multi-engine snapshots)
+
+**What stays the same:** BuyGate, ExitGate, PortfolioController_Tick, strategies,
+regime detection — all per-currency, no changes needed
 
 ### 5.2 Correlation awareness
 Track correlation between positions across symbols. Prevent concentrated exposure in
-correlated assets.
+correlated assets (BTC + ETH move together ~70% of the time). Portfolio Manager should
+reduce position size when entering a correlated asset that already has exposure.
 
 ### ~~5.3 Strategy library~~ DONE (v0.5.0, v1.0.0)
 StrategyInterface.hpp contract, MeanReversion.hpp, Momentum.hpp, RegimeDetector.hpp.
