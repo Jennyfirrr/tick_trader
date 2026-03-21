@@ -22,6 +22,10 @@
 
 #include "../CoreFrameworks/PortfolioController.hpp"
 #include "../CoreFrameworks/OrderGates.hpp"
+#ifdef USE_FTXUI
+#include <thread>
+#include <atomic>
+#endif
 
 using namespace std;
 
@@ -1096,16 +1100,36 @@ static inline void *tui_thread_fn(void *arg) {
             current_layout = (current_layout + 1) % LAYOUT_COUNT;
             return true;
         }
+        if (event == ftxui::Event::Custom) {
+            return true; // consume refresh events — triggers re-render
+        }
         return false;
     });
 
-    // run FTXUI loop with 10 FPS refresh
-    ftxui::Loop loop(&screen, component);
-    while (!loop.HasQuitted() && !__atomic_load_n(&shared->quit_requested, __ATOMIC_ACQUIRE)) {
-        loop.RunOnce();
-        screen.PostEvent(ftxui::Event::Custom); // trigger re-render
-        usleep(100000); // 10 FPS
-    }
+    // refresh thread: posts Custom events at 10 FPS to trigger re-renders
+    // FTXUI's event loop runs continuously for responsive keyboard handling
+    std::atomic<bool> refresh_running{true};
+    std::thread refresh_thread([&] {
+        while (refresh_running.load()) {
+            usleep(100000); // 10 FPS
+            // check if engine wants to quit (e.g. 24h reconnect, signal)
+            if (__atomic_load_n(&shared->quit_requested, __ATOMIC_ACQUIRE)) {
+                screen.Exit();
+                break;
+            }
+            screen.PostEvent(ftxui::Event::Custom);
+        }
+    });
+
+    // run FTXUI event loop (blocks until screen.Exit())
+    screen.Loop(component);
+
+    // check if engine should quit (user pressed 'q' in FTXUI)
+    if (!__atomic_load_n(&shared->quit_requested, __ATOMIC_ACQUIRE))
+        __atomic_store_n(&shared->quit_requested, 1, __ATOMIC_RELEASE);
+
+    refresh_running.store(false);
+    refresh_thread.join();
 
 #else
     // legacy printf TUI
