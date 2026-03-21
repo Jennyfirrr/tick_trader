@@ -129,6 +129,7 @@ DOCS/
 
 ## Docs
 
+- `DOCS/CONTRIBUTING.md` — guide for adding strategies and extending the engine
 - `DOCS/CHANGELOG.md` — version history
 - `DOCS/NEXT_STEPS.md` — roadmap with completed/remaining items
 - `DOCS/ARCHITECTURE.md` — system design and data flow
