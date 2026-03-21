@@ -19,6 +19,8 @@
 #include "../DataStream/TradeLog.hpp"
 #include "../ML_Headers/RollingStats.hpp"
 #include "../Strategies/MeanReversion.hpp"
+#include "../Strategies/Momentum.hpp"
+#include "../Strategies/RegimeDetector.hpp"
 #include <stdio.h>
 //======================================================================================================
 // [CONTROLLER STRUCT]
@@ -66,6 +68,8 @@ template <unsigned F> struct PortfolioController {
 
   int strategy_id;
   MeanReversionState<F> mean_rev;
+  MomentumState<F> momentum;
+  RegimeState<F> regime;
   TradeLogBuffer trade_buf;  // buffered trade log — hot path pushes, slow path drains
 
   //================================================================================================
@@ -104,8 +108,9 @@ inline void PortfolioController_Init(PortfolioController<F> *ctrl,
   ctrl->buy_conds.volume = FPN_Zero<F>();
   ctrl->buy_conds.gate_direction = 0;  // default: buy below (mean reversion)
 
-  // init strategy state
+  // init strategy states — both ready at startup so regime switch is instant
   ctrl->strategy_id = STRATEGY_MEAN_REVERSION;
+  // mean reversion
   ctrl->mean_rev.feeder = RegressionFeederX_Init<F>();
   ctrl->mean_rev.price_feeder = RegressionFeederX_Init<F>();
   ctrl->mean_rev.ror = RORRegressor_Init<F>();
@@ -114,6 +119,16 @@ inline void PortfolioController_Init(PortfolioController<F> *ctrl,
   ctrl->mean_rev.live_stddev_mult = config.offset_stddev_mult;
   ctrl->mean_rev.buy_conds_initial = ctrl->buy_conds;
   ctrl->mean_rev.has_regression = 0;
+  // momentum
+  ctrl->momentum.feeder = RegressionFeederX_Init<F>();
+  ctrl->momentum.price_feeder = RegressionFeederX_Init<F>();
+  ctrl->momentum.ror = RORRegressor_Init<F>();
+  ctrl->momentum.live_breakout_mult = config.momentum_breakout_mult;
+  ctrl->momentum.live_vol_mult = config.volume_multiplier;
+  ctrl->momentum.buy_conds_initial = ctrl->buy_conds;
+  ctrl->momentum.has_regression = 0;
+  // regime detector
+  Regime_Init(&ctrl->regime, config.regime_hysteresis);
 
   ExitBuffer_Init(&ctrl->exit_buf);
   TradeLogBuffer_Init(&ctrl->trade_buf);
@@ -161,12 +176,13 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
     RollingStats_Push(ctrl->rolling_long, current_price, current_volume);
 
     if (ctrl->warmup_count >= ctrl->config.warmup_ticks) {
+      // init both strategies so either can activate instantly on regime switch
       MeanReversion_Init(&ctrl->mean_rev, &ctrl->rolling, &ctrl->buy_conds);
-      // apply buy signal immediately so multi-timeframe gate is active from tick 1
-      // without this, there's a poll_interval gap where buy_conds are set but the
-      // gate hasn't been applied — BuyGate could trigger a fill in a downtrend
+      Momentum_Init(&ctrl->momentum, &ctrl->rolling, &ctrl->buy_conds);
+      // apply active strategy's buy signal immediately
       ctrl->buy_conds = MeanReversion_BuySignal(&ctrl->mean_rev, &ctrl->rolling,
                                                  ctrl->rolling_long, &ctrl->config);
+      ctrl->buy_conds.gate_direction = 0;
       ctrl->state = CONTROLLER_ACTIVE;
     }
     return;
@@ -489,16 +505,50 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
   FPN<F> estimated_exit_fees = FPN_Mul(portfolio_value, ctrl->config.fee_rate);
   ctrl->portfolio_delta = FPN_Sub(gross_pnl, estimated_exit_fees);
 
-  // strategy: adapt filters and compute buy gate conditions
-  MeanReversion_Adapt(&ctrl->mean_rev, current_price, ctrl->portfolio_delta,
-                       ctrl->portfolio.active_bitmap, &ctrl->buy_conds,
-                       &ctrl->config);
-  // trailing TP/SL: after Adapt (which pushes price_feeder), adjust exit levels
-  // for positions running past their original TP
-  MeanReversion_ExitAdjust(&ctrl->portfolio, current_price, &ctrl->rolling,
-                            &ctrl->mean_rev, &ctrl->config);
-  ctrl->buy_conds = MeanReversion_BuySignal(&ctrl->mean_rev, &ctrl->rolling,
-                                             ctrl->rolling_long, &ctrl->config);
+  // regime detection: classify market state and switch strategy if needed
+  {
+    int old_regime = ctrl->regime.current_regime;
+    Regime_Classify(&ctrl->regime, &ctrl->rolling, ctrl->rolling_long,
+                    ctrl->mean_rev.last_regression.r_squared, &ctrl->config);
+    int new_regime = ctrl->regime.current_regime;
+    if (new_regime != old_regime) {
+      int old_strategy = ctrl->strategy_id;
+      ctrl->strategy_id = Regime_ToStrategy(new_regime);
+      if (ctrl->strategy_id != old_strategy)
+        Regime_AdjustPositions(&ctrl->portfolio, &ctrl->rolling,
+                                old_regime, new_regime, ctrl->entry_strategy, &ctrl->config);
+    }
+  }
+
+  // strategy dispatch: adapt filters + compute buy gate based on active strategy
+  switch (ctrl->strategy_id) {
+  case STRATEGY_MEAN_REVERSION:
+    MeanReversion_Adapt(&ctrl->mean_rev, current_price, ctrl->portfolio_delta,
+                         ctrl->portfolio.active_bitmap, &ctrl->buy_conds,
+                         &ctrl->config);
+    MeanReversion_ExitAdjust(&ctrl->portfolio, current_price, &ctrl->rolling,
+                              &ctrl->mean_rev, &ctrl->config);
+    ctrl->buy_conds = MeanReversion_BuySignal(&ctrl->mean_rev, &ctrl->rolling,
+                                               ctrl->rolling_long, &ctrl->config);
+    ctrl->buy_conds.gate_direction = 0;  // buy below (dips)
+    break;
+  case STRATEGY_MOMENTUM:
+    Momentum_Adapt(&ctrl->momentum, current_price, ctrl->portfolio_delta,
+                    ctrl->portfolio.active_bitmap, &ctrl->buy_conds,
+                    &ctrl->config);
+    Momentum_ExitAdjust(&ctrl->portfolio, current_price, &ctrl->rolling,
+                         &ctrl->momentum, &ctrl->config);
+    ctrl->buy_conds = Momentum_BuySignal(&ctrl->momentum, &ctrl->rolling,
+                                          ctrl->rolling_long, &ctrl->config);
+    ctrl->buy_conds.gate_direction = 1;  // buy above (breakouts)
+    break;
+  }
+
+  // volatile regime: pause buying entirely (existing positions keep running)
+  if (ctrl->regime.current_regime == REGIME_VOLATILE) {
+    ctrl->buy_conds.price = FPN_Zero<F>();
+    ctrl->buy_conds.volume = FPN_Zero<F>();
+  }
 }
 //======================================================================================================
 // [SNAPSHOT SAVE/LOAD]
