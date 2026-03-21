@@ -541,12 +541,13 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
     RORRegressor_Push(&ctrl->regime_ror, slope_sample);
   }
 
-  // regime detection: classify market state and switch strategy if needed
-  // R² comes directly from rolling stats regression — no separate feeder needed
+  // regime detection: compute signals from rolling stats + ROR, then classify
   {
+    RegimeSignals<F> signals;
+    Regime_ComputeSignals(&signals, &ctrl->rolling, ctrl->rolling_long, &ctrl->regime_ror);
+
     int old_regime = ctrl->regime.current_regime;
-    Regime_Classify(&ctrl->regime, &ctrl->rolling, ctrl->rolling_long,
-                    ctrl->rolling.price_r_squared, &ctrl->config);
+    Regime_Classify(&ctrl->regime, &signals, &ctrl->config);
     int new_regime = ctrl->regime.current_regime;
     if (new_regime != old_regime) {
       int old_strategy = ctrl->strategy_id;
