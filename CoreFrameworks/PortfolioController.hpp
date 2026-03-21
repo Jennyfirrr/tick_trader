@@ -52,6 +52,7 @@ template <unsigned F> struct PortfolioController {
   MeanReversionState<F> mean_rev;
 
   ExitBuffer<F> exit_buf;
+  TradeLogBuffer trade_buf;  // buffered trade log — hot path pushes, slow path drains
 
   uint64_t prev_bitmap;
   uint64_t tick_count;
@@ -107,6 +108,7 @@ inline void PortfolioController_Init(PortfolioController<F> *ctrl,
   ctrl->mean_rev.has_regression = 0;
 
   ExitBuffer_Init(&ctrl->exit_buf);
+  TradeLogBuffer_Init(&ctrl->trade_buf);
 
   ctrl->prev_bitmap = 0;
   ctrl->tick_count = 0;
@@ -320,15 +322,12 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
       ctrl->balance = FPN_SubSat(ctrl->balance, total_cost);
       ctrl->total_fees = FPN_AddSat(ctrl->total_fees, entry_fee);
 
-      // log buy
-      double price_d = FPN_ToDouble(fill_price);
-      double qty_d = FPN_ToDouble(sized_qty);
-      double tp_d = FPN_ToDouble(tp_price);
-      double sl_d = FPN_ToDouble(sl_price);
-      double bc_p = FPN_ToDouble(ctrl->buy_conds.price);
-      double bc_v = FPN_ToDouble(ctrl->buy_conds.volume);
-      TradeLog_Buy(trade_log, ctrl->total_ticks, price_d, qty_d, tp_d, sl_d,
-                   bc_p, bc_v);
+      // buffer buy record (no file I/O on hot path)
+      TradeLogBuffer_PushBuy(&ctrl->trade_buf, ctrl->total_ticks,
+                              FPN_ToDouble(fill_price), FPN_ToDouble(sized_qty),
+                              FPN_ToDouble(tp_price), FPN_ToDouble(sl_price),
+                              FPN_ToDouble(ctrl->buy_conds.price),
+                              FPN_ToDouble(ctrl->buy_conds.volume));
     }
 
     fills &= fills - 1;
@@ -406,8 +405,8 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
     uint64_t entry_tick = ctrl->entry_ticks[rec->position_index];
     ctrl->total_hold_ticks +=
         (rec->tick > entry_tick) ? (rec->tick - entry_tick) : 0;
-    TradeLog_Sell(trade_log, rec->tick, exit_d, qty_d, entry_d, delta_pct,
-                  reason);
+    TradeLogBuffer_PushSell(&ctrl->trade_buf, rec->tick, exit_d, qty_d, entry_d,
+                            delta_pct, reason);
   }
   ExitBuffer_Clear(&ctrl->exit_buf);
 
@@ -451,14 +450,17 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
           ctrl->gross_losses = FPN_AddSat(ctrl->gross_losses, FPN_Negate(pos_pnl));
           ctrl->total_hold_ticks += held;
 
-          TradeLog_Sell(trade_log, ctrl->total_ticks, exit_d, qty_d, entry_d,
-                        delta_pct, "TIME");
+          TradeLogBuffer_PushSell(&ctrl->trade_buf, ctrl->total_ticks, exit_d, qty_d,
+                                  entry_d, delta_pct, "TIME");
           Portfolio_RemovePosition(&ctrl->portfolio, idx);
         }
       }
       active_check &= active_check - 1;
     }
   }
+
+  // drain buffered trade records to CSV (file I/O moved off hot path)
+  TradeLogBuffer_Drain(&ctrl->trade_buf, trade_log);
 
   // update rolling market stats - tracks price/volume trends for dynamic gate
   // adjustment

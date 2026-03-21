@@ -584,21 +584,33 @@ static inline int BinanceStream_Poll(BinanceStream *bs, uint32_t timeout_ms) {
     // SSL_pending check FIRST - avoids the SSL-vs-poll mismatch entirely
     // if OpenSSL has buffered decrypted data, we have frames to read right now
     if (SSL_pending(bs->ssl) > 0) {
+#ifndef MULTICORE_TUI
         // still check stdin with zero timeout so we dont miss TUI commands
+        // (in multicore mode, TUI thread owns STDIN — engine skips it)
         bs->pfds[1].revents = 0;
         poll(&bs->pfds[1], 1, 0);  // non-blocking stdin check
+#endif
         int result = POLL_SOCKET;
+#ifndef MULTICORE_TUI
         if (bs->pfds[1].revents & POLLIN) result |= POLL_STDIN;
+#endif
         return result;
     }
 
     // normal poll - wait for socket data or stdin input
-    int ret = poll(bs->pfds, 2, timeout_ms);
+#ifdef MULTICORE_TUI
+    int nfds = 1;  // socket only — TUI thread owns STDIN
+#else
+    int nfds = 2;  // socket + stdin
+#endif
+    int ret = poll(bs->pfds, nfds, timeout_ms);
     if (ret <= 0) return POLL_NONE;  // timeout or error
 
     int result = POLL_NONE;
     if (bs->pfds[0].revents & POLLIN)  result |= POLL_SOCKET;
+#ifndef MULTICORE_TUI
     if (bs->pfds[1].revents & POLLIN)  result |= POLL_STDIN;
+#endif
     return result;
 }
 

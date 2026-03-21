@@ -301,7 +301,8 @@ int main(int argc, char *argv[]) {
             uint64_t tick_start = __rdtscp(&tsc_aux);
 #endif
             BuyGate(&ctrl.buy_conds, &last_stream, &pool);
-            PositionExitGate(&ctrl.portfolio, last_stream.price, &ctrl.exit_buf, ctrl.total_ticks);
+            if (ctrl.portfolio.active_bitmap)
+                PositionExitGate(&ctrl.portfolio, last_stream.price, &ctrl.exit_buf, ctrl.total_ticks);
             PortfolioController_Tick(&ctrl, &pool, last_stream.price, last_stream.volume, &log);
 #ifdef LATENCY_PROFILING
             uint64_t tick_end = __rdtscp(&tsc_aux);
