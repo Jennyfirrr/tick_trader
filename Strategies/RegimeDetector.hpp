@@ -101,42 +101,62 @@ inline int Regime_Classify(RegimeState<F> *state,
                             const RollingStats<F, 512> *rolling_long,
                             FPN<F> r_squared,
                             const ControllerConfig<F> *cfg) {
-    // TODO: implement classification
-    // sketch:
-    //
-    // FPN<F> relative_slope = FPN_DivNoAssert(rolling->price_slope, rolling->price_avg);
-    // FPN<F> abs_slope = FPN_Abs(relative_slope);
-    //
-    // int strong_slope = FPN_GreaterThan(abs_slope, cfg->regime_slope_threshold);
-    // int consistent   = FPN_GreaterThan(r_squared, cfg->regime_r2_threshold);
-    // int high_vol     = FPN_GreaterThan(rolling->price_stddev,
-    //                        FPN_Mul(rolling->price_avg, cfg->regime_volatile_stddev));
-    //
-    // int detected;
-    // if (strong_slope && consistent)
-    //     detected = REGIME_TRENDING;
-    // else if (high_vol && !consistent)
-    //     detected = REGIME_VOLATILE;
-    // else
-    //     detected = REGIME_RANGING;
-    //
-    // // hysteresis: proposed must hold for N consecutive cycles
-    // if (detected == state->proposed_regime) {
-    //     state->hysteresis_count++;
-    // } else {
-    //     state->proposed_regime = detected;
-    //     state->hysteresis_count = 1;
-    // }
-    //
-    // if (state->hysteresis_count >= state->hysteresis_threshold
-    //     && state->proposed_regime != state->current_regime) {
-    //     state->current_regime = state->proposed_regime;
-    // }
-    //
-    // return state->current_regime;
+    // cold start: stay in RANGING until rolling stats have enough data
+    // R² is zero until the regression feeder fills (~8 slow-path cycles)
+    // without this guard, we'd classify on garbage data
+    if (rolling->count < 64 || FPN_IsZero(rolling->price_avg))
+        return state->current_regime;
 
-    (void)state; (void)rolling; (void)rolling_long; (void)r_squared; (void)cfg;
-    return REGIME_RANGING;
+    // classify: relative slope magnitude + R² consistency + volatility level
+    FPN<F> relative_slope = FPN_DivNoAssert(rolling->price_slope, rolling->price_avg);
+    FPN<F> abs_slope = FPN_Abs(relative_slope);
+
+    int strong_slope = FPN_GreaterThan(abs_slope, cfg->regime_slope_threshold);
+    int consistent   = FPN_GreaterThan(r_squared, cfg->regime_r2_threshold);
+    FPN<F> vol_threshold = FPN_Mul(rolling->price_avg, cfg->regime_volatile_stddev);
+    int high_vol     = FPN_GreaterThan(rolling->price_stddev, vol_threshold);
+
+    // trending: strong directional move with consistent pattern
+    // volatile: big swings but no direction (high stddev, low R²)
+    // ranging:  everything else (low slope, or calm, or choppy)
+    int detected;
+    if (strong_slope && consistent)
+        detected = REGIME_TRENDING;
+    else if (high_vol && !consistent)
+        detected = REGIME_VOLATILE;
+    else
+        detected = REGIME_RANGING;
+
+    // hysteresis: proposed regime must hold for N consecutive cycles before switching
+    // prevents whipsawing between strategies on noisy transitions
+    if (detected == state->proposed_regime) {
+        state->hysteresis_count++;
+    } else {
+        state->proposed_regime = detected;
+        state->hysteresis_count = 1;
+    }
+
+    if (state->hysteresis_count >= state->hysteresis_threshold
+        && state->proposed_regime != state->current_regime) {
+        state->current_regime = state->proposed_regime;
+    }
+
+    (void)rolling_long; // available for future multi-timeframe regime detection
+    return state->current_regime;
+}
+
+//======================================================================================================
+// [STRATEGY MAPPING]
+//======================================================================================================
+// maps regime to strategy_id. must be defined before Regime_AdjustPositions (which calls it).
+//======================================================================================================
+static inline int Regime_ToStrategy(int regime) {
+    switch (regime) {
+        case REGIME_TRENDING: return STRATEGY_MOMENTUM;
+        case REGIME_VOLATILE: return STRATEGY_MEAN_REVERSION;
+        case REGIME_RANGING:
+        default:              return STRATEGY_MEAN_REVERSION;
+    }
 }
 
 //======================================================================================================
@@ -161,56 +181,48 @@ inline void Regime_AdjustPositions(Portfolio<F> *portfolio,
                                      int old_regime, int new_regime,
                                      const uint8_t *entry_strategy,
                                      const ControllerConfig<F> *cfg) {
-    // TODO: implement
-    // sketch:
-    //
-    // uint16_t active = portfolio->active_bitmap;
-    // while (active) {
-    //     int idx = __builtin_ctz(active);
-    //     if (entry_strategy[idx] == Regime_ToStrategy(old_regime)) {  // only adjust old strategy positions
-    //     Position<F> *pos = &portfolio->positions[idx];
-    //     FPN<F> stddev = rolling->price_stddev;
-    //
-    //     if (old_regime == REGIME_RANGING && new_regime == REGIME_TRENDING) {
-    //         // MR → momentum: widen TP, tighten SL
-    //         FPN<F> wide_tp = FPN_AddSat(pos->entry_price,
-    //                            FPN_Mul(stddev, cfg->momentum_tp_mult));
-    //         pos->take_profit_price = FPN_Max(pos->take_profit_price, wide_tp);
-    //
-    //         FPN<F> tight_sl = FPN_SubSat(pos->entry_price,
-    //                             FPN_Mul(stddev, cfg->momentum_sl_mult));
-    //         pos->stop_loss_price = FPN_Max(pos->stop_loss_price, tight_sl);
-    //     }
-    //     else if (old_regime == REGIME_TRENDING && new_regime == REGIME_RANGING) {
-    //         // momentum → MR: tighten TP, widen SL
-    //         FPN<F> tight_tp = FPN_AddSat(pos->entry_price,
-    //                             FPN_Mul(stddev, cfg->take_profit_pct));
-    //         pos->take_profit_price = FPN_Min(pos->take_profit_price, tight_tp);
-    //
-    //         FPN<F> wide_sl = FPN_SubSat(pos->entry_price,
-    //                            FPN_Mul(stddev, cfg->stop_loss_pct));
-    //         pos->stop_loss_price = FPN_Min(pos->stop_loss_price, wide_sl);
-    //     }
-    //     // REGIME_VOLATILE: could pause buying entirely (set buy_conds to zero)
-    //     // existing positions keep current TP/SL — don't panic-adjust in volatility
-    //
-    //     active &= active - 1;
-    // }
+    // one-shot adjustment: walks active positions entered under the OLD strategy
+    // and adjusts their TP/SL to match the new regime's risk profile
+    int old_strategy = Regime_ToStrategy(old_regime);
+    FPN<F> stddev = rolling->price_stddev;
 
-    (void)portfolio; (void)rolling; (void)old_regime; (void)new_regime; (void)cfg;
-}
+    // TP/SL multipliers use the same pattern as fill-time computation:
+    // multiply stddev by a scaling factor (e.g. momentum_tp_mult * 100 → stddev units)
+    FPN<F> hundred = FPN_FromDouble<F>(100.0);
 
-//======================================================================================================
-// [STRATEGY MAPPING]
-//======================================================================================================
-// maps regime to strategy_id. called by the engine to set ctrl->strategy_id.
-//======================================================================================================
-static inline int Regime_ToStrategy(int regime) {
-    switch (regime) {
-        case REGIME_TRENDING: return STRATEGY_MOMENTUM;
-        case REGIME_VOLATILE: return STRATEGY_MEAN_REVERSION; // conservative: trade less, not differently
-        case REGIME_RANGING:
-        default:              return STRATEGY_MEAN_REVERSION;
+    uint16_t active = portfolio->active_bitmap;
+    while (active) {
+        int idx = __builtin_ctz(active);
+
+        // only adjust positions entered under the old strategy
+        if (entry_strategy[idx] == old_strategy) {
+            Position<F> *pos = &portfolio->positions[idx];
+
+            if (old_regime == REGIME_RANGING && new_regime == REGIME_TRENDING) {
+                // MR → momentum: widen TP (let trend run), tighten SL (cut if wrong)
+                FPN<F> wide_tp_offset = FPN_Mul(stddev, FPN_Mul(cfg->momentum_tp_mult, hundred));
+                FPN<F> wide_tp = FPN_AddSat(pos->entry_price, wide_tp_offset);
+                pos->take_profit_price = FPN_Max(pos->take_profit_price, wide_tp);
+
+                FPN<F> tight_sl_offset = FPN_Mul(stddev, FPN_Mul(cfg->momentum_sl_mult, hundred));
+                FPN<F> tight_sl = FPN_SubSat(pos->entry_price, tight_sl_offset);
+                pos->stop_loss_price = FPN_Max(pos->stop_loss_price, tight_sl);
+            }
+            else if (old_regime == REGIME_TRENDING && new_regime == REGIME_RANGING) {
+                // momentum → MR: tighten TP (take profit before reversal), widen SL (allow chop)
+                FPN<F> tight_tp_offset = FPN_Mul(stddev, FPN_Mul(cfg->take_profit_pct, hundred));
+                FPN<F> tight_tp = FPN_AddSat(pos->entry_price, tight_tp_offset);
+                pos->take_profit_price = FPN_Min(pos->take_profit_price, tight_tp);
+
+                FPN<F> wide_sl_offset = FPN_Mul(stddev, FPN_Mul(cfg->stop_loss_pct, hundred));
+                FPN<F> wide_sl = FPN_SubSat(pos->entry_price, wide_sl_offset);
+                pos->stop_loss_price = FPN_Min(pos->stop_loss_price, wide_sl);
+            }
+            // REGIME_VOLATILE: don't adjust — existing positions keep their TP/SL
+            // panic-adjusting in volatility causes more harm than good
+        }
+
+        active &= active - 1;
     }
 }
 
