@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.8.0] - 2026-03-21
+
+### Added
+- **Multicore TUI** — engine and TUI run on separate cores via `-DMULTICORE_TUI`.
+  Engine core L1 cache is never polluted by display reads. Double-buffered snapshot
+  with atomic pointer swap. Commands (quit/pause/reload) via atomic flags. TUI thread
+  renders at 10 FPS from snapshot data. Zero engine-side contention.
+  - Signal handling: SIGINT/SIGTERM set flag (TUI thread cleans up terminal).
+    SIGSEGV restores terminal directly (crash, best-effort).
+  - STDIN ownership: engine polls socket only in multicore mode. TUI thread owns STDIN.
+
+- **Buffered trade log** — hot path pushes trade records to a ring buffer (~10ns).
+  Slow path drains to CSV file. Removes 50-70μs file I/O spike from fill ticks.
+  Max hot-path spike drops from 77μs to ~2-5μs.
+
+- **Inline positive-FPN comparisons** in PositionExitGate — skip sign check and
+  function call overhead, compare raw 128-bit words directly. Saves ~7ns per
+  comparison (~28ns with 2 positions). Assumes positive prices (crypto).
+
+- **Skip ExitGate when portfolio empty** — one-line guard saves ~5ns per tick
+  during idle periods.
+
+- **Trailing TP short window** — SNR for trailing decision uses 8-sample regression
+  slope (~4 min) instead of 128-tick rolling slope (~70 min). More responsive to
+  trend weakening.
+
+- **Price-independent normalization** — max_shift and min_long_slope now use relative
+  values (fraction of price). Same config works on any asset at any price level.
+  TUI displays slopes as %/tick.
+
+- **README.md** — project overview, build modes, architecture diagram, quick start.
+- **DOCS/PERFORMANCE.md** — hot-path breakdown, optimization guide, colocation notes.
+
+### Fixed
+- BinanceConfig parser strips inline comments (was sending `"btcusdt # comment"`
+  as stream name).
+- ExitGate `has_exits` bitwise AND bug — raw uint64_t OR result (e.g. 102)
+  bitwise-ANDed with 0/1 `hit_tp` gave wrong result. Normalized to 0/1.
+- Skip STDIN poll in multicore mode (engine was competing with TUI for keystrokes).
+
+### Changed
+- Engine version bumped to v0.7 in TUI header.
+- Hot-path min: 88ns → ~60ns (inline comparisons + skip empty ExitGate).
+- Hot-path max: 77μs → ~2-5μs (buffered trade log).
+- 101 tests passing across all build modes.
+
 ## [0.7.1] - 2026-03-21 (branch: time-based-exit)
 
 ### Fixed
