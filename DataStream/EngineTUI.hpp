@@ -1118,8 +1118,16 @@ static inline void *tui_thread_fn(void *arg) {
             ftxui::Dimension::Fixed(term_h));
         ftxui::Render(screen, element);
 
-        // single atomic write: cursor home + content + clear remainder
-        std::string output = "\033[H" + screen.ToString() + "\033[J";
+        // synchronized output: begin sync → cursor home → content → clear → end sync
+        // prevents tearing on terminals that support synchronized output (kitty, foot, etc)
+        // terminals that don't support it just ignore the escape sequences
+        std::string output;
+        output.reserve(term_w * term_h * 4);
+        output += "\033[?2026h";  // begin synchronized output
+        output += "\033[H";       // cursor home
+        output += screen.ToString();
+        output += "\033[J";       // clear to end of screen
+        output += "\033[?2026l";  // end synchronized output
         write(STDOUT_FILENO, output.data(), output.size());
 
         // non-blocking keyboard read
