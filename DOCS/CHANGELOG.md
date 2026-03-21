@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.1] - 2026-03-21
+
+### Fixed
+- **Entry spacing floor** — positions could be entered $0.01 apart when rolling stddev
+  was tiny (e.g. right after warmup with 64 ticks at similar prices). Added minimum
+  spacing of 0.01% of rolling average price (~$7 at BTC $70k). Volatility-based spacing
+  still applies when it exceeds the floor.
+
 ## [0.9.0] - 2026-03-21
 
 ### Added
