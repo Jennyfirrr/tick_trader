@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.0.1] - 2026-03-21
+
+### Fixed
+- **Momentum price_feeder never pushed** — `state->price_feeder;` was a no-op, trailing
+  TP for momentum positions never activated (R² stayed zero). Now correctly pushes
+  current_price each slow-path cycle.
+- **Fill path TP/SL hardcoded to MR multipliers** — momentum positions were getting mean
+  reversion-sized TP/SL instead of wider TP / tighter SL. Fill path now dispatches to
+  active strategy's config values (`momentum_tp_mult`, `momentum_sl_mult`).
+- **Single-threaded TUI unpause hardcoded to MR** — `TUI_HandleInput` called
+  `MeanReversion_BuySignal` directly. Now uses shared `PortfolioController_Unpause`.
+- **Single-threaded TUI missing 's' key and config reload fields** — regime cycling and
+  new config fields were only available in multicore mode. Now uses shared functions.
+- **Snapshot didn't persist tracking data** — `entry_ticks[16]`, `entry_strategy[16]`,
+  `strategy_id`, `regime.current_regime`, and momentum adaptive state were lost on
+  restart. Snapshot bumped to v5. Backward compatible with v4 (defaults to RANGING/MR).
+- **gate_direction uninitialized** — added C++11 in-class default (`= 0`) to prevent
+  garbage values on stack-allocated BuySideGateConditions.
+
+### Changed
+- **Extracted shared functions** — `PortfolioController_HotReload`, `_Unpause`,
+  `_CycleRegime` eliminate code duplication between multicore and single-threaded paths.
+  Adding strategy #3 now requires: new header + dispatch case + unpause case + config.
+  No duplicate reload/unpause code to keep in sync.
+- **Snapshot v5 format** — save/load moved from `Portfolio_Save/Load` (generic) to
+  `PortfolioController_SaveSnapshot/LoadSnapshot` (controller-aware). Saves full
+  controller state including per-position tracking and regime state.
+- **Makefile** — `make` builds multicore production, `make profile`, `make test`, etc.
+  No more raw g++ commands.
+
 ## [1.0.0] - 2026-03-21
 
 ### Added

@@ -650,37 +650,117 @@ inline void PortfolioController_HotReload(PortfolioController<F> *ctrl,
 }
 
 //======================================================================================================
-// [SNAPSHOT SAVE/LOAD]
+// [SNAPSHOT SAVE/LOAD - v5]
 //======================================================================================================
-// saves portfolio + realized P&L + adaptive filter state to a binary snapshot
-// call on the slow path or after any position change
+// persists full controller state for crash recovery and session resume
+// v5 adds: entry_ticks, entry_strategy, strategy_id, regime, momentum state
+// backward compatible: v4 loads gracefully (missing fields get defaults)
 //======================================================================================================
+#define CONTROLLER_SNAPSHOT_VERSION 5
+
 template <unsigned F>
 inline void PortfolioController_SaveSnapshot(const PortfolioController<F> *ctrl,
                                              const char *filepath) {
-  Portfolio_Save(&ctrl->portfolio, ctrl->realized_pnl,
-                 ctrl->mean_rev.live_offset_pct, ctrl->mean_rev.live_vol_mult,
-                 ctrl->mean_rev.live_stddev_mult, ctrl->balance, filepath);
+  FILE *f = fopen(filepath, "wb");
+  if (!f) { fprintf(stderr, "[SNAPSHOT] failed to open %s for writing\n", filepath); return; }
+
+  uint32_t magic = PORTFOLIO_SNAPSHOT_MAGIC;
+  uint32_t version = CONTROLLER_SNAPSHOT_VERSION;
+  fwrite(&magic, 4, 1, f);
+  fwrite(&version, 4, 1, f);
+
+  // portfolio (same as v4)
+  fwrite(&ctrl->portfolio.active_bitmap, 2, 1, f);
+  uint16_t pad = 0;
+  fwrite(&pad, 2, 1, f);
+  fwrite(ctrl->portfolio.positions, sizeof(Position<F>), 16, f);
+
+  // realized P&L + balance (same as v4)
+  fwrite(&ctrl->realized_pnl, sizeof(FPN<F>), 1, f);
+  fwrite(&ctrl->balance, sizeof(FPN<F>), 1, f);
+
+  // MR state (same as v4 but reordered for clarity)
+  fwrite(&ctrl->mean_rev.live_offset_pct, sizeof(FPN<F>), 1, f);
+  fwrite(&ctrl->mean_rev.live_vol_mult, sizeof(FPN<F>), 1, f);
+  fwrite(&ctrl->mean_rev.live_stddev_mult, sizeof(FPN<F>), 1, f);
+
+  // v5 new fields
+  fwrite(ctrl->entry_ticks, sizeof(uint64_t), 16, f);
+  fwrite(ctrl->entry_strategy, sizeof(uint8_t), 16, f);
+  fwrite(&ctrl->strategy_id, sizeof(int), 1, f);
+  fwrite(&ctrl->regime.current_regime, sizeof(int), 1, f);
+  fwrite(&ctrl->momentum.live_breakout_mult, sizeof(FPN<F>), 1, f);
+  fwrite(&ctrl->momentum.live_vol_mult, sizeof(FPN<F>), 1, f);
+
+  fflush(f);
+  fclose(f);
 }
 
 template <unsigned F>
 inline int PortfolioController_LoadSnapshot(PortfolioController<F> *ctrl,
                                             const char *filepath) {
-  FPN<F> realized, offset, vmult, stdmult, bal;
-  int ok = Portfolio_Load(&ctrl->portfolio, &realized, &offset, &vmult, &stdmult,
-                          &bal, filepath);
-  if (ok) {
+  FILE *f = fopen(filepath, "rb");
+  if (!f) return 0;
+
+  uint32_t magic, version;
+  if (fread(&magic, 4, 1, f) != 1 || magic != PORTFOLIO_SNAPSHOT_MAGIC) {
+    fprintf(stderr, "[SNAPSHOT] bad magic in %s - ignoring\n", filepath);
+    fclose(f); return 0;
+  }
+  if (fread(&version, 4, 1, f) != 1) { fclose(f); return 0; }
+
+  // reject anything older than v4
+  if (version < 4) {
+    fprintf(stderr, "[SNAPSHOT] version %u too old in %s - ignoring\n", version, filepath);
+    fclose(f); return 0;
+  }
+
+  // portfolio (v4+)
+  uint16_t bitmap, pad;
+  if (fread(&bitmap, 2, 1, f) != 1) { fclose(f); return 0; }
+  if (fread(&pad, 2, 1, f) != 1) { fclose(f); return 0; }
+  if (fread(ctrl->portfolio.positions, sizeof(Position<F>), 16, f) != 16) { fclose(f); return 0; }
+  ctrl->portfolio.active_bitmap = bitmap;
+
+  if (version == 4) {
+    // v4 format: realized_pnl, live_offset_pct, live_vol_mult, live_stddev_mult, balance
+    FPN<F> realized, offset, vmult, stdmult, bal;
+    if (fread(&realized, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
+    if (fread(&offset, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
+    if (fread(&vmult, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
+    if (fread(&stdmult, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
+    if (fread(&bal, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
     ctrl->realized_pnl = realized;
     ctrl->mean_rev.live_offset_pct = offset;
     ctrl->mean_rev.live_vol_mult = vmult;
     ctrl->mean_rev.live_stddev_mult = stdmult;
     ctrl->balance = bal;
-    // skip warmup if we have positions - we're resuming a session
-    if (ctrl->portfolio.active_bitmap != 0) {
-      ctrl->state = CONTROLLER_ACTIVE;
-    }
+    // v4 defaults for new fields
+    ctrl->strategy_id = STRATEGY_MEAN_REVERSION;
+    ctrl->regime.current_regime = REGIME_RANGING;
+    fprintf(stderr, "[SNAPSHOT] loaded v4 snapshot — defaulting to RANGING/MR\n");
+  } else {
+    // v5 format
+    if (fread(&ctrl->realized_pnl, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
+    if (fread(&ctrl->balance, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
+    if (fread(&ctrl->mean_rev.live_offset_pct, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
+    if (fread(&ctrl->mean_rev.live_vol_mult, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
+    if (fread(&ctrl->mean_rev.live_stddev_mult, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
+    if (fread(ctrl->entry_ticks, sizeof(uint64_t), 16, f) != 16) { fclose(f); return 0; }
+    if (fread(ctrl->entry_strategy, sizeof(uint8_t), 16, f) != 16) { fclose(f); return 0; }
+    if (fread(&ctrl->strategy_id, sizeof(int), 1, f) != 1) { fclose(f); return 0; }
+    if (fread(&ctrl->regime.current_regime, sizeof(int), 1, f) != 1) { fclose(f); return 0; }
+    if (fread(&ctrl->momentum.live_breakout_mult, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
+    if (fread(&ctrl->momentum.live_vol_mult, sizeof(FPN<F>), 1, f) != 1) { fclose(f); return 0; }
   }
-  return ok;
+
+  // skip warmup if we have positions - we're resuming a session
+  if (ctrl->portfolio.active_bitmap != 0)
+    ctrl->state = CONTROLLER_ACTIVE;
+
+  int count = __builtin_popcount(bitmap);
+  fprintf(stderr, "[SNAPSHOT] loaded %d positions from %s (v%u)\n", count, filepath, version);
+  return 1;
 }
 //======================================================================================================
 //======================================================================================================
