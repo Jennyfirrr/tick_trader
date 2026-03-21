@@ -514,6 +514,7 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
     if (new_regime != old_regime) {
       int old_strategy = ctrl->strategy_id;
       ctrl->strategy_id = Regime_ToStrategy(new_regime);
+      ctrl->regime.regime_start_tick = ctrl->total_ticks;
       if (ctrl->strategy_id != old_strategy)
         Regime_AdjustPositions(&ctrl->portfolio, &ctrl->rolling,
                                 old_regime, new_regime, ctrl->entry_strategy, &ctrl->config);

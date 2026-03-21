@@ -672,6 +672,10 @@ struct TUISnapshot {
     // risk
     double risk_amt, max_dd;
     int breaker_tripped;
+    // regime
+    int current_regime;   // REGIME_RANGING, REGIME_TRENDING, REGIME_VOLATILE
+    int strategy_id;      // STRATEGY_MEAN_REVERSION or STRATEGY_MOMENTUM
+    double regime_duration_min; // minutes in current regime
     // config display
     double cfg_tp, cfg_sl, cfg_fee;
     int trailing_enabled;
@@ -812,6 +816,12 @@ static inline void TUI_CopySnapshot(TUISnapshot *snap,
     snap->risk_amt   = FPN_ToDouble(ctrl->config.risk_pct) * 100.0;
     snap->max_dd     = FPN_ToDouble(ctrl->config.max_drawdown_pct) * 100.0;
     snap->breaker_tripped = (snap->total_pnl < -(starting * FPN_ToDouble(ctrl->config.max_drawdown_pct)));
+
+    // regime
+    snap->current_regime = ctrl->regime.current_regime;
+    snap->strategy_id    = ctrl->strategy_id;
+    uint64_t regime_ticks = ctrl->total_ticks - ctrl->regime.regime_start_tick;
+    snap->regime_duration_min = (double)regime_ticks / 3.0 / 60.0; // ~3 ticks/sec
 
     // config
     snap->cfg_tp  = FPN_ToDouble(ctrl->config.take_profit_pct) * 100.0;
@@ -962,8 +972,17 @@ static inline void TUI_Render_Snapshot(EngineTUI *tui, const TUISnapshot *s) {
     printf(C_BOLD C_PEACH "  RISK:" C_RESET "\n"); row++;
     printf(C_SAND "    risk/pos:   " C_FG "%.1f%%" C_RESET C_DIM "  |  " C_SAND "breaker: %s%s" C_RESET C_DIM " (max dd: %.0f%%)" C_RESET "\n",
            s->risk_amt, s->breaker_tripped ? C_BOLD C_RED : C_GREEN, s->breaker_tripped ? "TRIPPED" : "OK", s->max_dd); row++;
-    printf(C_SAND "    strategy:   " C_FG "MEAN REVERSION" C_RESET C_DIM " (%s)  |  " C_YELLOW "PAPER" C_RESET "\n",
-           s->stddev_mode ? "stddev" : "pct"); row++;
+    {
+        const char *strat_name = (s->strategy_id == STRATEGY_MOMENTUM) ? "MOMENTUM" : "MEAN REVERSION";
+        const char *regime_name = (s->current_regime == REGIME_TRENDING) ? "TRENDING" :
+                                  (s->current_regime == REGIME_VOLATILE) ? "VOLATILE" : "RANGING";
+        const char *regime_color = (s->current_regime == REGIME_TRENDING) ? C_GREEN :
+                                   (s->current_regime == REGIME_VOLATILE) ? C_RED : C_DIM;
+        printf(C_SAND "    strategy:   " C_FG "%s" C_RESET C_DIM " (%s)  |  " C_YELLOW "PAPER" C_RESET "\n",
+               strat_name, s->stddev_mode ? "stddev" : "pct"); row++;
+        printf(C_SAND "    regime:     %s%s" C_RESET C_DIM " (%.0fm)" C_RESET "\n",
+               regime_color, regime_name, s->regime_duration_min); row++;
+    }
     printf(C_SURF "  ----------------------------------------------------------------" C_RESET "\n"); row++;
 
     // config
