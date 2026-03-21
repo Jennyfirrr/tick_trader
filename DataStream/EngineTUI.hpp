@@ -658,6 +658,11 @@ struct TUISnapshot {
     int current_regime;   // REGIME_RANGING, REGIME_TRENDING, REGIME_VOLATILE
     int strategy_id;      // STRATEGY_MEAN_REVERSION or STRATEGY_MOMENTUM
     double regime_duration_min; // minutes in current regime
+    double short_r2;      // price regression R² (short window)
+    double long_r2;       // price regression R² (long window)
+    double vol_ratio;     // short/long variance ratio (volatility spike)
+    double ror_slope;     // slope-of-slopes (trend acceleration)
+    int engine_state;     // 0=warmup, 1=active, 2=closing
     // config display
     double cfg_tp, cfg_sl, cfg_fee;
     int trailing_enabled;
@@ -806,6 +811,20 @@ static inline void TUI_CopySnapshot(TUISnapshot *snap,
     snap->current_regime = ctrl->regime.current_regime;
     snap->strategy_id    = ctrl->strategy_id;
     snap->regime_duration_min = difftime(time(NULL), ctrl->regime.regime_start_time) / 60.0;
+    snap->short_r2   = FPN_ToDouble(ctrl->rolling.price_r_squared);
+    snap->long_r2    = FPN_ToDouble(ctrl->rolling_long->price_r_squared);
+    snap->engine_state = ctrl->state;
+    // variance ratio: short/long (volatility spike detection)
+    double sv = FPN_ToDouble(ctrl->rolling.price_variance);
+    double lv = FPN_ToDouble(ctrl->rolling_long->price_variance);
+    snap->vol_ratio  = (lv > 1e-15) ? sv / lv : 1.0;
+    // ROR: compute if ready
+    snap->ror_slope  = 0.0;
+    if (ctrl->regime_ror.count >= MAX_WINDOW) {
+        LinearRegression3XResult<F> ror_r = RORRegressor_Compute(
+            const_cast<RORRegressor<F>*>(&ctrl->regime_ror));
+        snap->ror_slope = FPN_ToDouble(ror_r.model.slope);
+    }
 
     // config
     snap->cfg_tp  = FPN_ToDouble(ctrl->config.take_profit_pct) * 100.0;
@@ -1057,7 +1076,9 @@ static inline char TUI_ReadKey(EngineTUI *tui) {
 //======================================================================================================
 // [TUI THREAD FUNCTION]
 //======================================================================================================
-#ifdef USE_FTXUI
+#ifdef USE_NOTCURSES
+#include "TUINotcurses.hpp"
+#elif defined(USE_FTXUI)
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/component/loop.hpp>
@@ -1067,7 +1088,76 @@ static inline char TUI_ReadKey(EngineTUI *tui) {
 static inline void *tui_thread_fn(void *arg) {
     TUISharedState *shared = (TUISharedState *)arg;
 
-#ifdef USE_FTXUI
+#ifdef USE_NOTCURSES
+    // notcurses manages terminal state internally (raw mode, cursor, resize)
+    setlocale(LC_ALL, "");
+
+    notcurses_options nc_opts = {};
+    nc_opts.flags = NCOPTION_SUPPRESS_BANNERS;
+    struct notcurses *nc = notcurses_init(&nc_opts, stdout);
+    if (!nc) {
+        fprintf(stderr, "[TUI] notcurses_init failed\n");
+        return NULL;
+    }
+
+    struct ncplane *stdp = notcurses_stdplane(nc);
+    unsigned term_h, term_w;
+    ncplane_dim_yx(stdp, &term_h, &term_w);
+
+    int current_layout = NC_LAYOUT_STANDARD;
+
+    // create chart planes (for CHARTS layout)
+    NCCharts charts = NC_Charts_Create(stdp, term_h, term_w);
+
+    while (!__atomic_load_n(&shared->quit_requested, __ATOMIC_ACQUIRE)) {
+        // read snapshot
+        int idx = __atomic_load_n(&shared->active_idx, __ATOMIC_ACQUIRE);
+        const TUISnapshot *s = &shared->snapshots[idx];
+
+        // check for terminal resize
+        unsigned new_h, new_w;
+        ncplane_dim_yx(stdp, &new_h, &new_w);
+        if (new_h != term_h || new_w != term_w) {
+            term_h = new_h;
+            term_w = new_w;
+            NC_Charts_Destroy(&charts);
+            charts = NC_Charts_Create(stdp, term_h, term_w);
+        }
+
+        // clear and render
+        ncplane_erase(stdp);
+        NC_Layout_Render(stdp, s, charts.price_plot, charts.pnl_plot,
+                         current_layout, term_h, term_w);
+
+        // update chart data (only visible in CHARTS layout but always fed)
+        NC_Charts_Update(&charts, s);
+
+        notcurses_render(nc);
+
+        // non-blocking input
+        struct ncinput ni;
+        uint32_t key = notcurses_get_nblock(nc, &ni);
+        if (key == (uint32_t)'q' || key == (uint32_t)'Q')
+            __atomic_store_n(&shared->quit_requested, 1, __ATOMIC_RELEASE);
+        else if (key == (uint32_t)'p' || key == (uint32_t)'P')
+            __atomic_store_n(&shared->pause_requested, 1, __ATOMIC_RELEASE);
+        else if (key == (uint32_t)'r' || key == (uint32_t)'R')
+            __atomic_store_n(&shared->reload_requested, 1, __ATOMIC_RELEASE);
+        else if (key == (uint32_t)'s' || key == (uint32_t)'S')
+            __atomic_store_n(&shared->regime_cycle_requested, 1, __ATOMIC_RELEASE);
+        else if (key == (uint32_t)'l' || key == (uint32_t)'L') {
+            current_layout = (current_layout + 1) % NC_LAYOUT_COUNT;
+            NC_Charts_Destroy(&charts);
+            charts = NC_Charts_Create(stdp, term_h, term_w);
+        }
+
+        usleep(100000); // 10 FPS
+    }
+
+    NC_Charts_Destroy(&charts);
+    notcurses_stop(nc);
+
+#elif defined(USE_FTXUI)
     // DOM-only FTXUI rendering with manual terminal management
     // set terminal to raw mode + non-blocking stdin
     struct termios old_term, raw_term;

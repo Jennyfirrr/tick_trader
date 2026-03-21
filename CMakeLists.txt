@@ -4,28 +4,39 @@ project(tick_trader CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# FTXUI — terminal UI library (MIT license, compatible with AGPL-3.0)
-include(FetchContent)
-FetchContent_Declare(ftxui
-    GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXUI
-    GIT_TAG v5.0.0
-)
-set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(FTXUI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(FTXUI_BUILD_DOCS OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(ftxui)
+#===============================================================================
+# TUI backend selection
+#===============================================================================
+option(USE_NOTCURSES "Use notcurses for TUI (system library)" OFF)
+
+if(NOT USE_NOTCURSES)
+    # FTXUI — terminal UI library (MIT license, compatible with AGPL-3.0)
+    include(FetchContent)
+    FetchContent_Declare(ftxui
+        GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXUI
+        GIT_TAG v5.0.0
+    )
+    set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(FTXUI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(FTXUI_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(ftxui)
+endif()
 
 #===============================================================================
 # engine binary
 #===============================================================================
 add_executable(engine main.cpp)
 target_compile_options(engine PRIVATE -O2)
-target_link_libraries(engine PRIVATE
-    ftxui::screen ftxui::dom ftxui::component
-    ssl crypto pthread)
 
-# always build with multicore TUI + FTXUI rendering
-target_compile_definitions(engine PRIVATE MULTICORE_TUI USE_FTXUI)
+if(USE_NOTCURSES)
+    target_compile_definitions(engine PRIVATE MULTICORE_TUI USE_NOTCURSES)
+    target_link_libraries(engine PRIVATE notcurses notcurses-core ssl crypto pthread)
+else()
+    target_compile_definitions(engine PRIVATE MULTICORE_TUI USE_FTXUI)
+    target_link_libraries(engine PRIVATE
+        ftxui::screen ftxui::dom ftxui::component
+        ssl crypto pthread)
+endif()
 
 #===============================================================================
 # build options
