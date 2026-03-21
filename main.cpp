@@ -386,12 +386,14 @@ int main(int argc, char *argv[]) {
                 TUISnapshot *bs = &shared.snapshots[back];
                 const TUISnapshot *fs = &shared.snapshots[front];
                 memcpy(bs->price_history, fs->price_history, sizeof(bs->price_history));
+                memcpy(bs->volume_history, fs->volume_history, sizeof(bs->volume_history));
                 memcpy(bs->pnl_history, fs->pnl_history, sizeof(bs->pnl_history));
                 bs->graph_head = fs->graph_head;
                 bs->graph_count = fs->graph_count;
                 TUI_CopySnapshot(bs, &ctrl, &last_stream);
                 // append current data point to graph ring buffers
                 bs->price_history[bs->graph_head] = bs->price;
+                bs->volume_history[bs->graph_head] = bs->volume;
                 bs->pnl_history[bs->graph_head] = bs->total_pnl;
                 bs->graph_head = (bs->graph_head + 1) % TUISnapshot::GRAPH_LEN;
                 if (bs->graph_count < TUISnapshot::GRAPH_LEN) bs->graph_count++;

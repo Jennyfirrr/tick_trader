@@ -646,6 +646,7 @@ struct TUISnapshot {
     // graph history (ring buffers, updated every snapshot copy)
     static constexpr int GRAPH_LEN = 120;  // ~2 min at 1 update/sec
     double price_history[GRAPH_LEN];
+    double volume_history[GRAPH_LEN];
     double pnl_history[GRAPH_LEN];
     int graph_head;
     int graph_count;

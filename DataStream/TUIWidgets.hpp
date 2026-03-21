@@ -379,47 +379,64 @@ static inline Element Widget_Latency(const TUISnapshot *s) {
 #endif
 
 //======================================================================================================
-// [PRICE GRAPH WIDGET]
+// [PRICE + VOLUME GRAPH WIDGET]
 //======================================================================================================
 static inline Element Widget_PriceGraph(const TUISnapshot *s) {
     if (s->graph_count < 2) return text("  (collecting data...)") | color(foxml::dim);
 
-    // read ring buffer in order (oldest → newest)
     int len = s->graph_count;
     int start = (s->graph_head - len + TUISnapshot::GRAPH_LEN) % TUISnapshot::GRAPH_LEN;
 
-    // find min/max for scaling
-    double mn = 1e18, mx = -1e18;
+    // price min/max
+    double pmn = 1e18, pmx = -1e18;
+    double vmx = 0;
     for (int i = 0; i < len; i++) {
-        double v = s->price_history[(start + i) % TUISnapshot::GRAPH_LEN];
-        if (v < mn) mn = v;
-        if (v > mx) mx = v;
+        double p = s->price_history[(start + i) % TUISnapshot::GRAPH_LEN];
+        double v = s->volume_history[(start + i) % TUISnapshot::GRAPH_LEN];
+        if (p < pmn) pmn = p;
+        if (p > pmx) pmx = p;
+        if (v > vmx) vmx = v;
     }
-    double range = mx - mn;
-    if (range < 0.01) range = 0.01;
+    double prange = pmx - pmn;
+    if (prange < 0.01) prange = 0.01;
+    if (vmx < 1e-10) vmx = 1e-10;
 
-    // copy data into a vector (captured by value in the lambda)
-    // the lambda is called later during Render — local vars would be dangling
-    std::vector<double> data(len);
-    for (int i = 0; i < len; i++)
-        data[i] = s->price_history[(start + i) % TUISnapshot::GRAPH_LEN];
+    // copy data by value for lambda capture
+    std::vector<double> prices(len), volumes(len);
+    for (int i = 0; i < len; i++) {
+        prices[i] = s->price_history[(start + i) % TUISnapshot::GRAPH_LEN];
+        volumes[i] = s->volume_history[(start + i) % TUISnapshot::GRAPH_LEN];
+    }
 
-    auto graph_fn = [data, mn, range](int width, int height) {
+    auto price_fn = [prices, pmn, prange](int width, int height) {
         std::vector<int> out(width, 0);
-        int dlen = (int)data.size();
+        int dlen = (int)prices.size();
         for (int x = 0; x < width; x++) {
             int idx = (int)((double)x / width * dlen);
             if (idx >= dlen) idx = dlen - 1;
-            out[x] = (int)(((data[idx] - mn) / range) * (height - 1));
+            out[x] = (int)(((prices[idx] - pmn) / prange) * (height - 1));
+        }
+        return out;
+    };
+
+    auto vol_fn = [volumes, vmx](int width, int height) {
+        std::vector<int> out(width, 0);
+        int dlen = (int)volumes.size();
+        for (int x = 0; x < width; x++) {
+            int idx = (int)((double)x / width * dlen);
+            if (idx >= dlen) idx = dlen - 1;
+            out[x] = (int)((volumes[idx] / vmx) * (height - 1));
         }
         return out;
     };
 
     return vbox({
         hbox({text("PRICE") | bold | color(foxml::peach),
-              text(fmt("  $%.2f", mx)) | color(foxml::dim)}),
-        graph(graph_fn) | size(HEIGHT, EQUAL, 8) | color(foxml::wheat),
-        hbox({text(fmt("  $%.2f", mn)) | color(foxml::dim)}),
+              text(fmt("  $%.2f", pmx)) | color(foxml::dim)}),
+        graph(price_fn) | size(HEIGHT, EQUAL, 8) | color(foxml::wheat),
+        hbox({text(fmt("  $%.2f", pmn)) | color(foxml::dim)}),
+        text("VOLUME") | bold | color(foxml::peach),
+        graph(vol_fn) | size(HEIGHT, EQUAL, 3) | color(foxml::sage),
     }) | flex;
 }
 
