@@ -2,6 +2,7 @@ BUILD_DIR = build
 
 all: $(BUILD_DIR)
 	cmake --build $(BUILD_DIR) -j$$(nproc)
+	@ln -sf ../engine.cfg $(BUILD_DIR)/engine.cfg 2>/dev/null || true
 
 $(BUILD_DIR):
 	cmake -B $(BUILD_DIR)
