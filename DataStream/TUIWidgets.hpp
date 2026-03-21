@@ -498,11 +498,16 @@ static inline Element Widget_PriceGraph(const TUISnapshot *s) {
         return canvas(std::move(c));
     };
 
-    // legend
+    // use actual data min/max for labels (before padding), current price for header
+    double data_min = pmn + prange * 0.05; // undo the padding we added for chart scaling
+    double data_max = pmx - prange * 0.05;
+    double cur_price = prices.back();
+
+    // legend: current price + overlays
     Elements legend;
-    legend.push_back(text(fmt("$%.2f", pmx)) | color(foxml::dim));
+    legend.push_back(text(fmt("$%.2f", cur_price)) | bold | color(foxml::wheat));
     if (buy_gate > 0)
-        legend.push_back(text(fmt("  gate $%.0f", buy_gate)) | color(foxml::clay));
+        legend.push_back(text(fmt("  gate $%.2f", buy_gate)) | color(foxml::clay));
     if (nearest_tp > 0)
         legend.push_back(text(fmt("  TP $%.0f", nearest_tp)) | color(foxml::green));
     if (nearest_sl > 0)
@@ -512,7 +517,9 @@ static inline Element Widget_PriceGraph(const TUISnapshot *s) {
         hbox({text("PRICE") | bold | color(foxml::peach), text("  ") | color(foxml::dim),
               hbox(legend)}),
         price_canvas() | flex,
-        hbox({text(fmt("$%.2f", pmn)) | color(foxml::dim),
+        hbox({text(fmt("$%.2f", data_min)) | color(foxml::dim),
+              filler(),
+              text(fmt("$%.2f", data_max)) | color(foxml::dim),
               filler(),
               text("now") | color(foxml::dim)}),
         vol_canvas(),
