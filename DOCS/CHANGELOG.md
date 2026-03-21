@@ -1,5 +1,68 @@
 # Changelog
 
+## [1.0.0] - 2026-03-21
+
+### Added
+- **Regime detection** — classifies market as RANGING, TRENDING, or VOLATILE using
+  rolling price slope magnitude, R² consistency, and stddev-to-price ratio. Hysteresis
+  prevents rapid switching (configurable cycles before transition). Cold start guard
+  stays in RANGING until 64+ rolling samples available.
+
+- **Momentum strategy** — trend-following complement to mean reversion. Buys breakouts
+  ABOVE the rolling average (`avg + stddev * breakout_mult`) instead of dips below.
+  P&L regression adapts breakout threshold. Tighter SL trail for false breakout
+  protection, wider TP trail to let trends run. Full Init/Adapt/BuySignal/ExitAdjust
+  implementation following the same patterns as MeanReversion.hpp.
+
+- **Strategy dispatch** — replaces hardcoded MeanReversion calls with `switch(strategy_id)`.
+  Both strategies initialized at warmup for instant regime switching (~1.5KB extra,
+  well within L1 budget). Adding a new strategy means one case in the switch.
+
+- **BuyGate direction** — `gate_direction` field in BuySideGateConditions. 0 = buy below
+  price (mean reversion), 1 = buy above price (momentum). One extra branchless op
+  per tick on hot path.
+
+- **Per-position strategy tracking** — `entry_strategy[16]` array in controller tracks
+  which strategy entered each position. Used by Regime_AdjustPositions to only modify
+  positions from the old strategy on regime switch.
+
+- **Position adjustment on regime switch** — walks active bitmap, adjusts TP/SL based
+  on new regime. MR→momentum: widen TP (let trend run), tighten SL. Momentum→MR:
+  tighten TP (take profit before reversal), widen SL (allow chop). VOLATILE: no
+  adjustment, just pause buying.
+
+- **Manual regime cycling** — press `s` in TUI to cycle RANGING→TRENDING→VOLATILE for
+  testing. Triggers position adjustment and strategy switch.
+
+- **TUI regime display** — shows active strategy name, regime state with color coding
+  (RANGING=dim, TRENDING=green, VOLATILE=red), and duration in current regime.
+
+- **VOLATILE regime handling** — pauses all buying (sets buy_conds to zero). Existing
+  positions keep their TP/SL. Future volatile strategy documented in
+  DOCS/FUTURE_VOLATILE_STRATEGY.md.
+
+- **Config fields** — `regime_slope_threshold`, `regime_r2_threshold`,
+  `regime_volatile_stddev`, `regime_hysteresis`, `momentum_breakout_mult`,
+  `momentum_tp_mult`, `momentum_sl_mult`. All in engine.cfg with documentation.
+
+- **Auto-tune deferral** — regime threshold auto-tuning documented as future work in
+  DOCS/FUTURE_AUTOTUNE.md. Per-strategy adaptation (Level 1) implemented; meta-optimization
+  of detector thresholds (Level 2) deferred until paper trading data available.
+
+### Fixed
+- **Unpause dispatch** — `p` key now calls active strategy's BuySignal instead of
+  hardcoded MeanReversion. Sets correct gate_direction on unpause.
+- **Config reload** — `r` key now includes regime + momentum fields.
+- **TUI overlap** — left column pads to match right column height before printing
+  controls/latency. p50/p95 split to separate line to avoid bleeding into positions.
+- **Position hold time** — TUI shows `hold:Xm` per position (minutes held).
+
+### Changed
+- PortfolioController struct: added MomentumState, RegimeState, entry_strategy[16].
+- Both strategies initialized at warmup (no latency spike on first regime switch).
+- Strategy dispatch runs on slow path only — zero hot-path cost beyond the one
+  extra branchless op in BuyGate.
+
 ## [0.9.1] - 2026-03-21
 
 ### Fixed
