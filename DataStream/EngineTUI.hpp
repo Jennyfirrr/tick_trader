@@ -257,9 +257,10 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
                  C_SAND "    TP:" C_GREEN "$%.0f" C_RESET "%s"
                  C_SAND " SL:" C_RED "$%.0f" C_RESET,
                  tp, trail_status, sl);
+        double hold_min = (double)(ctrl->total_ticks - ctrl->entry_ticks[idx]) / 3.0 / 60.0;
         snprintf(pos_buf[pln++], POS_LINE_W,
-                 C_SAND "    g:" "%s%+.2f%%" C_SAND " n:" "%s%+.2f%%" C_RESET,
-                 C_PNL(pos_pnl), pos_pnl, C_PNL(net_pnl), net_pnl);
+                 C_SAND "    g:" "%s%+.2f%%" C_SAND " n:" "%s%+.2f%%" C_DIM " hold:%.0fm" C_RESET,
+                 C_PNL(pos_pnl), pos_pnl, C_PNL(net_pnl), net_pnl, hold_min);
         displayed++;
         active &= active - 1;
         if (pln >= POS_MAX_LINES - 4) break;  // safety
@@ -510,6 +511,10 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
                (unsigned long)tui->slow_count); row++;
     }
 #endif
+    // pad left column if right column (positions) extends further down
+    { int pos_end_row = pos_start_row + pln;
+      while (row < pos_end_row) { printf("\n"); row++; } }
+
     printf(C_PINK "  [q]" C_DIM "uit  " C_PINK "[p]" C_DIM "ause  " C_PINK "[r]" C_DIM "eload config" C_RESET "                \n"); row++;
 
     //==================================================================================================
@@ -628,6 +633,7 @@ struct TUIPositionSnap {
     double entry, qty, tp, sl, orig_tp;
     double value, gross_pnl, net_pnl;
     int is_trailing, above_orig_tp;
+    uint64_t ticks_held;
 };
 
 struct TUISnapshot {
@@ -781,6 +787,7 @@ static inline void TUI_CopySnapshot(TUISnapshot *snap,
         ps->net_pnl   = ps->gross_pnl - (fee_r * 200.0);
         ps->is_trailing  = !FPN_Equal(pos->take_profit_price, pos->original_tp);
         ps->above_orig_tp = (price_d > ps->orig_tp) && (ps->entry != 0.0);
+        ps->ticks_held   = ctrl->total_ticks - ctrl->entry_ticks[idx];
         snap->total_value += ps->value;
         snap->total_qty   += ps->qty;
         active &= active - 1;
@@ -873,9 +880,10 @@ static inline void TUI_Render_Snapshot(EngineTUI *tui, const TUISnapshot *s) {
         snprintf(pos_buf[pln++], SNAP_POS_W,
                  C_SAND "    TP:" C_GREEN "$%.0f" C_RESET "%s" C_SAND " SL:" C_RED "$%.0f" C_RESET,
                  ps->tp, trail_status, ps->sl);
+        double hold_min = (double)ps->ticks_held / 3.0 / 60.0; // ~3 ticks/sec
         snprintf(pos_buf[pln++], SNAP_POS_W,
-                 C_SAND "    g:" "%s%+.2f%%" C_SAND " n:" "%s%+.2f%%" C_RESET,
-                 C_PNL(ps->gross_pnl), ps->gross_pnl, C_PNL(ps->net_pnl), ps->net_pnl);
+                 C_SAND "    g:" "%s%+.2f%%" C_SAND " n:" "%s%+.2f%%" C_DIM " hold:%.0fm" C_RESET,
+                 C_PNL(ps->gross_pnl), ps->gross_pnl, C_PNL(ps->net_pnl), ps->net_pnl, hold_min);
         displayed++;
         if (pln >= SNAP_POS_MAX - 4) break;
     }
@@ -995,9 +1003,10 @@ static inline void TUI_Render_Snapshot(EngineTUI *tui, const TUISnapshot *s) {
     printf(C_BOLD C_PEACH "  LATENCY " C_DIM "(profiling, multicore):" C_RESET "\n"); row++;
     if (s->hot_count > 0) {
         printf(C_SAND "    hot path:  " C_FG "avg %.0fns" C_DIM "  min " C_FG "%.0fns" C_DIM "  max " C_FG "%.0fns"
-               C_DIM "  p50 " C_FG "%.0fns" C_DIM "  p95 " C_FG "%.0fns"
                C_DIM "  (%lu ticks)" C_RESET "\n", s->hot_avg_ns, s->hot_min_ns, s->hot_max_ns,
-               s->hot_p50_ns, s->hot_p95_ns, (unsigned long)s->hot_count); row++;
+               (unsigned long)s->hot_count); row++;
+        printf(C_DIM "               p50 " C_FG "%.0fns" C_DIM "  p95 " C_FG "%.0fns" C_RESET "\n",
+               s->hot_p50_ns, s->hot_p95_ns); row++;
         printf(C_DIM "      buygate:  " C_FG "avg %.0fns" C_DIM "  max " C_FG "%.0fns" C_RESET "\n", s->bg_avg_ns, s->bg_max_ns); row++;
         printf(C_DIM "      exitgate: " C_FG "avg %.0fns" C_DIM "  max " C_FG "%.0fns"
                C_DIM "  (%.0fns/pos)" C_RESET "\n", s->eg_avg_ns, s->eg_max_ns, s->eg_per_pos_ns); row++;
@@ -1018,6 +1027,10 @@ static inline void TUI_Render_Snapshot(EngineTUI *tui, const TUISnapshot *s) {
                C_DIM "  (%lu cycles)" C_RESET "\n", sa, su, sn, su, sx, su, (unsigned long)s->slow_count); row++;
     }
 #endif
+
+    // pad left column if right column (positions) extends further down
+    int pos_end_row = pos_start_row + pln;
+    while (row < pos_end_row) { printf("\n"); row++; }
 
     printf(C_PINK "  [q]" C_DIM "uit  " C_PINK "[p]" C_DIM "ause  " C_PINK "[r]" C_DIM "eload config" C_RESET "                \n"); row++;
 
