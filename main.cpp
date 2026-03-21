@@ -225,82 +225,18 @@ int main(int argc, char *argv[]) {
             running = 0;
         if (__atomic_exchange_n(&shared.pause_requested, 0, __ATOMIC_ACQ_REL)) {
             int is_paused = FPN_IsZero(ctrl.buy_conds.price);
-            if (is_paused) {
-                // unpause: dispatch to active strategy's BuySignal
-                if (ctrl.strategy_id == STRATEGY_MOMENTUM) {
-                    ctrl.buy_conds = Momentum_BuySignal(&ctrl.momentum, &ctrl.rolling,
-                                                         ctrl.rolling_long, &ctrl.config);
-                } else {
-                    ctrl.buy_conds = MeanReversion_BuySignal(&ctrl.mean_rev, &ctrl.rolling,
-                                                              ctrl.rolling_long, &ctrl.config);
-                }
-            } else {
+            if (is_paused)
+                PortfolioController_Unpause(&ctrl);
+            else {
                 ctrl.buy_conds.price  = FPN_Zero<FP>();
                 ctrl.buy_conds.volume = FPN_Zero<FP>();
             }
         }
-        if (__atomic_exchange_n(&shared.regime_cycle_requested, 0, __ATOMIC_ACQ_REL)) {
-            // manual regime cycle: RANGING → TRENDING → VOLATILE → RANGING
-            int old = ctrl.regime.current_regime;
-            int next = (old + 1) % 3;
-            ctrl.regime.current_regime = next;
-            ctrl.regime.proposed_regime = next;
-            ctrl.regime.regime_start_tick = ctrl.total_ticks;
-            int old_strategy = ctrl.strategy_id;
-            ctrl.strategy_id = Regime_ToStrategy(next);
-            if (ctrl.strategy_id != old_strategy)
-                Regime_AdjustPositions(&ctrl.portfolio, &ctrl.rolling,
-                                        old, next, ctrl.entry_strategy, &ctrl.config);
-            // volatile: pause buying
-            if (next == REGIME_VOLATILE) {
-                ctrl.buy_conds.price = FPN_Zero<FP>();
-                ctrl.buy_conds.volume = FPN_Zero<FP>();
-            }
-            fprintf(stderr, "[ENGINE] regime manually set to %s\n",
-                    next == REGIME_TRENDING ? "TRENDING" : next == REGIME_VOLATILE ? "VOLATILE" : "RANGING");
-        }
+        if (__atomic_exchange_n(&shared.regime_cycle_requested, 0, __ATOMIC_ACQ_REL))
+            PortfolioController_CycleRegime(&ctrl);
         if (__atomic_exchange_n(&shared.reload_requested, 0, __ATOMIC_ACQ_REL)) {
             ControllerConfig<FP> new_cfg = ControllerConfig_Load<FP>(cfg_path);
-            ctrl.config.poll_interval     = new_cfg.poll_interval;
-            ctrl.config.r2_threshold      = new_cfg.r2_threshold;
-            ctrl.config.slope_scale_buy   = new_cfg.slope_scale_buy;
-            ctrl.config.max_shift         = new_cfg.max_shift;
-            ctrl.config.take_profit_pct   = new_cfg.take_profit_pct;
-            ctrl.config.stop_loss_pct     = new_cfg.stop_loss_pct;
-            ctrl.config.fee_rate          = new_cfg.fee_rate;
-            ctrl.config.risk_pct          = new_cfg.risk_pct;
-            ctrl.config.volume_multiplier = new_cfg.volume_multiplier;
-            ctrl.config.entry_offset_pct  = new_cfg.entry_offset_pct;
-            ctrl.config.spacing_multiplier = new_cfg.spacing_multiplier;
-            ctrl.config.offset_min        = new_cfg.offset_min;
-            ctrl.config.offset_max        = new_cfg.offset_max;
-            ctrl.config.vol_mult_min      = new_cfg.vol_mult_min;
-            ctrl.config.vol_mult_max      = new_cfg.vol_mult_max;
-            ctrl.config.filter_scale      = new_cfg.filter_scale;
-            ctrl.config.max_drawdown_pct  = new_cfg.max_drawdown_pct;
-            ctrl.config.max_exposure_pct  = new_cfg.max_exposure_pct;
-            ctrl.config.offset_stddev_mult = new_cfg.offset_stddev_mult;
-            ctrl.config.offset_stddev_min  = new_cfg.offset_stddev_min;
-            ctrl.config.offset_stddev_max  = new_cfg.offset_stddev_max;
-            ctrl.config.min_long_slope     = new_cfg.min_long_slope;
-            ctrl.config.tp_hold_score      = new_cfg.tp_hold_score;
-            ctrl.config.tp_trail_mult      = new_cfg.tp_trail_mult;
-            ctrl.config.sl_trail_mult      = new_cfg.sl_trail_mult;
-            ctrl.config.max_hold_ticks     = new_cfg.max_hold_ticks;
-            ctrl.config.min_hold_gain_pct  = new_cfg.min_hold_gain_pct;
-            ctrl.mean_rev.live_offset_pct  = new_cfg.entry_offset_pct;
-            ctrl.mean_rev.live_vol_mult    = new_cfg.volume_multiplier;
-            ctrl.mean_rev.live_stddev_mult = new_cfg.offset_stddev_mult;
-            // regime + momentum config
-            ctrl.config.regime_slope_threshold = new_cfg.regime_slope_threshold;
-            ctrl.config.regime_r2_threshold    = new_cfg.regime_r2_threshold;
-            ctrl.config.regime_volatile_stddev = new_cfg.regime_volatile_stddev;
-            ctrl.config.regime_hysteresis      = new_cfg.regime_hysteresis;
-            ctrl.config.momentum_breakout_mult = new_cfg.momentum_breakout_mult;
-            ctrl.config.momentum_tp_mult       = new_cfg.momentum_tp_mult;
-            ctrl.config.momentum_sl_mult       = new_cfg.momentum_sl_mult;
-            ctrl.momentum.live_breakout_mult   = new_cfg.momentum_breakout_mult;
-            ctrl.regime.hysteresis_threshold   = new_cfg.regime_hysteresis;
+            PortfolioController_HotReload(&ctrl, new_cfg);
             fprintf(stderr, "[ENGINE] config reloaded from %s\n", cfg_path);
         }
 #else

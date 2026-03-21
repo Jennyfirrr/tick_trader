@@ -33,7 +33,7 @@ template <unsigned F> struct ProfitTarget {
 template <unsigned F> struct BuySideGateConditions {
     FPN<F> price;
     FPN<F> volume;
-    int gate_direction;  // 0 = buy below price (mean reversion), 1 = buy above price (momentum)
+    int gate_direction = 0;  // 0 = buy below price (mean reversion), 1 = buy above price (momentum)
 };
 
 template <unsigned F> struct SellSideGateConditions {

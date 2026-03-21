@@ -132,7 +132,7 @@ inline void Momentum_Adapt(MomentumState<F> *state,
     // P&L REGRESSION: push portfolio delta, compute regression, adjust breakout_mult
     //==================================================================================================
     RegressionFeederX_Push(&state->feeder, portfolio_delta);
-    state->price_feeder; // price feeder pushed separately for trailing R²
+    RegressionFeederX_Push(&state->price_feeder, current_price);
 
     if (state->feeder.count >= MAX_WINDOW) {
         LinearRegression3XResult<F> reg = RegressionFeederX_Compute(&state->feeder);
