@@ -24,8 +24,8 @@ target_link_libraries(engine PRIVATE
     ftxui::screen ftxui::dom ftxui::component
     ssl crypto pthread)
 
-# always build with multicore TUI (FTXUI replaces single-threaded path)
-target_compile_definitions(engine PRIVATE MULTICORE_TUI)
+# always build with multicore TUI + FTXUI rendering
+target_compile_definitions(engine PRIVATE MULTICORE_TUI USE_FTXUI)
 
 #===============================================================================
 # build options

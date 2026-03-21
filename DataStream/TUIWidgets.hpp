@@ -10,10 +10,13 @@
 
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/color.hpp>
-#include "EngineTUI.hpp"
 #include <cstdio>
 #include <cmath>
 #include <ctime>
+
+// TUISnapshot and TUIPositionSnap are defined in EngineTUI.hpp
+// which includes this file via TUILayout.hpp — no circular include needed
+// the structs are already visible by the time these functions are called
 
 using namespace ftxui;
 
@@ -41,8 +44,8 @@ namespace foxml {
 //======================================================================================================
 // [HELPERS]
 //======================================================================================================
-static inline Element pnl_color(double val, std::string text) {
-    return text_element(text) | color(val >= 0 ? foxml::green : foxml::red);
+static inline Element pnl_text(double val, std::string s) {
+    return text(s) | color(val >= 0 ? foxml::green : foxml::red);
 }
 
 static inline std::string fmt(const char *f, double v) {

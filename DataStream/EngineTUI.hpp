@@ -1052,10 +1052,63 @@ static inline char TUI_ReadKey(EngineTUI *tui) {
 //======================================================================================================
 // [TUI THREAD FUNCTION]
 //======================================================================================================
+#ifdef USE_FTXUI
+#include <ftxui/component/component.hpp>
+#include <ftxui/component/screen_interactive.hpp>
+#include <ftxui/component/loop.hpp>
+#include "TUILayout.hpp"
+#endif
+
 static inline void *tui_thread_fn(void *arg) {
     TUISharedState *shared = (TUISharedState *)arg;
 
-    // TUI thread owns the terminal
+#ifdef USE_FTXUI
+    // FTXUI render loop — replaces printf TUI entirely
+    int current_layout = LAYOUT_STANDARD;
+
+    auto screen = ftxui::ScreenInteractive::Fullscreen();
+
+    auto renderer = ftxui::Renderer([&]() -> ftxui::Element {
+        int idx = __atomic_load_n(&shared->active_idx, __ATOMIC_ACQUIRE);
+        const TUISnapshot *s = &shared->snapshots[idx];
+        return Layout_Render(s, current_layout);
+    });
+
+    auto component = ftxui::CatchEvent(renderer, [&](ftxui::Event event) {
+        if (event == ftxui::Event::Character('q') || event == ftxui::Event::Character('Q')) {
+            __atomic_store_n(&shared->quit_requested, 1, __ATOMIC_RELEASE);
+            screen.Exit();
+            return true;
+        }
+        if (event == ftxui::Event::Character('p') || event == ftxui::Event::Character('P')) {
+            __atomic_store_n(&shared->pause_requested, 1, __ATOMIC_RELEASE);
+            return true;
+        }
+        if (event == ftxui::Event::Character('r') || event == ftxui::Event::Character('R')) {
+            __atomic_store_n(&shared->reload_requested, 1, __ATOMIC_RELEASE);
+            return true;
+        }
+        if (event == ftxui::Event::Character('s') || event == ftxui::Event::Character('S')) {
+            __atomic_store_n(&shared->regime_cycle_requested, 1, __ATOMIC_RELEASE);
+            return true;
+        }
+        if (event == ftxui::Event::Character('l') || event == ftxui::Event::Character('L')) {
+            current_layout = (current_layout + 1) % LAYOUT_COUNT;
+            return true;
+        }
+        return false;
+    });
+
+    // run FTXUI loop with 10 FPS refresh
+    ftxui::Loop loop(&screen, component);
+    while (!loop.HasQuitted() && !__atomic_load_n(&shared->quit_requested, __ATOMIC_ACQUIRE)) {
+        loop.RunOnce();
+        screen.PostEvent(ftxui::Event::Custom); // trigger re-render
+        usleep(100000); // 10 FPS
+    }
+
+#else
+    // legacy printf TUI
     TUI_Init(&shared->tui, 1, 10);
 
     while (!__atomic_load_n(&shared->quit_requested, __ATOMIC_ACQUIRE)) {
@@ -1076,6 +1129,8 @@ static inline void *tui_thread_fn(void *arg) {
     }
 
     TUI_Cleanup(&shared->tui);
+#endif // USE_FTXUI
+
     return NULL;
 }
 
