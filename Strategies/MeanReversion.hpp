@@ -26,6 +26,7 @@
 #include "StrategyInterface.hpp"
 #include "../CoreFrameworks/ControllerConfig.hpp"
 #include "../CoreFrameworks/OrderGates.hpp"
+#include "../CoreFrameworks/Portfolio.hpp"
 #include "../ML_Headers/LinearRegression3X.hpp"
 #include "../ML_Headers/ROR_regressor.hpp"
 #include "../ML_Headers/RollingStats.hpp"
@@ -42,6 +43,7 @@ template <unsigned F> struct MeanReversionState {
     BuySideGateConditions<F> buy_conds_initial; // anchor for max_shift clamp, tracks rolling avg
     LinearRegression3XResult<F> last_regression; // stored for BuySignal to apply gate shift
     int has_regression;              // 1 if last_regression is valid, 0 otherwise
+    RegressionFeederX<F> price_feeder; // price regression for trailing TP R² computation
 };
 
 //======================================================================================================
@@ -174,9 +176,12 @@ inline void MeanReversion_Adapt(MeanReversionState<F> *state,
     }
 
     //==================================================================================================
-    // FEEDER PUSH: feed unrealized P&L into regression buffer
+    // FEEDER PUSH: feed P&L and price into regression buffers
+    // price feeder is used by ExitAdjust for trailing TP R² — pushed here so R² uses
+    // the most recent market data when the trailing decision runs after Adapt
     //==================================================================================================
     RegressionFeederX_Push(&state->feeder, portfolio_delta);
+    RegressionFeederX_Push(&state->price_feeder, current_price);
 
     //==================================================================================================
     // REGRESSION + ADAPTIVE FILTER ADJUSTMENT
@@ -352,6 +357,78 @@ inline BuySideGateConditions<F> MeanReversion_BuySignal(MeanReversionState<F> *s
     }
 
     return conds;
+}
+
+//======================================================================================================
+// [EXIT ADJUST]
+//======================================================================================================
+// called every slow-path tick after Adapt. adjusts TP/SL for positions that are "running"
+// (price above original TP) based on trend strength and consistency.
+//
+// hold_score = SNR * R² where:
+//   SNR = price_slope / price_stddev (signal-to-noise: is the trend big relative to noise?)
+//   R² = price regression R² (consistency: is the trend reliable?)
+// the product requires BOTH magnitude AND consistency — choppy whipsaws (high SNR, low R²)
+// and slow bleeds (low SNR, high R²) both produce low scores.
+//
+// when hold_score >= threshold: ratchet TP and SL upward (trailing)
+// when hold_score drops below: stop ratcheting, exit gate catches pullback at last raised TP
+//======================================================================================================
+template <unsigned F>
+inline void MeanReversion_ExitAdjust(Portfolio<F> *portfolio,
+                                      FPN<F> current_price,
+                                      const RollingStats<F> *rolling,
+                                      MeanReversionState<F> *state,
+                                      const ControllerConfig<F> *cfg) {
+    // skip if trailing disabled
+    if (FPN_IsZero(cfg->tp_hold_score)) return;
+
+    // guard: flat market (stddev = 0) would make SNR = MAX via DivNoAssert saturation
+    // which falsely activates trailing. skip when no volatility data.
+    if (FPN_IsZero(rolling->price_stddev)) return;
+
+    // compute SNR: signal-to-noise ratio of price trend
+    FPN<F> snr = FPN_DivNoAssert(rolling->price_slope, rolling->price_stddev);
+
+    // compute R² from price regression (only if feeder has enough data)
+    // R² measures trend CONSISTENCY — high R² means prices move in a straight line
+    // cold start: R² = 0 for first 8 slow-path cycles after warmup. trailing disabled until then.
+    FPN<F> r_squared = FPN_Zero<F>();
+    if (state->price_feeder.count >= MAX_WINDOW) {
+        LinearRegression3XResult<F> price_reg = RegressionFeederX_Compute(&state->price_feeder);
+        r_squared = price_reg.r_squared;
+    }
+
+    // hold_score = SNR * R²
+    // negative slope → negative SNR → negative score → never exceeds positive threshold → correct
+    FPN<F> hold_score = FPN_Mul(snr, r_squared);
+
+    int should_trail = FPN_GreaterThanOrEqual(hold_score, cfg->tp_hold_score);
+
+    uint16_t active = portfolio->active_bitmap;
+    while (active) {
+        int idx = __builtin_ctz(active);
+        Position<F> *pos = &portfolio->positions[idx];
+
+        // only trail positions that are above their original TP (position is "running")
+        int above_tp = FPN_GreaterThan(current_price, pos->original_tp);
+
+        if (above_tp & should_trail) {
+            // trailing TP: current_price - (stddev * trail_mult)
+            // ratchet up only — FPN_Max ensures TP never decreases, locking in gains
+            FPN<F> tp_offset = FPN_Mul(rolling->price_stddev, cfg->tp_trail_mult);
+            FPN<F> trailing_tp = FPN_Sub(current_price, tp_offset);
+            pos->take_profit_price = FPN_Max(pos->take_profit_price, trailing_tp);
+
+            // trailing SL: lock in gains alongside TP
+            // ratchet up only — prevents "let winners turn into losers"
+            FPN<F> sl_offset = FPN_Mul(rolling->price_stddev, cfg->sl_trail_mult);
+            FPN<F> trailing_sl = FPN_Sub(current_price, sl_offset);
+            pos->stop_loss_price = FPN_Max(pos->stop_loss_price, trailing_sl);
+        }
+
+        active &= active - 1;
+    }
 }
 
 //======================================================================================================

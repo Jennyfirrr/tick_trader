@@ -18,10 +18,12 @@
 template <unsigned F> struct Position {
     FPN<F> quantity;          // positive for long, negative for short
     FPN<F> entry_price;
-    FPN<F> take_profit_price; // computed at fill: entry_price * (1 + tp_pct)
-    FPN<F> stop_loss_price;   // computed at fill: entry_price * (1 - sl_pct)
+    FPN<F> take_profit_price; // LIVE — modified by trailing TP on slow path
+    FPN<F> stop_loss_price;   // LIVE — modified by trailing SL on slow path
+    FPN<F> original_tp;       // set at fill, never modified — used to detect "running" positions
+    FPN<F> original_sl;       // set at fill, never modified — baseline for trailing SL
 };
-static_assert(sizeof(Position<64>) == 4 * sizeof(FPN<64>), "Position size mismatch");
+static_assert(sizeof(Position<64>) == 6 * sizeof(FPN<64>), "Position size mismatch");
 //======================================================================================================
 // [PORTFOLIO]
 //======================================================================================================
@@ -235,7 +237,7 @@ inline void PositionExitGate(Portfolio<F> *portfolio, FPN<F> current_price, Exit
 //   [sizeof(FPN<F>)] balance
 //======================================================================================================
 #define PORTFOLIO_SNAPSHOT_MAGIC 0x4B434954  // "TICK" in little-endian
-#define PORTFOLIO_SNAPSHOT_VERSION 3
+#define PORTFOLIO_SNAPSHOT_VERSION 4
 
 template <unsigned F>
 static inline int Portfolio_Save(const Portfolio<F> *portfolio, FPN<F> realized_pnl,

@@ -956,6 +956,211 @@ static void test_multi_timeframe_disabled() {
 }
 
 //======================================================================================================
+// [TEST 21: TRAILING TP DISABLED]
+//======================================================================================================
+static void test_trailing_disabled() {
+    printf("\n--- Trailing TP Disabled ---\n");
+
+    ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+    cfg.warmup_ticks  = 5;
+    cfg.poll_interval = 1;
+    // tp_hold_score = 0 (default, disabled)
+
+    PortfolioController<FP> ctrl;
+    PortfolioController_Init(&ctrl, cfg);
+
+    OrderPool<FP> pool;
+    OrderPool_init(&pool, 64);
+    TradeLog log;
+    log.file = 0;
+    log.trade_count = 0;
+
+    // warmup
+    for (int i = 0; i < 5; i++) {
+        PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(100.0), FPN_FromDouble<FP>(500.0), &log);
+    }
+
+    // add a position manually
+    FPN<FP> tp = FPN_FromDouble<FP>(103.0);
+    FPN<FP> sl = FPN_FromDouble<FP>(98.0);
+    int slot = Portfolio_AddPositionWithExits(&ctrl.portfolio, FPN_FromDouble<FP>(10.0),
+                                              FPN_FromDouble<FP>(100.0), tp, sl);
+    ctrl.portfolio.positions[slot].original_tp = tp;
+    ctrl.portfolio.positions[slot].original_sl = sl;
+
+    // run with price above TP — should NOT trail (disabled)
+    for (int i = 0; i < 20; i++) {
+        PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(105.0), FPN_FromDouble<FP>(500.0), &log);
+    }
+
+    // TP should still be original (103.0) — not raised
+    double final_tp = FPN_ToDouble(ctrl.portfolio.positions[slot].take_profit_price);
+    check("trailing disabled: TP unchanged", fabs(final_tp - 103.0) < 0.01);
+
+    free(pool.slots);
+}
+
+//======================================================================================================
+// [TEST 22: TRAILING TP ACTIVATES ON STRONG TREND]
+//======================================================================================================
+static void test_trailing_activates() {
+    printf("\n--- Trailing TP Activates ---\n");
+
+    ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+    cfg.warmup_ticks    = 5;
+    cfg.poll_interval   = 1;
+    cfg.tp_hold_score   = FPN_FromDouble<FP>(0.01); // low threshold so it activates easily
+    cfg.tp_trail_mult   = FPN_FromDouble<FP>(1.0);
+    cfg.sl_trail_mult   = FPN_FromDouble<FP>(2.0);
+
+    PortfolioController<FP> ctrl;
+    PortfolioController_Init(&ctrl, cfg);
+
+    OrderPool<FP> pool;
+    OrderPool_init(&pool, 64);
+    TradeLog log;
+    log.file = 0;
+    log.trade_count = 0;
+
+    // warmup
+    for (int i = 0; i < 5; i++) {
+        PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(100.0), FPN_FromDouble<FP>(500.0), &log);
+    }
+
+    // add a position with TP at 103
+    FPN<FP> entry = FPN_FromDouble<FP>(100.0);
+    FPN<FP> tp = FPN_FromDouble<FP>(103.0);
+    FPN<FP> sl = FPN_FromDouble<FP>(97.0);
+    int slot = Portfolio_AddPositionWithExits(&ctrl.portfolio, FPN_FromDouble<FP>(10.0), entry, tp, sl);
+    ctrl.portfolio.positions[slot].original_tp = tp;
+    ctrl.portfolio.positions[slot].original_sl = sl;
+
+    // feed steadily rising prices above TP (strong clean trend → high SNR * R²)
+    for (int i = 0; i < 50; i++) {
+        FPN<FP> price = FPN_FromDouble<FP>(104.0 + (double)i * 0.2);
+        PortfolioController_Tick(&ctrl, &pool, price, FPN_FromDouble<FP>(500.0), &log);
+    }
+
+    // check if TP was raised above original (trailing activated)
+    double final_tp = FPN_ToDouble(ctrl.portfolio.positions[slot].take_profit_price);
+    check("trailing: TP raised above original", final_tp > 103.0);
+
+    // check SL was also raised (locking in gains)
+    double final_sl = FPN_ToDouble(ctrl.portfolio.positions[slot].stop_loss_price);
+    check("trailing: SL raised above original", final_sl > 97.0);
+
+    // TP should ratchet up only — check it's below the final price (trail distance)
+    double final_price = 104.0 + 49.0 * 0.2; // 113.8
+    check("trailing: TP below current price (trailing distance)", final_tp < final_price);
+
+    free(pool.slots);
+}
+
+//======================================================================================================
+// [TEST 23: TRAILING TP RATCHET (NEVER DECREASES)]
+//======================================================================================================
+static void test_trailing_ratchet() {
+    printf("\n--- Trailing TP Ratchet ---\n");
+
+    ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+    cfg.warmup_ticks    = 5;
+    cfg.poll_interval   = 1;
+    cfg.tp_hold_score   = FPN_FromDouble<FP>(0.01);
+    cfg.tp_trail_mult   = FPN_FromDouble<FP>(1.0);
+    cfg.sl_trail_mult   = FPN_FromDouble<FP>(2.0);
+
+    PortfolioController<FP> ctrl;
+    PortfolioController_Init(&ctrl, cfg);
+
+    OrderPool<FP> pool;
+    OrderPool_init(&pool, 64);
+    TradeLog log;
+    log.file = 0;
+    log.trade_count = 0;
+
+    // warmup
+    for (int i = 0; i < 5; i++) {
+        PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(100.0), FPN_FromDouble<FP>(500.0), &log);
+    }
+
+    FPN<FP> tp = FPN_FromDouble<FP>(103.0);
+    FPN<FP> sl = FPN_FromDouble<FP>(97.0);
+    int slot = Portfolio_AddPositionWithExits(&ctrl.portfolio, FPN_FromDouble<FP>(10.0),
+                                              FPN_FromDouble<FP>(100.0), tp, sl);
+    ctrl.portfolio.positions[slot].original_tp = tp;
+    ctrl.portfolio.positions[slot].original_sl = sl;
+
+    // phase 1: rising prices — TP should ratchet up
+    for (int i = 0; i < 30; i++) {
+        FPN<FP> price = FPN_FromDouble<FP>(104.0 + (double)i * 0.3);
+        PortfolioController_Tick(&ctrl, &pool, price, FPN_FromDouble<FP>(500.0), &log);
+    }
+    double tp_after_rise = FPN_ToDouble(ctrl.portfolio.positions[slot].take_profit_price);
+
+    // phase 2: slightly falling prices — TP should NOT decrease
+    for (int i = 0; i < 10; i++) {
+        FPN<FP> price = FPN_FromDouble<FP>(112.0 - (double)i * 0.1);
+        PortfolioController_Tick(&ctrl, &pool, price, FPN_FromDouble<FP>(500.0), &log);
+    }
+    double tp_after_dip = FPN_ToDouble(ctrl.portfolio.positions[slot].take_profit_price);
+
+    check("ratchet: TP did not decrease during dip", tp_after_dip >= tp_after_rise - 0.01);
+
+    free(pool.slots);
+}
+
+//======================================================================================================
+// [TEST 24: ORIGINAL TP/SL STORED AT FILL]
+//======================================================================================================
+static void test_original_tp_sl() {
+    printf("\n--- Original TP/SL at Fill ---\n");
+
+    ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+    cfg.warmup_ticks  = 5;
+    cfg.poll_interval = 1;
+
+    PortfolioController<FP> ctrl;
+    PortfolioController_Init(&ctrl, cfg);
+
+    OrderPool<FP> pool;
+    OrderPool_init(&pool, 64);
+    TradeLog log;
+    log.file = 0;
+    log.trade_count = 0;
+
+    // warmup
+    for (int i = 0; i < 5; i++) {
+        PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(100.0), FPN_FromDouble<FP>(500.0), &log);
+    }
+
+    // inject a fill
+    ctrl.state = CONTROLLER_ACTIVE;
+    ctrl.mean_rev.buy_conds_initial = ctrl.buy_conds;
+    pool.slots[0].price    = FPN_FromDouble<FP>(99.0);
+    pool.slots[0].quantity = FPN_FromDouble<FP>(500.0);
+    pool.bitmap = 1;
+
+    PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(99.0), FPN_FromDouble<FP>(500.0), &log);
+
+    if (Portfolio_CountActive(&ctrl.portfolio) > 0) {
+        int idx = __builtin_ctz(ctrl.portfolio.active_bitmap);
+        double live_tp = FPN_ToDouble(ctrl.portfolio.positions[idx].take_profit_price);
+        double orig_tp = FPN_ToDouble(ctrl.portfolio.positions[idx].original_tp);
+        double live_sl = FPN_ToDouble(ctrl.portfolio.positions[idx].stop_loss_price);
+        double orig_sl = FPN_ToDouble(ctrl.portfolio.positions[idx].original_sl);
+
+        check("original_tp matches live TP at fill", fabs(live_tp - orig_tp) < 0.01);
+        check("original_sl matches live SL at fill", fabs(live_sl - orig_sl) < 0.01);
+        check("original_tp is above entry", orig_tp > 99.0);
+        check("original_sl is below entry", orig_sl < 99.0);
+    } else {
+        check("position was created", 0);
+    }
+
+    free(pool.slots);
+}
+
+//======================================================================================================
 // [MAIN]
 //======================================================================================================
 int main() {
@@ -983,6 +1188,10 @@ int main() {
     test_stddev_adaptation();
     test_multi_timeframe();
     test_multi_timeframe_disabled();
+    test_trailing_disabled();
+    test_trailing_activates();
+    test_trailing_ratchet();
+    test_original_tp_sl();
 
     printf("\n======================================\n");
     printf("  RESULTS: %d passed, %d failed\n", tests_passed, tests_failed);
