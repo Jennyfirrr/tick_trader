@@ -548,6 +548,11 @@ static inline char TUI_HandleInput(EngineTUI *tui, PortfolioController<F> *ctrl,
         ctrl->config.offset_stddev_min  = new_cfg.offset_stddev_min;
         ctrl->config.offset_stddev_max  = new_cfg.offset_stddev_max;
         ctrl->config.min_long_slope     = new_cfg.min_long_slope;
+        ctrl->config.tp_hold_score      = new_cfg.tp_hold_score;
+        ctrl->config.tp_trail_mult      = new_cfg.tp_trail_mult;
+        ctrl->config.sl_trail_mult      = new_cfg.sl_trail_mult;
+        ctrl->config.max_hold_ticks     = new_cfg.max_hold_ticks;
+        ctrl->config.min_hold_gain_pct  = new_cfg.min_hold_gain_pct;
         // reset live filters to new config values
         ctrl->mean_rev.live_offset_pct  = new_cfg.entry_offset_pct;
         ctrl->mean_rev.live_vol_mult   = new_cfg.volume_multiplier;
