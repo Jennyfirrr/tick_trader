@@ -411,6 +411,55 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
   }
   ExitBuffer_Clear(&ctrl->exit_buf);
 
+  // TIME-BASED EXIT: close positions held too long with insufficient gain
+  // frees capital trapped in positions where TP became unreachable (e.g. volatility
+  // dropped after entry, making the stddev-based TP too far away)
+  if (ctrl->config.max_hold_ticks > 0) {
+    uint16_t active_check = ctrl->portfolio.active_bitmap;
+    while (active_check) {
+      int idx = __builtin_ctz(active_check);
+      Position<F> *pos = &ctrl->portfolio.positions[idx];
+      uint64_t entry_tick = ctrl->entry_ticks[idx];
+      uint64_t held = (ctrl->total_ticks > entry_tick) ? (ctrl->total_ticks - entry_tick) : 0;
+
+      if (held >= ctrl->config.max_hold_ticks) {
+        // check if gain is below threshold — don't time-exit winners
+        FPN<F> gain = FPN_Sub(current_price, pos->entry_price);
+        FPN<F> gain_pct = FPN_DivNoAssert(gain, pos->entry_price);
+        int low_gain = FPN_LessThan(gain_pct, ctrl->config.min_hold_gain_pct);
+
+        if (low_gain) {
+          double entry_d = FPN_ToDouble(pos->entry_price);
+          double exit_d  = FPN_ToDouble(current_price);
+          double qty_d   = FPN_ToDouble(pos->quantity);
+          double delta_pct = 0.0;
+          if (entry_d != 0.0) delta_pct = ((exit_d - entry_d) / entry_d) * 100.0;
+
+          // compute realized P&L with fees (same as exit buffer drain)
+          FPN<F> gross_proceeds = FPN_Mul(current_price, pos->quantity);
+          FPN<F> exit_fee = FPN_Mul(gross_proceeds, ctrl->config.fee_rate);
+          FPN<F> net_proceeds = FPN_SubSat(gross_proceeds, exit_fee);
+          FPN<F> entry_cost = FPN_Mul(pos->entry_price, pos->quantity);
+          FPN<F> entry_fee_recon = FPN_Mul(entry_cost, ctrl->config.fee_rate);
+          FPN<F> total_entry_cost = FPN_AddSat(entry_cost, entry_fee_recon);
+          FPN<F> pos_pnl = FPN_Sub(net_proceeds, total_entry_cost);
+          ctrl->realized_pnl = FPN_AddSat(ctrl->realized_pnl, pos_pnl);
+
+          ctrl->balance = FPN_AddSat(ctrl->balance, net_proceeds);
+          ctrl->total_fees = FPN_AddSat(ctrl->total_fees, exit_fee);
+          ctrl->losses++;
+          ctrl->gross_losses = FPN_AddSat(ctrl->gross_losses, FPN_Negate(pos_pnl));
+          ctrl->total_hold_ticks += held;
+
+          TradeLog_Sell(trade_log, ctrl->total_ticks, exit_d, qty_d, entry_d,
+                        delta_pct, "TIME");
+          Portfolio_RemovePosition(&ctrl->portfolio, idx);
+        }
+      }
+      active_check &= active_check - 1;
+    }
+  }
+
   // update rolling market stats - tracks price/volume trends for dynamic gate
   // adjustment
   RollingStats_Push(&ctrl->rolling, current_price, current_volume);

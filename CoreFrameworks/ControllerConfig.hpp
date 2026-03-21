@@ -54,6 +54,9 @@ template <unsigned F> struct ControllerConfig {
   FPN<F> tp_hold_score;       // min SNR*R² to hold past TP (0 = disabled, fixed TP)
   FPN<F> tp_trail_mult;       // trailing distance: stddev * this (e.g. 1.0)
   FPN<F> sl_trail_mult;       // trailing SL distance: stddev * this (e.g. 2.0)
+  // time-based exit (disabled by default)
+  uint32_t max_hold_ticks;    // close position if held longer than this (0 = disabled)
+  FPN<F> min_hold_gain_pct;   // only time-exit if gain < this % (e.g. 0.001 = 0.1%)
 };
 //======================================================================================================
 template <unsigned F> inline ControllerConfig<F> ControllerConfig_Default() {
@@ -87,6 +90,8 @@ template <unsigned F> inline ControllerConfig<F> ControllerConfig_Default() {
   cfg.tp_hold_score = FPN_Zero<F>();              // 0 = disabled, use fixed TP
   cfg.tp_trail_mult = FPN_FromDouble<F>(1.0);     // trail 1 stddev below price
   cfg.sl_trail_mult = FPN_FromDouble<F>(2.0);     // trail SL 2 stddevs below price
+  cfg.max_hold_ticks = 0;                          // 0 = disabled
+  cfg.min_hold_gain_pct = FPN_FromDouble<F>(0.001); // 0.1% — only time-exit if below this gain
   return cfg;
 }
 //======================================================================================================
@@ -199,6 +204,10 @@ inline ControllerConfig<F> ControllerConfig_Load(const char *filepath) {
       double v = atof(val); if (v < 0) v = 0;
       cfg.sl_trail_mult = FPN_FromDouble<F>(v);
     }
+    else if (strcmp(key, "max_hold_ticks") == 0)
+      cfg.max_hold_ticks = (uint32_t)atol(val);
+    else if (strcmp(key, "min_hold_gain_pct") == 0)
+      cfg.min_hold_gain_pct = FPN_FromDouble<F>(atof(val) / 100.0);
   }
 
   fclose(f);

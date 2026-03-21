@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.7.1] - 2026-03-21 (branch: time-based-exit)
+
+### Added
+- **Time-based exit** — closes positions held longer than `max_hold_ticks` when gain
+  is below `min_hold_gain_pct`. Frees capital trapped in positions where TP became
+  unreachable (e.g. volatility dropped after entry, making the stddev-based TP too
+  far away). Logged as "TIME" exit reason in the trade CSV. Runs on slow path, zero
+  hot-path changes.
+  - Config: `max_hold_ticks=50000` (~4-5 hours), `min_hold_gain_pct=0.10` (0.1%)
+  - Only time-exits low-gain positions — winners are kept regardless of hold time
+  - Disabled by default (`max_hold_ticks=0`)
+
+### Fixed
+- Config reload now includes trailing TP keys (`tp_hold_score`, `tp_trail_mult`,
+  `sl_trail_mult`) and time-based exit keys (`max_hold_ticks`, `min_hold_gain_pct`).
+
 ## [0.7.0] - 2026-03-20 (branch: trailing-tp)
 
 ### Added
