@@ -27,7 +27,21 @@
 #define CONTROLLER_ACTIVE 1
 //======================================================================================================
 template <unsigned F> struct PortfolioController {
+  //================================================================================================
+  // HOT — touched every tick, grouped for L1 cache locality
+  // target: all hot fields within first ~3KB so they share cache lines
+  //================================================================================================
   Portfolio<F> portfolio;
+  uint64_t prev_bitmap;   // fill detection: pool->bitmap & ~prev_bitmap
+  uint64_t tick_count;    // slow-path gate: tick_count < config.poll_interval
+  uint64_t total_ticks;
+  BuySideGateConditions<F> buy_conds;
+  ExitBuffer<F> exit_buf;
+
+  //================================================================================================
+  // WARM — accessed on fills or slow path, but not every tick
+  //================================================================================================
+  ControllerConfig<F> config;
   FPN<F> portfolio_delta; // unrealized P&L (current open positions)
   FPN<F> realized_pnl;    // cumulative realized P&L (closed positions)
   FPN<F> balance;    // paper trading balance (deducted on buy, added on sell)
@@ -44,30 +58,20 @@ template <unsigned F> struct PortfolioController {
   uint64_t entry_ticks[16]; // tick at which each position was entered (indexed
                             // by slot)
 
-  RollingStats<F> rolling;
-
-  BuySideGateConditions<F> buy_conds;
-
-  int strategy_id;
-  MeanReversionState<F> mean_rev;
-
-  ExitBuffer<F> exit_buf;
-  TradeLogBuffer trade_buf;  // buffered trade log — hot path pushes, slow path drains
-
-  uint64_t prev_bitmap;
-  uint64_t tick_count;
-  uint64_t total_ticks;
-
   int state;
   FPN<F> price_sum;
   FPN<F> volume_sum;
   uint64_t warmup_count;
 
-  ControllerConfig<F> config;
+  int strategy_id;
+  MeanReversionState<F> mean_rev;
+  TradeLogBuffer trade_buf;  // buffered trade log — hot path pushes, slow path drains
 
-  // cold data — only accessed on slow path, placed last for cache layout
-  // (24KB buffer stays past hot-path fields so portfolio/buy_conds/exit_buf stay in L1)
-  RollingStats<F, 512> rolling_long;
+  //================================================================================================
+  // COLD — slow path only, kept at end to avoid polluting hot cache lines
+  //================================================================================================
+  RollingStats<F> rolling;
+  RollingStats<F, 512> *rolling_long;  // heap-allocated (24KB), slow path only
 };
 //======================================================================================================
 // [INIT]
@@ -121,7 +125,10 @@ inline void PortfolioController_Init(PortfolioController<F> *ctrl,
 
   ctrl->config = config;
 
-  ctrl->rolling_long = RollingStats_Init<F, 512>();
+  // heap-allocate rolling_long (24KB) — keeps it out of the hot struct
+  if (ctrl->rolling_long) free(ctrl->rolling_long);  // safe on reinit (24h reconnect)
+  ctrl->rolling_long = (RollingStats<F, 512>*)malloc(sizeof(RollingStats<F, 512>));
+  *ctrl->rolling_long = RollingStats_Init<F, 512>();
 }
 //======================================================================================================
 // [TICK - MAIN CONTROLLER FUNCTION]
@@ -147,7 +154,7 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
 
     // feed rolling stats during warmup (both windows so long window has data at activation)
     RollingStats_Push(&ctrl->rolling, current_price, current_volume);
-    RollingStats_Push(&ctrl->rolling_long, current_price, current_volume);
+    RollingStats_Push(ctrl->rolling_long, current_price, current_volume);
 
     if (ctrl->warmup_count >= ctrl->config.warmup_ticks) {
       MeanReversion_Init(&ctrl->mean_rev, &ctrl->rolling, &ctrl->buy_conds);
@@ -155,7 +162,7 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
       // without this, there's a poll_interval gap where buy_conds are set but the
       // gate hasn't been applied — BuyGate could trigger a fill in a downtrend
       ctrl->buy_conds = MeanReversion_BuySignal(&ctrl->mean_rev, &ctrl->rolling,
-                                                 &ctrl->rolling_long, &ctrl->config);
+                                                 ctrl->rolling_long, &ctrl->config);
       ctrl->state = CONTROLLER_ACTIVE;
     }
     return;
@@ -465,7 +472,7 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
   // update rolling market stats - tracks price/volume trends for dynamic gate
   // adjustment
   RollingStats_Push(&ctrl->rolling, current_price, current_volume);
-  RollingStats_Push(&ctrl->rolling_long, current_price, current_volume);
+  RollingStats_Push(ctrl->rolling_long, current_price, current_volume);
 
   // compute unrealized P&L and estimate exit fees on open positions
   // gross P&L is what Portfolio_ComputePnL returns (price delta * qty)
@@ -486,7 +493,7 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
   MeanReversion_ExitAdjust(&ctrl->portfolio, current_price, &ctrl->rolling,
                             &ctrl->mean_rev, &ctrl->config);
   ctrl->buy_conds = MeanReversion_BuySignal(&ctrl->mean_rev, &ctrl->rolling,
-                                             &ctrl->rolling_long, &ctrl->config);
+                                             ctrl->rolling_long, &ctrl->config);
 }
 //======================================================================================================
 // [SNAPSHOT SAVE/LOAD]

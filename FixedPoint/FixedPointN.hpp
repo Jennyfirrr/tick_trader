@@ -909,5 +909,53 @@ template <unsigned F> inline FPN<F> FPN_SmoothStep(FPN<F> edge0, FPN<F> edge1, F
 }
 
 //======================================================================================================
+// [NATIVE 128-BIT SPECIALIZATIONS FOR F=64]
+//======================================================================================================
+// when USE_NATIVE_128 is defined, FPN<64> operations forward to FixedPoint64.hpp
+// which uses __uint128_t — single native instructions instead of 2-word loops
+// reduces instruction cache footprint on the hot path
+//======================================================================================================
+#ifdef USE_NATIVE_128
+#include "FixedPoint64.hpp"
+
+// zero-cost conversions (identical memory layout on little-endian x86)
+static inline FP64 _to_fp64(FPN<64> v) {
+    FP64 r; r.magnitude = *((__uint128_t*)v.w); r.sign = v.sign; return r;
+}
+static inline FPN<64> _from_fp64(FP64 v) {
+    FPN<64> r; *((__uint128_t*)r.w) = v.magnitude; r.sign = v.sign; return r;
+}
+
+// arithmetic
+template<> inline FPN<64> FPN_AddSat<64>(FPN<64> a, FPN<64> b) { return _from_fp64(FP64_AddSat(_to_fp64(a), _to_fp64(b))); }
+template<> inline FPN<64> FPN_SubSat<64>(FPN<64> a, FPN<64> b) { return _from_fp64(FP64_SubSat(_to_fp64(a), _to_fp64(b))); }
+template<> inline FPN<64> FPN_Mul<64>(FPN<64> a, FPN<64> b)    { return _from_fp64(FP64_Mul(_to_fp64(a), _to_fp64(b))); }
+template<> inline FPN<64> FPN_DivNoAssert<64>(FPN<64> a, FPN<64> b) { return _from_fp64(FP64_DivNoAssert(_to_fp64(a), _to_fp64(b))); }
+template<> inline FPN<64> FPN_Sub<64>(FPN<64> a, FPN<64> b)    { return _from_fp64(FP64_SubSat(_to_fp64(a), _to_fp64(b))); }
+
+// comparisons
+template<> inline int FPN_Equal<64>(FPN<64> a, FPN<64> b)              { return FP64_Equal(_to_fp64(a), _to_fp64(b)); }
+template<> inline int FPN_LessThan<64>(FPN<64> a, FPN<64> b)           { return FP64_LessThan(_to_fp64(a), _to_fp64(b)); }
+template<> inline int FPN_LessThanOrEqual<64>(FPN<64> a, FPN<64> b)    { return FP64_LessThanOrEqual(_to_fp64(a), _to_fp64(b)); }
+template<> inline int FPN_GreaterThan<64>(FPN<64> a, FPN<64> b)        { return FP64_GreaterThan(_to_fp64(a), _to_fp64(b)); }
+template<> inline int FPN_GreaterThanOrEqual<64>(FPN<64> a, FPN<64> b) { return FP64_GreaterThanOrEqual(_to_fp64(a), _to_fp64(b)); }
+
+// utility
+template<> inline FPN<64> FPN_Negate<64>(FPN<64> v)  { return _from_fp64(FP64_Negate(_to_fp64(v))); }
+template<> inline int FPN_IsZero<64>(FPN<64> v)       { return FP64_IsZero(_to_fp64(v)); }
+template<> inline FPN<64> FPN_Abs<64>(FPN<64> v)      { return _from_fp64(FP64_Abs(_to_fp64(v))); }
+template<> inline FPN<64> FPN_Min<64>(FPN<64> a, FPN<64> b) { return _from_fp64(FP64_Min(_to_fp64(a), _to_fp64(b))); }
+template<> inline FPN<64> FPN_Max<64>(FPN<64> a, FPN<64> b) { return _from_fp64(FP64_Max(_to_fp64(a), _to_fp64(b))); }
+
+// conversion
+template<> inline FPN<64> FPN_FromDouble<64>(double d) { return _from_fp64(FP64_FromDouble(d)); }
+template<> inline double FPN_ToDouble<64>(FPN<64> v)   { return FP64_ToDouble(_to_fp64(v)); }
+
+// math (slow path, but still smaller code)
+template<> inline FPN<64> FPN_Sqrt<64>(FPN<64> v) { return _from_fp64(FP64_Sqrt(_to_fp64(v))); }
+
+#endif // USE_NATIVE_128
+
+//======================================================================================================
 //======================================================================================================
 #endif // FIXED_POINT_N_H

@@ -18,10 +18,10 @@ g++ -std=c++17 -O2 -lssl -lcrypto -o engine main.cpp
 ## Architecture
 
 ```
-HOT PATH (every tick, ~60-90ns):
-  BuyGate          branchless price+volume check
-  PositionExitGate branchless bitmap walk, TP/SL per position
-  FillConsumption  consume fills, position sizing, risk checks
+HOT PATH (every tick, p50 ~950ns, min ~60ns):
+  BuyGate          branchless price+volume check          (~80ns avg)
+  PositionExitGate branchless bitmap walk, TP/SL per pos  (~130ns/pos)
+  FillConsumption  consume fills, position sizing, risk   (~750ns avg, ~4us on fill)
 
 SLOW PATH (every 100 ticks):
   RollingStats     128-tick + 512-tick market statistics
@@ -47,14 +47,28 @@ All strategy parameters in `engine.cfg` with inline documentation. Hot-reload vi
 g++ -std=c++17 -O2 -lssl -lcrypto -o engine main.cpp
 
 # multicore TUI — engine on core 0, TUI on core 1 (no L1 cache pollution)
-g++ -std=c++17 -O2 -lssl -lcrypto -DMULTICORE_TUI -lpthread -o engine_mc main.cpp
+g++ -std=c++17 -O2 -DMULTICORE_TUI -lssl -lcrypto -lpthread -o engine main.cpp
 
-# latency profiling — RDTSCP measurement, displays in TUI
-g++ -std=c++17 -O2 -lssl -lcrypto -DLATENCY_PROFILING -o engine_prof main.cpp
+# latency profiling — per-component RDTSCP breakdown in TUI (4 rdtscp/tick)
+g++ -std=c++17 -O2 -DLATENCY_PROFILING -DMULTICORE_TUI -lssl -lcrypto -lpthread -o engine main.cpp
 
-# bench — profiling with TUI disabled, clean measurements to stderr
-g++ -std=c++17 -O2 -lssl -lcrypto -DLATENCY_PROFILING -DLATENCY_BENCH -o engine_bench main.cpp
+# latency lite — total-only measurement, lower overhead (2 rdtscp/tick)
+g++ -std=c++17 -O2 -DLATENCY_PROFILING -DLATENCY_LITE -DMULTICORE_TUI -lssl -lcrypto -lpthread -o engine main.cpp
+
+# bench — profiling with TUI disabled, stats to stderr
+g++ -std=c++17 -O2 -DLATENCY_PROFILING -DLATENCY_BENCH -lssl -lcrypto -o engine main.cpp
 ```
+
+### Compile Flags
+
+| Flag | Effect |
+|------|--------|
+| `MULTICORE_TUI` | Engine on core 0, TUI on core 1. Requires `-lpthread` |
+| `LATENCY_PROFILING` | RDTSCP timing with per-component breakdown, p50/p95 histogram |
+| `LATENCY_LITE` | Total-only timing (2 rdtscp vs 4), ~70ns less measurement overhead |
+| `LATENCY_BENCH` | Profiling with TUI disabled, dumps stats to stderr |
+| `USE_NATIVE_128` | FPN<64> ops forward to FP64 `__uint128_t` (experimental, adds overhead) |
+| `BUSY_POLL` | Spin-poll instead of sleeping in poll() (experimental, wastes CPU) |
 
 ## TUI Controls
 
