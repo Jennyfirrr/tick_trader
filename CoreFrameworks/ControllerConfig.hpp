@@ -102,9 +102,9 @@ template <unsigned F> inline ControllerConfig<F> ControllerConfig_Default() {
   cfg.max_hold_ticks = 0;                          // 0 = disabled
   cfg.min_hold_gain_pct = FPN_FromDouble<F>(0.001); // 0.1% — only time-exit if below this gain
   // regime detection
-  cfg.regime_slope_threshold = FPN_FromDouble<F>(0.001);  // 0.1%/tick relative slope = trending
+  cfg.regime_slope_threshold = FPN_FromDouble<F>(0.00002); // 0.002%/tick ≈ $180 move over 128-tick window at BTC $70k
   cfg.regime_r2_threshold    = FPN_FromDouble<F>(0.70);   // 70% consistency for trending
-  cfg.regime_volatile_stddev = FPN_FromDouble<F>(0.003);  // 0.3% stddev/price = volatile
+  cfg.regime_volatile_stddev = FPN_FromDouble<F>(0.0005); // 0.05% stddev/price ≈ $35 at BTC $70k
   cfg.regime_hysteresis      = 5;                          // 5 slow-path cycles before switch
   // momentum strategy
   cfg.momentum_breakout_mult = FPN_FromDouble<F>(1.5);    // buy 1.5σ above avg

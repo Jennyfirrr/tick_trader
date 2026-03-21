@@ -71,6 +71,11 @@ template <unsigned F> struct PortfolioController {
   MeanReversionState<F> mean_rev;
   MomentumState<F> momentum;
   RegimeState<F> regime;
+
+  // regime detection's own P&L regression — independent of active strategy
+  RegressionFeederX<F> regime_feeder;
+  LinearRegression3XResult<F> regime_regression;
+  int regime_has_regression;
   TradeLogBuffer trade_buf;  // buffered trade log — hot path pushes, slow path drains
 
   //================================================================================================
@@ -131,6 +136,9 @@ inline void PortfolioController_Init(PortfolioController<F> *ctrl,
   ctrl->momentum.has_regression = 0;
   // regime detector
   Regime_Init(&ctrl->regime, config.regime_hysteresis);
+  ctrl->regime_feeder = RegressionFeederX_Init<F>();
+  ctrl->regime_regression = {};
+  ctrl->regime_has_regression = 0;
 
   ExitBuffer_Init(&ctrl->exit_buf);
   TradeLogBuffer_Init(&ctrl->trade_buf);
@@ -526,11 +534,20 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
   FPN<F> estimated_exit_fees = FPN_Mul(portfolio_value, ctrl->config.fee_rate);
   ctrl->portfolio_delta = FPN_Sub(gross_pnl, estimated_exit_fees);
 
+  // always update regime regression — independent of active strategy so R² stays fresh
+  RegressionFeederX_Push(&ctrl->regime_feeder, ctrl->portfolio_delta);
+  if (ctrl->regime_feeder.count >= MAX_WINDOW) {
+    ctrl->regime_regression = RegressionFeederX_Compute(&ctrl->regime_feeder);
+    ctrl->regime_has_regression = 1;
+  }
+
   // regime detection: classify market state and switch strategy if needed
   {
+    FPN<F> regime_r2 = ctrl->regime_has_regression
+        ? ctrl->regime_regression.r_squared : FPN_Zero<F>();
     int old_regime = ctrl->regime.current_regime;
     Regime_Classify(&ctrl->regime, &ctrl->rolling, ctrl->rolling_long,
-                    ctrl->mean_rev.last_regression.r_squared, &ctrl->config);
+                    regime_r2, &ctrl->config);
     int new_regime = ctrl->regime.current_regime;
     if (new_regime != old_regime) {
       int old_strategy = ctrl->strategy_id;

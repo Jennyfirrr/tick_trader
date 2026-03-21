@@ -568,6 +568,8 @@ static void test_max_shift() {
     cfg.r2_threshold  = FPN_FromDouble<FP>(0.01);
     cfg.warmup_ticks  = 5;
     cfg.poll_interval = 1;
+    // pin to RANGING — this test is about MR max_shift, not regime detection
+    cfg.regime_slope_threshold = FPN_FromDouble<FP>(1.0);
 
     PortfolioController<FP> ctrl = {};
     PortfolioController_Init(&ctrl, cfg);
