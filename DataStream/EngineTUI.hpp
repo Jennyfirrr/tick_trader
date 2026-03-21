@@ -240,7 +240,7 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
         snprintf(pos_buf[pln++], POS_LINE_W,
                  C_WHEAT "#%-2d " C_FG "$%.2f" C_DIM "->" C_WHEAT "$%.2f"
                  " %s%+.2f" C_RESET,
-                 idx, entry, price, C_PNL(price_diff), price_diff);
+                 displayed, entry, price, C_PNL(price_diff), price_diff);
         snprintf(pos_buf[pln++], POS_LINE_W,
                  C_SAND "    qty:" C_FG "%.6f" C_SAND " val:" C_FG "$%.2f" C_RESET,
                  qty, value);
@@ -849,7 +849,7 @@ static inline void TUI_Render_Snapshot(EngineTUI *tui, const TUISnapshot *s) {
             snprintf(pos_buf[pln++], SNAP_POS_W, C_SURF "·" C_RESET);
         snprintf(pos_buf[pln++], SNAP_POS_W,
                  C_WHEAT "#%-2d " C_FG "$%.2f" C_DIM "->" C_WHEAT "$%.2f %s%+.2f" C_RESET,
-                 ps->idx, ps->entry, s->price, C_PNL(diff), diff);
+                 displayed, ps->entry, s->price, C_PNL(diff), diff);
         snprintf(pos_buf[pln++], SNAP_POS_W,
                  C_SAND "    qty:" C_FG "%.6f" C_SAND " val:" C_FG "$%.2f" C_RESET, ps->qty, ps->value);
         const char *trail_status = "";
