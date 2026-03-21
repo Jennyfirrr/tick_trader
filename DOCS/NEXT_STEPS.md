@@ -110,7 +110,16 @@ queue + balance allocation), main.cpp (multi-thread spawn), TUI (multi-engine sn
 **What stays the same:** BuyGate, ExitGate, PortfolioController_Tick, strategies,
 regime detection — all per-currency, no changes needed
 
-### 5.2 Correlation awareness
+### 5.2 Additional data streams
+Currently using `@aggTrade` (individual trades). Other free Binance streams:
+- `@depth` — orderbook bid/ask levels (~10 updates/sec even in calm markets).
+  Orderbook imbalance (more bids = buying pressure) is a strong regime signal.
+- `@kline_1s` — 1-second OHLCV candles, guaranteed 1/sec minimum. Useful for
+  consistent tick rate instead of variable trade frequency.
+- Multiple symbols simultaneously — subscribe to BTC + ETH + SOL on separate
+  websocket connections for more total data. See 5.1 multi-currency architecture.
+
+### 5.3 Correlation awareness
 Track correlation between positions across symbols. Prevent concentrated exposure in
 correlated assets (BTC + ETH move together ~70% of the time). Portfolio Manager should
 reduce position size when entering a correlated asset that already has exposure.
