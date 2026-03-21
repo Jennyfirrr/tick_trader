@@ -1093,8 +1093,10 @@ static inline void *tui_thread_fn(void *arg) {
     setlocale(LC_ALL, "");
 
     notcurses_options nc_opts = {};
-    nc_opts.flags = NCOPTION_SUPPRESS_BANNERS;
-    struct notcurses *nc = notcurses_init(&nc_opts, stdout);
+    nc_opts.flags = NCOPTION_SUPPRESS_BANNERS | NCOPTION_NO_ALTERNATE_SCREEN
+                  | NCOPTION_NO_FONT_CHANGES | NCOPTION_DRAIN_INPUT
+                  | NCOPTION_NO_QUIT_SIGHANDLERS | NCOPTION_INHIBIT_SETLOCALE;
+    struct notcurses *nc = notcurses_core_init(&nc_opts, stdout);
     if (!nc) {
         fprintf(stderr, "[TUI] notcurses_init failed\n");
         return NULL;
@@ -1103,6 +1105,8 @@ static inline void *tui_thread_fn(void *arg) {
     struct ncplane *stdp = notcurses_stdplane(nc);
     unsigned term_h, term_w;
     ncplane_dim_yx(stdp, &term_h, &term_w);
+    fprintf(stderr, "[TUI] notcurses init OK: %ux%u, TERM=%s\n",
+            term_w, term_h, getenv("TERM") ? getenv("TERM") : "(null)");
 
     int current_layout = NC_LAYOUT_STANDARD;
 

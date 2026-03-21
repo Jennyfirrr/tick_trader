@@ -669,6 +669,7 @@ inline void PortfolioController_HotReload(PortfolioController<F> *ctrl,
     ctrl->config.regime_slope_threshold = new_cfg.regime_slope_threshold;
     ctrl->config.regime_r2_threshold    = new_cfg.regime_r2_threshold;
     ctrl->config.regime_volatile_stddev = new_cfg.regime_volatile_stddev;
+    ctrl->config.regime_vol_spike_ratio = new_cfg.regime_vol_spike_ratio;
     ctrl->config.regime_hysteresis      = new_cfg.regime_hysteresis;
     ctrl->config.momentum_breakout_mult = new_cfg.momentum_breakout_mult;
     ctrl->config.momentum_tp_mult       = new_cfg.momentum_tp_mult;
