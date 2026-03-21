@@ -40,7 +40,7 @@ int main() {
         return 1;
     }
 
-    PortfolioController<FP> ctrl;
+    PortfolioController<FP> ctrl = {};
     PortfolioController_Init(&ctrl, ccfg);
 
     OrderPool<FP> pool;

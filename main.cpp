@@ -88,6 +88,7 @@ int main(int argc, char *argv[]) {
     // init controller
     //==================================================================================================
     PortfolioController<FP> ctrl;
+    ctrl.rolling_long = NULL;  // Init checks this before free on reinit
     PortfolioController_Init(&ctrl, ccfg);
 
     // try to load snapshot from previous session
@@ -156,6 +157,13 @@ int main(int argc, char *argv[]) {
         tui.tsc_per_ns = (double)(cal_end - cal_start) / 10000000.0; // 10ms = 10M ns
         tui.hot_min = UINT64_MAX; tui.hot_max = 0; tui.hot_sum = 0; tui.hot_count = 0;
         tui.slow_min = UINT64_MAX; tui.slow_max = 0; tui.slow_sum = 0; tui.slow_count = 0;
+        tui.bg_sum = 0; tui.bg_max = 0;
+        tui.eg_sum = 0; tui.eg_max = 0;
+        tui.pc_sum = 0; tui.pc_max = 0;
+        tui.pc_fill_sum = 0; tui.pc_fill_max = 0; tui.pc_fill_count = 0;
+        tui.pc_nofill_sum = 0; tui.pc_nofill_max = 0; tui.pc_nofill_count = 0;
+        tui.eg_pos_sum = 0;
+        memset(tui.hot_hist, 0, sizeof(tui.hot_hist));
         fprintf(stderr, "[LATENCY] TSC calibrated: %.2f cycles/ns (%.1f GHz)\n",
                 tui.tsc_per_ns, tui.tsc_per_ns);
     }
@@ -169,7 +177,14 @@ int main(int argc, char *argv[]) {
     int has_data = 0;  // dont run engine until we have at least one real tick
 
     while (running) {
+#ifdef BUSY_POLL
+        // spin-poll: never sleep, keeps L1/L2/icache permanently warm
+        // trades CPU power for minimum latency (~100-200ns vs ~1000ns)
+        int ready;
+        while (!(ready = BinanceStream_Poll(&bs, 0))) {}
+#else
         int ready = BinanceStream_Poll(&bs, bcfg.poll_timeout_ms);
+#endif
 
         //==============================================================================================
         // DATA INGESTION - drain all buffered frames
@@ -212,7 +227,7 @@ int main(int argc, char *argv[]) {
             int is_paused = FPN_IsZero(ctrl.buy_conds.price);
             if (is_paused)
                 ctrl.buy_conds = MeanReversion_BuySignal(&ctrl.mean_rev, &ctrl.rolling,
-                                                          &ctrl.rolling_long, &ctrl.config);
+                                                          ctrl.rolling_long, &ctrl.config);
             else {
                 ctrl.buy_conds.price  = FPN_Zero<FP>();
                 ctrl.buy_conds.volume = FPN_Zero<FP>();
@@ -298,15 +313,22 @@ int main(int argc, char *argv[]) {
         if (has_data) {
 #ifdef LATENCY_PROFILING
             unsigned int tsc_aux;
-            uint64_t tick_start = __rdtscp(&tsc_aux);
+            uint64_t t0 = __rdtscp(&tsc_aux);
 #endif
             BuyGate(&ctrl.buy_conds, &last_stream, &pool);
+#if defined(LATENCY_PROFILING) && !defined(LATENCY_LITE)
+            uint64_t t1 = __rdtscp(&tsc_aux);
+#endif
             if (ctrl.portfolio.active_bitmap)
                 PositionExitGate(&ctrl.portfolio, last_stream.price, &ctrl.exit_buf, ctrl.total_ticks);
+#if defined(LATENCY_PROFILING) && !defined(LATENCY_LITE)
+            uint64_t t2 = __rdtscp(&tsc_aux);
+            uint32_t buys_before = ctrl.total_buys;
+#endif
             PortfolioController_Tick(&ctrl, &pool, last_stream.price, last_stream.volume, &log);
 #ifdef LATENCY_PROFILING
-            uint64_t tick_end = __rdtscp(&tsc_aux);
-            uint64_t cycles = tick_end - tick_start;
+            uint64_t t3 = __rdtscp(&tsc_aux);
+            uint64_t cycles = t3 - t0;
             // tick_count == 0 means slow path just ran, > 0 means hot path only
             if (ctrl.tick_count == 0) {
                 if (cycles < tui.slow_min) tui.slow_min = cycles;
@@ -318,6 +340,26 @@ int main(int argc, char *argv[]) {
                 if (cycles > tui.hot_max) tui.hot_max = cycles;
                 tui.hot_sum += cycles;
                 tui.hot_count++;
+                // log2 histogram bucket for percentile tracking
+                int bucket = (cycles > 0) ? (63 - __builtin_clzll(cycles)) : 0;
+                if (bucket > 20) bucket = 20;
+                tui.hot_hist[bucket]++;
+#ifndef LATENCY_LITE
+                // per-component breakdown
+                uint64_t bg = t1 - t0, eg = t2 - t1, pc = t3 - t2;
+                tui.bg_sum += bg; if (bg > tui.bg_max) tui.bg_max = bg;
+                tui.eg_sum += eg; if (eg > tui.eg_max) tui.eg_max = eg;
+                tui.pc_sum += pc; if (pc > tui.pc_max) tui.pc_max = pc;
+                // fill vs no-fill PCTick + per-position ExitGate cost
+                tui.eg_pos_sum += __builtin_popcount(ctrl.portfolio.active_bitmap);
+                if (ctrl.total_buys > buys_before) {
+                    tui.pc_fill_sum += pc; if (pc > tui.pc_fill_max) tui.pc_fill_max = pc;
+                    tui.pc_fill_count++;
+                } else {
+                    tui.pc_nofill_sum += pc; if (pc > tui.pc_nofill_max) tui.pc_nofill_max = pc;
+                    tui.pc_nofill_count++;
+                }
+#endif
             }
 #endif
 
@@ -337,6 +379,40 @@ int main(int argc, char *argv[]) {
                     shared.snapshots[back].hot_min_ns = (double)tui.hot_min / tui.tsc_per_ns;
                     shared.snapshots[back].hot_max_ns = (double)tui.hot_max / tui.tsc_per_ns;
                     shared.snapshots[back].hot_count  = tui.hot_count;
+                    // percentiles from log2 histogram
+                    {
+                        uint64_t p50t = tui.hot_count / 2, p95t = tui.hot_count * 95 / 100;
+                        uint64_t cum = 0;
+                        shared.snapshots[back].hot_p50_ns = 0;
+                        shared.snapshots[back].hot_p95_ns = 0;
+                        for (int i = 0; i <= 20; i++) {
+                            cum += tui.hot_hist[i];
+                            // report midpoint of bucket: 1.5 * 2^i cycles
+                            if (!shared.snapshots[back].hot_p50_ns && cum >= p50t)
+                                shared.snapshots[back].hot_p50_ns = (1.5 * (1ULL << i)) / tui.tsc_per_ns;
+                            if (!shared.snapshots[back].hot_p95_ns && cum >= p95t)
+                                shared.snapshots[back].hot_p95_ns = (1.5 * (1ULL << i)) / tui.tsc_per_ns;
+                        }
+                    }
+                    // per-component breakdown
+                    shared.snapshots[back].bg_avg_ns = (double)tui.bg_sum / tui.hot_count / tui.tsc_per_ns;
+                    shared.snapshots[back].bg_max_ns = (double)tui.bg_max / tui.tsc_per_ns;
+                    shared.snapshots[back].eg_avg_ns = (double)tui.eg_sum / tui.hot_count / tui.tsc_per_ns;
+                    shared.snapshots[back].eg_max_ns = (double)tui.eg_max / tui.tsc_per_ns;
+                    shared.snapshots[back].eg_per_pos_ns = (tui.eg_pos_sum > 0)
+                        ? (double)tui.eg_sum / tui.eg_pos_sum / tui.tsc_per_ns : 0;
+                    shared.snapshots[back].pc_avg_ns = (double)tui.pc_sum / tui.hot_count / tui.tsc_per_ns;
+                    shared.snapshots[back].pc_max_ns = (double)tui.pc_max / tui.tsc_per_ns;
+                    if (tui.pc_fill_count > 0) {
+                        shared.snapshots[back].pc_fill_avg_ns = (double)tui.pc_fill_sum / tui.pc_fill_count / tui.tsc_per_ns;
+                        shared.snapshots[back].pc_fill_max_ns = (double)tui.pc_fill_max / tui.tsc_per_ns;
+                        shared.snapshots[back].pc_fill_count = tui.pc_fill_count;
+                    }
+                    if (tui.pc_nofill_count > 0) {
+                        shared.snapshots[back].pc_nofill_avg_ns = (double)tui.pc_nofill_sum / tui.pc_nofill_count / tui.tsc_per_ns;
+                        shared.snapshots[back].pc_nofill_max_ns = (double)tui.pc_nofill_max / tui.tsc_per_ns;
+                        shared.snapshots[back].pc_nofill_count = tui.pc_nofill_count;
+                    }
                 }
                 if (tui.slow_count > 0) {
                     shared.snapshots[back].slow_avg_ns = (double)tui.slow_sum / tui.slow_count / tui.tsc_per_ns;
@@ -387,9 +463,34 @@ int main(int argc, char *argv[]) {
         double hot_avg = (double)tui.hot_sum / tui.hot_count / tui.tsc_per_ns;
         double hot_min_ns = (double)tui.hot_min / tui.tsc_per_ns;
         double hot_max_ns = (double)tui.hot_max / tui.tsc_per_ns;
-        double hot_p99 = hot_max_ns; // TODO: proper percentile tracking
-        fprintf(stderr, "  Hot path:         avg %.0fns  min %.0fns  max %.0fns  (%lu ticks)\n",
-                hot_avg, hot_min_ns, hot_max_ns, (unsigned long)tui.hot_count);
+        double hot_p50 = 0, hot_p95 = 0;
+        { uint64_t p50t = tui.hot_count/2, p95t = tui.hot_count*95/100, cum = 0;
+          for (int i = 0; i <= 20; i++) { cum += tui.hot_hist[i];
+            if (!hot_p50 && cum >= p50t) hot_p50 = (1.5*(1ULL<<i))/tui.tsc_per_ns;
+            if (!hot_p95 && cum >= p95t) hot_p95 = (1.5*(1ULL<<i))/tui.tsc_per_ns; } }
+        fprintf(stderr, "  Hot path:         avg %.0fns  min %.0fns  max %.0fns  p50 %.0fns  p95 %.0fns  (%lu ticks)\n",
+                hot_avg, hot_min_ns, hot_max_ns, hot_p50, hot_p95, (unsigned long)tui.hot_count);
+        double bg_avg = (double)tui.bg_sum / tui.hot_count / tui.tsc_per_ns;
+        double bg_max_ns = (double)tui.bg_max / tui.tsc_per_ns;
+        double eg_avg = (double)tui.eg_sum / tui.hot_count / tui.tsc_per_ns;
+        double eg_max_ns = (double)tui.eg_max / tui.tsc_per_ns;
+        double pc_avg = (double)tui.pc_sum / tui.hot_count / tui.tsc_per_ns;
+        double pc_max_ns = (double)tui.pc_max / tui.tsc_per_ns;
+        fprintf(stderr, "    buygate:        avg %.0fns  max %.0fns\n", bg_avg, bg_max_ns);
+        double eg_per_pos = (tui.eg_pos_sum > 0)
+            ? (double)tui.eg_sum / tui.eg_pos_sum / tui.tsc_per_ns : 0;
+        fprintf(stderr, "    exitgate:       avg %.0fns  max %.0fns  (%.0fns/pos)\n", eg_avg, eg_max_ns, eg_per_pos);
+        fprintf(stderr, "    pctick:         avg %.0fns  max %.0fns\n", pc_avg, pc_max_ns);
+        if (tui.pc_nofill_count > 0) {
+            double nf_avg = (double)tui.pc_nofill_sum / tui.pc_nofill_count / tui.tsc_per_ns;
+            double nf_max = (double)tui.pc_nofill_max / tui.tsc_per_ns;
+            fprintf(stderr, "      no-fill:      avg %.0fns  max %.0fns  (%lu)\n", nf_avg, nf_max, (unsigned long)tui.pc_nofill_count);
+        }
+        if (tui.pc_fill_count > 0) {
+            double f_avg = (double)tui.pc_fill_sum / tui.pc_fill_count / tui.tsc_per_ns;
+            double f_max = (double)tui.pc_fill_max / tui.tsc_per_ns;
+            fprintf(stderr, "      fill:         avg %.0fns  max %.0fns  (%lu)\n", f_avg, f_max, (unsigned long)tui.pc_fill_count);
+        }
     }
     if (tui.slow_count > 0) {
         double slow_avg = (double)tui.slow_sum / tui.slow_count / tui.tsc_per_ns;
@@ -419,6 +520,7 @@ int main(int argc, char *argv[]) {
     TradeLog_Close(&log);
     BinanceStream_Close(&bs);
     free(pool.slots);
+    free(ctrl.rolling_long);
 
     return 0;
 }

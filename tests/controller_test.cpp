@@ -279,7 +279,7 @@ static void test_fill_timing() {
     cfg.warmup_ticks = 0; // skip warmup for this test
     cfg.poll_interval = 1000; // slow path won't run during test
 
-    PortfolioController<FP> ctrl;
+    PortfolioController<FP> ctrl = {};
     PortfolioController_Init(&ctrl, cfg);
     ctrl.state = CONTROLLER_ACTIVE; // force active
     ctrl.buy_conds.price  = FPN_FromDouble<FP>(100.0);
@@ -325,7 +325,7 @@ static void test_backpressure() {
     cfg.warmup_ticks = 0;
     cfg.poll_interval = 1000;
 
-    PortfolioController<FP> ctrl;
+    PortfolioController<FP> ctrl = {};
     PortfolioController_Init(&ctrl, cfg);
     ctrl.state = CONTROLLER_ACTIVE;
     ctrl.buy_conds.price  = FPN_FromDouble<FP>(100.0);
@@ -370,7 +370,7 @@ static void test_warmup() {
     ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
     cfg.warmup_ticks = 10;
 
-    PortfolioController<FP> ctrl;
+    PortfolioController<FP> ctrl = {};
     PortfolioController_Init(&ctrl, cfg);
 
     check("starts in warmup", ctrl.state == CONTROLLER_WARMUP);
@@ -416,7 +416,7 @@ static void test_regression_feedback() {
     cfg.poll_interval = 1;   // slow path every tick for testing
     cfg.r2_threshold  = FPN_FromDouble<FP>(0.01); // low threshold so adjustments happen
 
-    PortfolioController<FP> ctrl;
+    PortfolioController<FP> ctrl = {};
     PortfolioController_Init(&ctrl, cfg);
 
     OrderPool<FP> pool;
@@ -506,7 +506,7 @@ static void test_branchless() {
     cfg.poll_interval = 1;
     cfg.r2_threshold  = FPN_FromDouble<FP>(0.80); // HIGH threshold
 
-    PortfolioController<FP> ctrl;
+    PortfolioController<FP> ctrl = {};
     PortfolioController_Init(&ctrl, cfg);
 
     OrderPool<FP> pool;
@@ -559,7 +559,7 @@ static void test_max_shift() {
     cfg.warmup_ticks  = 5;
     cfg.poll_interval = 1;
 
-    PortfolioController<FP> ctrl;
+    PortfolioController<FP> ctrl = {};
     PortfolioController_Init(&ctrl, cfg);
 
     OrderPool<FP> pool;
@@ -611,7 +611,7 @@ static void test_empty_regression() {
     cfg.poll_interval = 1;
     cfg.r2_threshold  = FPN_FromDouble<FP>(0.01);
 
-    PortfolioController<FP> ctrl;
+    PortfolioController<FP> ctrl = {};
     PortfolioController_Init(&ctrl, cfg);
 
     OrderPool<FP> pool;
@@ -648,7 +648,7 @@ static void test_tick_counter() {
     ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
     cfg.warmup_ticks = 5;
 
-    PortfolioController<FP> ctrl;
+    PortfolioController<FP> ctrl = {};
     PortfolioController_Init(&ctrl, cfg);
 
     OrderPool<FP> pool;
@@ -686,7 +686,7 @@ static void test_full_pipeline() {
     cfg.entry_offset_pct   = FPN_FromDouble<FP>(0.005); // 0.5% offset - mock data has high volatility
     cfg.spacing_multiplier = FPN_FromDouble<FP>(0.5);    // tight spacing - mock price range is small
 
-    PortfolioController<FP> ctrl;
+    PortfolioController<FP> ctrl = {};
     PortfolioController_Init(&ctrl, cfg);
 
     OrderPool<FP> pool;
@@ -764,7 +764,7 @@ static void test_stddev_offset() {
     cfg.poll_interval = 1;
     cfg.offset_stddev_mult = FPN_FromDouble<FP>(1.5); // enable stddev mode at 1.5x
 
-    PortfolioController<FP> ctrl;
+    PortfolioController<FP> ctrl = {};
     PortfolioController_Init(&ctrl, cfg);
 
     OrderPool<FP> pool;
@@ -798,7 +798,7 @@ static void test_stddev_offset() {
     cfg2.poll_interval = 1;
     // offset_stddev_mult = 0 (default, percentage mode)
 
-    PortfolioController<FP> ctrl2;
+    PortfolioController<FP> ctrl2 = {};
     PortfolioController_Init(&ctrl2, cfg2);
 
     for (int i = 0; i < 10; i++) {
@@ -827,7 +827,7 @@ static void test_stddev_adaptation() {
     cfg.offset_stddev_min  = FPN_FromDouble<FP>(0.5);
     cfg.offset_stddev_max  = FPN_FromDouble<FP>(4.0);
 
-    PortfolioController<FP> ctrl;
+    PortfolioController<FP> ctrl = {};
     PortfolioController_Init(&ctrl, cfg);
 
     check("stddev: init from config", fabs(FPN_ToDouble(ctrl.mean_rev.live_stddev_mult) - 2.0) < 0.01);
@@ -879,7 +879,7 @@ static void test_multi_timeframe() {
     cfg.poll_interval = 1;
     cfg.min_long_slope = FPN_FromDouble<FP>(0.0001); // require positive long trend
 
-    PortfolioController<FP> ctrl;
+    PortfolioController<FP> ctrl = {};
     PortfolioController_Init(&ctrl, cfg);
 
     OrderPool<FP> pool;
@@ -929,7 +929,7 @@ static void test_multi_timeframe_disabled() {
     cfg.poll_interval = 1;
     // min_long_slope = 0 (default, disabled)
 
-    PortfolioController<FP> ctrl;
+    PortfolioController<FP> ctrl = {};
     PortfolioController_Init(&ctrl, cfg);
 
     OrderPool<FP> pool;
@@ -966,7 +966,7 @@ static void test_trailing_disabled() {
     cfg.poll_interval = 1;
     // tp_hold_score = 0 (default, disabled)
 
-    PortfolioController<FP> ctrl;
+    PortfolioController<FP> ctrl = {};
     PortfolioController_Init(&ctrl, cfg);
 
     OrderPool<FP> pool;
@@ -1013,7 +1013,7 @@ static void test_trailing_activates() {
     cfg.tp_trail_mult   = FPN_FromDouble<FP>(1.0);
     cfg.sl_trail_mult   = FPN_FromDouble<FP>(2.0);
 
-    PortfolioController<FP> ctrl;
+    PortfolioController<FP> ctrl = {};
     PortfolioController_Init(&ctrl, cfg);
 
     OrderPool<FP> pool;
@@ -1069,7 +1069,7 @@ static void test_trailing_ratchet() {
     cfg.tp_trail_mult   = FPN_FromDouble<FP>(1.0);
     cfg.sl_trail_mult   = FPN_FromDouble<FP>(2.0);
 
-    PortfolioController<FP> ctrl;
+    PortfolioController<FP> ctrl = {};
     PortfolioController_Init(&ctrl, cfg);
 
     OrderPool<FP> pool;
@@ -1119,7 +1119,7 @@ static void test_original_tp_sl() {
     cfg.warmup_ticks  = 5;
     cfg.poll_interval = 1;
 
-    PortfolioController<FP> ctrl;
+    PortfolioController<FP> ctrl = {};
     PortfolioController_Init(&ctrl, cfg);
 
     OrderPool<FP> pool;

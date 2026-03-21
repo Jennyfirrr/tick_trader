@@ -66,6 +66,18 @@ struct EngineTUI {
     // slow path = full tick including slow-path operations (every poll_interval)
     uint64_t hot_min, hot_max, hot_sum, hot_count;
     uint64_t slow_min, slow_max, slow_sum, slow_count;
+    // per-component hot path breakdown (cycle counts)
+    uint64_t bg_sum, bg_max;   // BuyGate
+    uint64_t eg_sum, eg_max;   // ExitGate (includes skip-when-empty)
+    uint64_t pc_sum, pc_max;   // PortfolioController_Tick (fast path only)
+    // fill vs no-fill breakdown within PCTick
+    uint64_t pc_fill_sum, pc_fill_max, pc_fill_count;
+    uint64_t pc_nofill_sum, pc_nofill_max, pc_nofill_count;
+    // position count accumulator for per-position ExitGate cost
+    uint64_t eg_pos_sum;       // sum of active position counts across hot ticks
+    // log2 histogram for percentile computation (bucket k = [2^k, 2^(k+1)) cycles)
+    // 21 buckets covers 1 cycle to 1M cycles (~0.3ns to 286μs at 3.5GHz)
+    uint32_t hot_hist[21];
     double tsc_per_ns;  // TSC cycles per nanosecond, calibrated at startup
 #endif
 };
@@ -292,10 +304,10 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
     printf(C_SAND "    price slope: " C_FG "%+.6f%%/tick" C_DIM "  |  " C_SAND "trend: " "%s%s" C_RESET "\n",
            slope_pct, trend_color, trend_str); row++;
     // long-window trend (512-tick), also normalized by price
-    double long_slope = FPN_ToDouble(ctrl->rolling_long.price_slope);
-    double long_avg   = FPN_ToDouble(ctrl->rolling_long.price_avg);
+    double long_slope = FPN_ToDouble(ctrl->rolling_long->price_slope);
+    double long_avg   = FPN_ToDouble(ctrl->rolling_long->price_avg);
     double long_slope_pct = (long_avg != 0.0) ? (long_slope / long_avg) * 100.0 : 0.0;
-    int long_count = ctrl->rolling_long.count;
+    int long_count = ctrl->rolling_long->count;
     const char *long_trend_color = (long_slope_pct > 0.001) ? C_GREEN : (long_slope_pct < -0.001) ? C_RED : C_DIM;
     const char *long_trend_str   = (long_slope_pct > 0.001) ? "UP" : (long_slope_pct < -0.001) ? "DOWN" : "FLAT";
     printf(C_SAND "    long window " C_DIM "(%d-tick):" C_FG " %+.6f%%/tick"
@@ -449,9 +461,40 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
         double hot_avg = (double)tui->hot_sum / tui->hot_count / tui->tsc_per_ns;
         double hot_min_ns = (double)tui->hot_min / tui->tsc_per_ns;
         double hot_max_ns = (double)tui->hot_max / tui->tsc_per_ns;
+        // percentiles from log2 histogram
+        double hot_p50 = 0, hot_p95 = 0;
+        { uint64_t p50t = tui->hot_count/2, p95t = tui->hot_count*95/100, cum = 0;
+          for (int i = 0; i <= 20; i++) { cum += tui->hot_hist[i];
+            if (!hot_p50 && cum >= p50t) hot_p50 = (1.5*(1ULL<<i))/tui->tsc_per_ns;
+            if (!hot_p95 && cum >= p95t) hot_p95 = (1.5*(1ULL<<i))/tui->tsc_per_ns; } }
         printf(C_SAND "    hot path:  " C_FG "avg %.0fns" C_DIM "  min " C_FG "%.0fns"
-               C_DIM "  max " C_FG "%.0fns" C_DIM "  (%lu ticks)" C_RESET "\n",
-               hot_avg, hot_min_ns, hot_max_ns, (unsigned long)tui->hot_count); row++;
+               C_DIM "  max " C_FG "%.0fns" C_DIM "  p50 " C_FG "%.0fns" C_DIM "  p95 " C_FG "%.0fns"
+               C_DIM "  (%lu ticks)" C_RESET "\n",
+               hot_avg, hot_min_ns, hot_max_ns, hot_p50, hot_p95, (unsigned long)tui->hot_count); row++;
+        double bg_avg = (double)tui->bg_sum / tui->hot_count / tui->tsc_per_ns;
+        double bg_max_ns = (double)tui->bg_max / tui->tsc_per_ns;
+        double eg_avg = (double)tui->eg_sum / tui->hot_count / tui->tsc_per_ns;
+        double eg_max_ns = (double)tui->eg_max / tui->tsc_per_ns;
+        double pc_avg = (double)tui->pc_sum / tui->hot_count / tui->tsc_per_ns;
+        double pc_max_ns = (double)tui->pc_max / tui->tsc_per_ns;
+        double eg_per_pos = (tui->eg_pos_sum > 0)
+            ? (double)tui->eg_sum / tui->eg_pos_sum / tui->tsc_per_ns : 0;
+        printf(C_DIM "      buygate:  " C_FG "avg %.0fns" C_DIM "  max " C_FG "%.0fns" C_RESET "\n", bg_avg, bg_max_ns); row++;
+        printf(C_DIM "      exitgate: " C_FG "avg %.0fns" C_DIM "  max " C_FG "%.0fns"
+               C_DIM "  (%.0fns/pos)" C_RESET "\n", eg_avg, eg_max_ns, eg_per_pos); row++;
+        printf(C_DIM "      pctick:   " C_FG "avg %.0fns" C_DIM "  max " C_FG "%.0fns" C_RESET "\n", pc_avg, pc_max_ns); row++;
+        if (tui->pc_nofill_count > 0) {
+            double nf_avg = (double)tui->pc_nofill_sum / tui->pc_nofill_count / tui->tsc_per_ns;
+            double nf_max = (double)tui->pc_nofill_max / tui->tsc_per_ns;
+            printf(C_DIM "        no-fill: " C_FG "avg %.0fns" C_DIM "  max " C_FG "%.0fns"
+                   C_DIM "  (%lu)" C_RESET "\n", nf_avg, nf_max, (unsigned long)tui->pc_nofill_count); row++;
+        }
+        if (tui->pc_fill_count > 0) {
+            double f_avg = (double)tui->pc_fill_sum / tui->pc_fill_count / tui->tsc_per_ns;
+            double f_max = (double)tui->pc_fill_max / tui->tsc_per_ns;
+            printf(C_DIM "        fill:    " C_FG "avg %.0fns" C_DIM "  max " C_FG "%.0fns"
+                   C_DIM "  (%lu)" C_RESET "\n", f_avg, f_max, (unsigned long)tui->pc_fill_count); row++;
+        }
     }
     if (tui->slow_count > 0) {
         double slow_avg = (double)tui->slow_sum / tui->slow_count / tui->tsc_per_ns;
@@ -515,7 +558,7 @@ static inline char TUI_HandleInput(EngineTUI *tui, PortfolioController<F> *ctrl,
             // unpause - recompute buy conditions with all gates applied
             // (restoring buy_conds_initial would bypass the multi-timeframe gate)
             ctrl->buy_conds = MeanReversion_BuySignal(&ctrl->mean_rev, &ctrl->rolling,
-                                                       &ctrl->rolling_long, &ctrl->config);
+                                                       ctrl->rolling_long, &ctrl->config);
         } else {
             ctrl->buy_conds.price  = FPN_Zero<F>();
             ctrl->buy_conds.volume = FPN_Zero<F>();
@@ -633,10 +676,20 @@ struct TUISnapshot {
     double win_rate, profit_factor, avg_win, avg_loss, avg_hold;
     // latency
 #ifdef LATENCY_PROFILING
-    double hot_avg_ns, hot_min_ns, hot_max_ns;
+    double hot_avg_ns, hot_min_ns, hot_max_ns, hot_p50_ns, hot_p95_ns;
     uint64_t hot_count;
     double slow_avg_ns, slow_min_ns, slow_max_ns;
     uint64_t slow_count;
+    // per-component hot path breakdown
+    double bg_avg_ns, bg_max_ns;   // BuyGate
+    double eg_avg_ns, eg_max_ns;   // ExitGate
+    double eg_per_pos_ns;          // ExitGate per active position
+    double pc_avg_ns, pc_max_ns;   // PortfolioController_Tick
+    // fill vs no-fill PCTick breakdown
+    double pc_fill_avg_ns, pc_fill_max_ns;
+    uint64_t pc_fill_count;
+    double pc_nofill_avg_ns, pc_nofill_max_ns;
+    uint64_t pc_nofill_count;
 #endif
 };
 
@@ -681,10 +734,10 @@ static inline void TUI_CopySnapshot(TUISnapshot *snap,
     snap->roll_count     = ctrl->rolling.count;
 
     // long window
-    double long_slope = FPN_ToDouble(ctrl->rolling_long.price_slope);
-    double long_avg   = FPN_ToDouble(ctrl->rolling_long.price_avg);
+    double long_slope = FPN_ToDouble(ctrl->rolling_long->price_slope);
+    double long_avg   = FPN_ToDouble(ctrl->rolling_long->price_avg);
     snap->long_slope_pct = (long_avg != 0.0) ? (long_slope / long_avg) * 100.0 : 0.0;
-    snap->long_count     = ctrl->rolling_long.count;
+    snap->long_count     = ctrl->rolling_long->count;
 
     // buy gate
     double buy_p = FPN_ToDouble(ctrl->buy_conds.price);
@@ -942,7 +995,19 @@ static inline void TUI_Render_Snapshot(EngineTUI *tui, const TUISnapshot *s) {
     printf(C_BOLD C_PEACH "  LATENCY " C_DIM "(profiling, multicore):" C_RESET "\n"); row++;
     if (s->hot_count > 0) {
         printf(C_SAND "    hot path:  " C_FG "avg %.0fns" C_DIM "  min " C_FG "%.0fns" C_DIM "  max " C_FG "%.0fns"
-               C_DIM "  (%lu ticks)" C_RESET "\n", s->hot_avg_ns, s->hot_min_ns, s->hot_max_ns, (unsigned long)s->hot_count); row++;
+               C_DIM "  p50 " C_FG "%.0fns" C_DIM "  p95 " C_FG "%.0fns"
+               C_DIM "  (%lu ticks)" C_RESET "\n", s->hot_avg_ns, s->hot_min_ns, s->hot_max_ns,
+               s->hot_p50_ns, s->hot_p95_ns, (unsigned long)s->hot_count); row++;
+        printf(C_DIM "      buygate:  " C_FG "avg %.0fns" C_DIM "  max " C_FG "%.0fns" C_RESET "\n", s->bg_avg_ns, s->bg_max_ns); row++;
+        printf(C_DIM "      exitgate: " C_FG "avg %.0fns" C_DIM "  max " C_FG "%.0fns"
+               C_DIM "  (%.0fns/pos)" C_RESET "\n", s->eg_avg_ns, s->eg_max_ns, s->eg_per_pos_ns); row++;
+        printf(C_DIM "      pctick:   " C_FG "avg %.0fns" C_DIM "  max " C_FG "%.0fns" C_RESET "\n", s->pc_avg_ns, s->pc_max_ns); row++;
+        if (s->pc_nofill_count > 0)
+            { printf(C_DIM "        no-fill: " C_FG "avg %.0fns" C_DIM "  max " C_FG "%.0fns"
+                   C_DIM "  (%lu)" C_RESET "\n", s->pc_nofill_avg_ns, s->pc_nofill_max_ns, (unsigned long)s->pc_nofill_count); row++; }
+        if (s->pc_fill_count > 0)
+            { printf(C_DIM "        fill:    " C_FG "avg %.0fns" C_DIM "  max " C_FG "%.0fns"
+                   C_DIM "  (%lu)" C_RESET "\n", s->pc_fill_avg_ns, s->pc_fill_max_ns, (unsigned long)s->pc_fill_count); row++; }
     }
     if (s->slow_count > 0) {
         const char *su = (s->slow_avg_ns >= 1000.0) ? "us" : "ns";
