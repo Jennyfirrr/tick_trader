@@ -383,7 +383,7 @@ static inline Element Widget_Latency(const TUISnapshot *s) {
 //======================================================================================================
 // [PRICE CHART — line + buy gate + TP/SL bands]
 //======================================================================================================
-static inline Element Widget_PriceGraph(const TUISnapshot *s) {
+static inline Element Widget_PriceGraph(const TUISnapshot *s, int term_w, int term_h) {
     if (s->graph_count < 2) return text("  (collecting data...)") | color(foxml::dim);
 
     int len = s->graph_count;
@@ -427,7 +427,11 @@ static inline Element Widget_PriceGraph(const TUISnapshot *s) {
         }
     }
 
-    int cw = 160, ch = 48; // 80 cols x 12 rows
+    // responsive canvas sizing — scale to terminal dimensions
+    // canvas coords: 2 braille dots per char col, 4 per char row
+    int cw = std::max(term_w - 2, 20) * 2;
+    int ch = std::max(std::min(term_h / 4, 14), 6) * 4;
+    int vch = std::max(std::min(term_h / 12, 4), 2) * 4;
 
     // price chart canvas
     auto price_canvas = [prices, pmn, prange, cw, ch, buy_gate, nearest_tp, nearest_sl]() {
@@ -482,8 +486,7 @@ static inline Element Widget_PriceGraph(const TUISnapshot *s) {
     };
 
     // volume bars canvas (separate, below price)
-    auto vol_canvas = [volumes, vmx, cw]() {
-        int vch = 16; // 4 rows
+    auto vol_canvas = [volumes, vmx, cw, vch]() {
         ftxui::Canvas c(cw, vch);
         int dlen = (int)volumes.size();
 
@@ -529,7 +532,7 @@ static inline Element Widget_PriceGraph(const TUISnapshot *s) {
 //======================================================================================================
 // [P&L GRAPH WIDGET]
 //======================================================================================================
-static inline Element Widget_PnLGraph(const TUISnapshot *s) {
+static inline Element Widget_PnLGraph(const TUISnapshot *s, int term_w, int term_h) {
     if (s->graph_count < 2) return text("  (collecting data...)") | color(foxml::dim);
 
     int len = s->graph_count;
@@ -551,7 +554,8 @@ static inline Element Widget_PnLGraph(const TUISnapshot *s) {
     for (int i = 0; i < len; i++)
         data[i] = s->pnl_history[(start + i) % TUISnapshot::GRAPH_LEN];
 
-    int cw = 120, ch = 32; // 60 cols x 8 rows
+    int cw = std::max(term_w - 2, 20) * 2;
+    int ch = std::max(std::min(term_h / 5, 10), 4) * 4;
     auto pnl_color = s->total_pnl >= 0
         ? ftxui::Color::RGB(140, 195, 130)   // green
         : ftxui::Color::RGB(210, 120, 120);   // red

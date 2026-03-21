@@ -1112,7 +1112,7 @@ static inline void *tui_thread_fn(void *arg) {
         const TUISnapshot *s = &shared->snapshots[idx];
 
         // render FTXUI element tree to a fixed-size screen buffer
-        auto element = Layout_Render(s, current_layout);
+        auto element = Layout_Render(s, current_layout, term_w, term_h);
         auto screen = ftxui::Screen::Create(
             ftxui::Dimension::Fixed(term_w),
             ftxui::Dimension::Fixed(term_h));

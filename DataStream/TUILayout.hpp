@@ -22,7 +22,7 @@ using namespace ftxui;
 //======================================================================================================
 // classic two-column: left = stats/config, right = positions + graphs
 //======================================================================================================
-static inline Element Layout_Standard(const TUISnapshot *s) {
+static inline Element Layout_Standard(const TUISnapshot *s, int term_w, int term_h) {
     Elements left_col;
     left_col.push_back(Widget_Price(s));
     left_col.push_back(separator() | color(foxml::surf));
@@ -47,9 +47,9 @@ static inline Element Layout_Standard(const TUISnapshot *s) {
     Elements right_col;
     right_col.push_back(Widget_Positions(s));
     right_col.push_back(separator() | color(foxml::surf));
-    right_col.push_back(Widget_PriceGraph(s));
+    right_col.push_back(Widget_PriceGraph(s, term_w / 2, term_h));
     right_col.push_back(separator() | color(foxml::surf));
-    right_col.push_back(Widget_PnLGraph(s));
+    right_col.push_back(Widget_PnLGraph(s, term_w / 2, term_h));
 
     return vbox({
         Widget_Header(s),
@@ -68,7 +68,7 @@ static inline Element Layout_Standard(const TUISnapshot *s) {
 //======================================================================================================
 // positions take the left (larger), stats on right
 //======================================================================================================
-static inline Element Layout_PositionsFocus(const TUISnapshot *s) {
+static inline Element Layout_PositionsFocus(const TUISnapshot *s, int term_w, int term_h) {
     Elements right_col;
     right_col.push_back(Widget_Price(s));
     right_col.push_back(separator() | color(foxml::surf));
@@ -87,9 +87,9 @@ static inline Element Layout_PositionsFocus(const TUISnapshot *s) {
     Elements left_col;
     left_col.push_back(Widget_Positions(s));
     left_col.push_back(separator() | color(foxml::surf));
-    left_col.push_back(Widget_PriceGraph(s));
+    left_col.push_back(Widget_PriceGraph(s, term_w * 3 / 5, term_h));
     left_col.push_back(separator() | color(foxml::surf));
-    left_col.push_back(Widget_PnLGraph(s));
+    left_col.push_back(Widget_PnLGraph(s, term_w * 3 / 5, term_h));
 #ifdef LATENCY_PROFILING
     left_col.push_back(separator() | color(foxml::surf));
     left_col.push_back(Widget_Latency(s));
@@ -112,7 +112,7 @@ static inline Element Layout_PositionsFocus(const TUISnapshot *s) {
 //======================================================================================================
 // minimal — key numbers at top, positions below, graphs at bottom
 //======================================================================================================
-static inline Element Layout_Compact(const TUISnapshot *s) {
+static inline Element Layout_Compact(const TUISnapshot *s, int term_w, int term_h) {
     // top bar: key metrics
     Color pnl_c = s->total_pnl >= 0 ? foxml::green : foxml::red;
     const char *regime = (s->current_regime == 1) ? "TRENDING" :
@@ -172,9 +172,9 @@ static inline Element Layout_Compact(const TUISnapshot *s) {
         vbox(pos_rows) | frame | flex,
         separator() | color(foxml::surf),
         hbox({
-            Widget_PriceGraph(s) | flex,
+            Widget_PriceGraph(s, term_w / 2, term_h) | flex,
             separator() | color(foxml::surf),
-            Widget_PnLGraph(s) | flex,
+            Widget_PnLGraph(s, term_w / 2, term_h) | flex,
         }),
         separator() | color(foxml::surf),
         Widget_Controls(),
@@ -184,11 +184,11 @@ static inline Element Layout_Compact(const TUISnapshot *s) {
 //======================================================================================================
 // [LAYOUT DISPATCH]
 //======================================================================================================
-static inline Element Layout_Render(const TUISnapshot *s, int layout_id) {
+static inline Element Layout_Render(const TUISnapshot *s, int layout_id, int term_w, int term_h) {
     switch (layout_id) {
-        case LAYOUT_POSITIONS: return Layout_PositionsFocus(s);
-        case LAYOUT_COMPACT:   return Layout_Compact(s);
-        default:               return Layout_Standard(s);
+        case LAYOUT_POSITIONS: return Layout_PositionsFocus(s, term_w, term_h);
+        case LAYOUT_COMPACT:   return Layout_Compact(s, term_w, term_h);
+        default:               return Layout_Standard(s, term_w, term_h);
     }
 }
 
