@@ -57,6 +57,7 @@ template <unsigned F> struct PortfolioController {
       total_hold_ticks;     // cumulative ticks held across all closed positions
   uint64_t entry_ticks[16]; // tick at which each position was entered (indexed
                             // by slot)
+  uint8_t entry_strategy[16]; // which strategy_id entered each position (for regime adjustment)
 
   int state;
   FPN<F> price_sum;
@@ -90,8 +91,10 @@ inline void PortfolioController_Init(PortfolioController<F> *ctrl,
   ctrl->gross_wins = FPN_Zero<F>();
   ctrl->gross_losses = FPN_Zero<F>();
   ctrl->total_hold_ticks = 0;
-  for (int i = 0; i < 16; i++)
+  for (int i = 0; i < 16; i++) {
     ctrl->entry_ticks[i] = 0;
+    ctrl->entry_strategy[i] = STRATEGY_MEAN_REVERSION;
+  }
 
   ctrl->rolling = RollingStats_Init<F>();
 
@@ -99,6 +102,7 @@ inline void PortfolioController_Init(PortfolioController<F> *ctrl,
   // LessThanOrEqual
   ctrl->buy_conds.price = FPN_Zero<F>();
   ctrl->buy_conds.volume = FPN_Zero<F>();
+  ctrl->buy_conds.gate_direction = 0;  // default: buy below (mean reversion)
 
   // init strategy state
   ctrl->strategy_id = STRATEGY_MEAN_REVERSION;
@@ -321,6 +325,7 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
       ctrl->total_buys++;
       if (slot >= 0) {
         ctrl->entry_ticks[slot] = ctrl->total_ticks;
+        ctrl->entry_strategy[slot] = (uint8_t)ctrl->strategy_id;
         ctrl->portfolio.positions[slot].original_tp = tp_price;
         ctrl->portfolio.positions[slot].original_sl = sl_price;
       }
