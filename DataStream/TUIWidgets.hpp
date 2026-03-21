@@ -9,10 +9,12 @@
 #define TUI_WIDGETS_HPP
 
 #include <ftxui/dom/elements.hpp>
+#include <ftxui/dom/canvas.hpp>
 #include <ftxui/screen/color.hpp>
 #include <cstdio>
 #include <cmath>
 #include <ctime>
+#include <vector>
 
 // TUISnapshot and TUIPositionSnap are defined in EngineTUI.hpp
 // which includes this file via TUILayout.hpp — no circular include needed
@@ -379,7 +381,10 @@ static inline Element Widget_Latency(const TUISnapshot *s) {
 #endif
 
 //======================================================================================================
-// [PRICE + VOLUME GRAPH WIDGET]
+// [PRICE + VOLUME CANVAS GRAPH]
+//======================================================================================================
+// uses ftxui::Canvas for smooth line drawing (braille characters, 2x4 subpixel resolution)
+// price = line graph (wheat), volume = filled bars (sage, bottom quarter)
 //======================================================================================================
 static inline Element Widget_PriceGraph(const TUISnapshot *s) {
     if (s->graph_count < 2) return text("  (collecting data...)") | color(foxml::dim);
@@ -387,9 +392,8 @@ static inline Element Widget_PriceGraph(const TUISnapshot *s) {
     int len = s->graph_count;
     int start = (s->graph_head - len + TUISnapshot::GRAPH_LEN) % TUISnapshot::GRAPH_LEN;
 
-    // price min/max
-    double pmn = 1e18, pmx = -1e18;
-    double vmx = 0;
+    // find min/max
+    double pmn = 1e18, pmx = -1e18, vmx = 0;
     for (int i = 0; i < len; i++) {
         double p = s->price_history[(start + i) % TUISnapshot::GRAPH_LEN];
         double v = s->volume_history[(start + i) % TUISnapshot::GRAPH_LEN];
@@ -401,42 +405,51 @@ static inline Element Widget_PriceGraph(const TUISnapshot *s) {
     if (prange < 0.01) prange = 0.01;
     if (vmx < 1e-10) vmx = 1e-10;
 
-    // copy data by value for lambda capture
+    // copy data
     std::vector<double> prices(len), volumes(len);
     for (int i = 0; i < len; i++) {
         prices[i] = s->price_history[(start + i) % TUISnapshot::GRAPH_LEN];
         volumes[i] = s->volume_history[(start + i) % TUISnapshot::GRAPH_LEN];
     }
 
-    auto price_fn = [prices, pmn, prange](int width, int height) {
-        std::vector<int> out(width, 0);
-        int dlen = (int)prices.size();
-        for (int x = 0; x < width; x++) {
-            int idx = (int)((double)x / width * dlen);
-            if (idx >= dlen) idx = dlen - 1;
-            out[x] = (int)(((prices[idx] - pmn) / prange) * (height - 1));
-        }
-        return out;
-    };
+    // canvas dimensions: each cell = 2 wide x 4 tall in braille
+    int cw = 120, ch = 48; // 60 cols x 12 rows in terminal cells
 
-    auto vol_fn = [volumes, vmx](int width, int height) {
-        std::vector<int> out(width, 0);
-        int dlen = (int)volumes.size();
-        for (int x = 0; x < width; x++) {
-            int idx = (int)((double)x / width * dlen);
+    auto canvas_fn = [prices, volumes, pmn, prange, vmx, cw, ch]() {
+        ftxui::Canvas c(cw, ch);
+        int dlen = (int)prices.size();
+        if (dlen < 2) return canvas(std::move(c));
+
+        // volume bars (bottom quarter, sage color)
+        int vol_height = ch / 4;
+        for (int x = 0; x < cw; x++) {
+            int idx = (int)((double)x / cw * dlen);
             if (idx >= dlen) idx = dlen - 1;
-            out[x] = (int)((volumes[idx] / vmx) * (height - 1));
+            int vh = (int)((volumes[idx] / vmx) * vol_height);
+            for (int y = 0; y < vh; y++) {
+                c.DrawPoint(x, ch - 1 - y, true, ftxui::Color::RGB(180, 175, 140));
+            }
         }
-        return out;
+
+        // price line (wheat color)
+        for (int x = 1; x < cw; x++) {
+            int i0 = (int)((double)(x-1) / cw * dlen); if (i0 >= dlen) i0 = dlen - 1;
+            int i1 = (int)((double)x / cw * dlen);     if (i1 >= dlen) i1 = dlen - 1;
+            int y0 = ch - 1 - (int)(((prices[i0] - pmn) / prange) * (ch - vol_height - 2));
+            int y1 = ch - 1 - (int)(((prices[i1] - pmn) / prange) * (ch - vol_height - 2));
+            c.DrawPointLine(x-1, y0, x, y1, ftxui::Color::RGB(220, 198, 150));
+        }
+
+        return canvas(std::move(c));
     };
 
     return vbox({
         hbox({text("PRICE") | bold | color(foxml::peach),
-              text(fmt("  $%.2f", pmx)) | color(foxml::dim)}),
-        graph(price_fn) | size(HEIGHT, EQUAL, 8) | color(foxml::wheat),
+              text(fmt("  $%.2f", pmx)) | color(foxml::dim),
+              text("  ") | color(foxml::dim),
+              text("VOL") | color(foxml::sage)}),
+        canvas_fn() | flex,
         hbox({text(fmt("  $%.2f", pmn)) | color(foxml::dim)}),
-        text("VOLUME") | bold | color(foxml::peach),
-        graph(vol_fn) | size(HEIGHT, EQUAL, 3) | color(foxml::sage),
     }) | flex;
 }
 
@@ -465,23 +478,39 @@ static inline Element Widget_PnLGraph(const TUISnapshot *s) {
     for (int i = 0; i < len; i++)
         data[i] = s->pnl_history[(start + i) % TUISnapshot::GRAPH_LEN];
 
-    auto graph_fn = [data, mn, range](int width, int height) {
-        std::vector<int> out(width, 0);
-        int dlen = (int)data.size();
-        for (int x = 0; x < width; x++) {
-            int idx = (int)((double)x / width * dlen);
-            if (idx >= dlen) idx = dlen - 1;
-            out[x] = (int)(((data[idx] - mn) / range) * (height - 1));
-        }
-        return out;
-    };
+    int cw = 120, ch = 32; // 60 cols x 8 rows
+    auto pnl_color = s->total_pnl >= 0
+        ? ftxui::Color::RGB(140, 195, 130)   // green
+        : ftxui::Color::RGB(210, 120, 120);   // red
+    // zero line position
+    double zero_y_frac = (0.0 - mn) / range;
 
-    Color graph_color = s->total_pnl >= 0 ? foxml::green : foxml::red;
+    auto canvas_fn = [data, mn, range, cw, ch, pnl_color, zero_y_frac]() {
+        ftxui::Canvas c(cw, ch);
+        int dlen = (int)data.size();
+        if (dlen < 2) return canvas(std::move(c));
+
+        // draw zero line (dim)
+        int zero_y = ch - 1 - (int)(zero_y_frac * (ch - 2));
+        for (int x = 0; x < cw; x += 3)
+            c.DrawPoint(x, zero_y, true, ftxui::Color::RGB(100, 100, 90));
+
+        // P&L line
+        for (int x = 1; x < cw; x++) {
+            int i0 = (int)((double)(x-1) / cw * dlen); if (i0 >= dlen) i0 = dlen - 1;
+            int i1 = (int)((double)x / cw * dlen);     if (i1 >= dlen) i1 = dlen - 1;
+            int y0 = ch - 1 - (int)(((data[i0] - mn) / range) * (ch - 2));
+            int y1 = ch - 1 - (int)(((data[i1] - mn) / range) * (ch - 2));
+            c.DrawPointLine(x-1, y0, x, y1, pnl_color);
+        }
+
+        return canvas(std::move(c));
+    };
 
     return vbox({
         hbox({text("P&L") | bold | color(foxml::peach),
               text(fmt("  $%+.2f", mx)) | color(foxml::dim)}),
-        graph(graph_fn) | size(HEIGHT, EQUAL, 6) | color(graph_color),
+        canvas_fn() | flex,
         hbox({text(fmt("  $%+.2f", mn)) | color(foxml::dim)}),
     }) | flex;
 }

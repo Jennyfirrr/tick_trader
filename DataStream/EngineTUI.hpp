@@ -1097,8 +1097,8 @@ static inline void *tui_thread_fn(void *arg) {
         auto screen = ftxui::Screen::Create(ftxui::Dimension::Full(), ftxui::Dimension::Full());
         ftxui::Render(screen, element);
 
-        // draw: cursor home + print rendered screen
-        std::string output = "\033[H" + screen.ToString();
+        // draw: cursor home + render + clear to end of screen (prevents ghost content)
+        std::string output = "\033[H" + screen.ToString() + "\033[J";
         write(STDOUT_FILENO, output.data(), output.size());
 
         // non-blocking keyboard read
