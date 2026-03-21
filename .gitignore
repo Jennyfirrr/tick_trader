@@ -17,6 +17,8 @@ engine
 engine_prof
 engine_bench
 engine_latency_check
+engine_mc
+engine_mc_prof
 tests/binance_test
 
 # backup configs

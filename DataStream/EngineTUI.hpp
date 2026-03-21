@@ -565,5 +565,445 @@ static inline char TUI_HandleInput(EngineTUI *tui, PortfolioController<F> *ctrl,
 }
 
 //======================================================================================================
+// [MULTICORE TUI]
+//======================================================================================================
+// when MULTICORE_TUI is defined, the TUI runs on a separate thread with its own L1 cache.
+// the engine thread copies a snapshot of display state every slow-path cycle.
+// the TUI thread reads the snapshot and renders independently.
+// zero L1 cache pollution on the engine core.
+//======================================================================================================
+#ifdef MULTICORE_TUI
+#include <pthread.h>
+
+//======================================================================================================
+// [SNAPSHOT STRUCT]
+//======================================================================================================
+// all doubles — no FPN on the TUI thread. engine converts during snapshot copy.
+//======================================================================================================
+struct TUIPositionSnap {
+    int idx;
+    double entry, qty, tp, sl, orig_tp;
+    double value, gross_pnl, net_pnl;
+    int is_trailing, above_orig_tp;
+};
+
+struct TUISnapshot {
+    // market
+    double price, volume;
+    // state
+    int state_warmup; // 1 = warmup, 0 = active
+    int is_paused;
+    uint64_t start_time;
+    // rolling stats
+    double roll_price_avg, roll_stddev, roll_p_min, roll_p_max;
+    double roll_vol_avg, roll_vol_slope;
+    double slope_pct;
+    int roll_count;
+    // long window
+    double long_slope_pct;
+    int long_count;
+    // buy gate
+    double buy_p, buy_v;
+    double gate_dist, gate_dist_pct;
+    double spacing, spacing_pct;
+    int stddev_mode;
+    double live_offset, live_vmult, live_sm;
+    int long_gate_enabled, long_gate_ok;
+    double long_rel_slope, long_min_ls;
+    // portfolio
+    int active_count;
+    double equity, balance, starting;
+    double total_value, total_qty;
+    double exposure_pct, max_exp;
+    double fees, fee_rate_pct;
+    // positions
+    TUIPositionSnap positions[16];
+    // P&L
+    double realized, unrealized, total_pnl, return_pct;
+    // risk
+    double risk_amt, max_dd;
+    int breaker_tripped;
+    // config display
+    double cfg_tp, cfg_sl, cfg_fee;
+    int trailing_enabled;
+    double cfg_hold_score, cfg_trail_mult, cfg_sl_trail_mult;
+    double cfg_offset_val; // offset pct or stddev mult depending on mode
+    // stats
+    uint32_t total_buys, wins, losses;
+    double win_rate, profit_factor, avg_win, avg_loss, avg_hold;
+    // latency
+#ifdef LATENCY_PROFILING
+    double hot_avg_ns, hot_min_ns, hot_max_ns;
+    uint64_t hot_count;
+    double slow_avg_ns, slow_min_ns, slow_max_ns;
+    uint64_t slow_count;
+#endif
+};
+
+//======================================================================================================
+// [SHARED STATE]
+//======================================================================================================
+struct TUISharedState {
+    TUISnapshot snapshots[2];
+    volatile int active_idx;
+    volatile sig_atomic_t quit_requested;
+    volatile sig_atomic_t pause_requested;
+    volatile sig_atomic_t reload_requested;
+    EngineTUI tui;
+    const char *config_path;
+};
+
+//======================================================================================================
+// [SNAPSHOT COPY]
+//======================================================================================================
+// runs on engine thread, every slow-path cycle. converts FPN→double.
+//======================================================================================================
+template <unsigned F>
+static inline void TUI_CopySnapshot(TUISnapshot *snap,
+                                      const PortfolioController<F> *ctrl,
+                                      const DataStream<F> *stream) {
+    snap->price  = FPN_ToDouble(stream->price);
+    snap->volume = FPN_ToDouble(stream->volume);
+    snap->state_warmup = (ctrl->state == CONTROLLER_WARMUP);
+    snap->is_paused = FPN_IsZero(ctrl->buy_conds.price) && !snap->state_warmup;
+    snap->start_time = 0; // TUI thread computes uptime from its own start_time
+
+    // rolling stats
+    double avg = FPN_ToDouble(ctrl->rolling.price_avg);
+    double slope = FPN_ToDouble(ctrl->rolling.price_slope);
+    snap->roll_price_avg = avg;
+    snap->roll_stddev    = FPN_ToDouble(ctrl->rolling.price_stddev);
+    snap->roll_p_min     = FPN_ToDouble(ctrl->rolling.price_min);
+    snap->roll_p_max     = FPN_ToDouble(ctrl->rolling.price_max);
+    snap->roll_vol_avg   = FPN_ToDouble(ctrl->rolling.volume_avg);
+    snap->roll_vol_slope = FPN_ToDouble(ctrl->rolling.volume_slope);
+    snap->slope_pct      = (avg != 0.0) ? (slope / avg) * 100.0 : 0.0;
+    snap->roll_count     = ctrl->rolling.count;
+
+    // long window
+    double long_slope = FPN_ToDouble(ctrl->rolling_long.price_slope);
+    double long_avg   = FPN_ToDouble(ctrl->rolling_long.price_avg);
+    snap->long_slope_pct = (long_avg != 0.0) ? (long_slope / long_avg) * 100.0 : 0.0;
+    snap->long_count     = ctrl->rolling_long.count;
+
+    // buy gate
+    double buy_p = FPN_ToDouble(ctrl->buy_conds.price);
+    snap->buy_p = buy_p;
+    snap->buy_v = FPN_ToDouble(ctrl->buy_conds.volume);
+    snap->gate_dist     = snap->price - buy_p;
+    snap->gate_dist_pct = (avg != 0.0) ? (snap->gate_dist / avg) * 100.0 : 0.0;
+    double spacing = FPN_ToDouble(RollingStats_EntrySpacing(&ctrl->rolling, ctrl->config.spacing_multiplier));
+    snap->spacing     = spacing;
+    snap->spacing_pct = (avg != 0.0) ? (spacing / avg) * 100.0 : 0.0;
+    snap->stddev_mode = !FPN_IsZero(ctrl->config.offset_stddev_mult);
+    snap->live_offset = FPN_ToDouble(ctrl->mean_rev.live_offset_pct) * 100.0;
+    snap->live_vmult  = FPN_ToDouble(ctrl->mean_rev.live_vol_mult);
+    snap->live_sm     = FPN_ToDouble(ctrl->mean_rev.live_stddev_mult);
+    snap->long_gate_enabled = !FPN_IsZero(ctrl->config.min_long_slope);
+    double min_ls = FPN_ToDouble(ctrl->config.min_long_slope);
+    snap->long_min_ls = min_ls;
+    snap->long_rel_slope = (long_avg != 0.0) ? long_slope / long_avg : 0.0;
+    snap->long_gate_ok = !snap->long_gate_enabled || (snap->long_rel_slope >= min_ls);
+
+    // portfolio + positions
+    double price_d = snap->price;
+    double fee_r = FPN_ToDouble(ctrl->config.fee_rate);
+    snap->active_count = Portfolio_CountActive(&ctrl->portfolio);
+    snap->total_value = 0.0;
+    snap->total_qty   = 0.0;
+    uint16_t active = ctrl->portfolio.active_bitmap;
+    for (int i = 0; i < 16; i++) snap->positions[i].idx = -1;
+    while (active) {
+        int idx = __builtin_ctz(active);
+        const Position<F> *pos = &ctrl->portfolio.positions[idx];
+        TUIPositionSnap *ps = &snap->positions[idx];
+        ps->idx      = idx;
+        ps->entry    = FPN_ToDouble(pos->entry_price);
+        ps->qty      = FPN_ToDouble(pos->quantity);
+        ps->tp       = FPN_ToDouble(pos->take_profit_price);
+        ps->sl       = FPN_ToDouble(pos->stop_loss_price);
+        ps->orig_tp  = FPN_ToDouble(pos->original_tp);
+        ps->value    = price_d * ps->qty;
+        ps->gross_pnl = (ps->entry != 0.0) ? ((price_d - ps->entry) / ps->entry) * 100.0 : 0.0;
+        ps->net_pnl   = ps->gross_pnl - (fee_r * 200.0);
+        ps->is_trailing  = !FPN_Equal(pos->take_profit_price, pos->original_tp);
+        ps->above_orig_tp = (price_d > ps->orig_tp) && (ps->entry != 0.0);
+        snap->total_value += ps->value;
+        snap->total_qty   += ps->qty;
+        active &= active - 1;
+    }
+
+    // financials
+    double starting = FPN_ToDouble(ctrl->config.starting_balance);
+    double balance  = FPN_ToDouble(ctrl->balance);
+    double realized = FPN_ToDouble(ctrl->realized_pnl);
+    double unrealized = FPN_ToDouble(ctrl->portfolio_delta);
+    snap->balance    = balance;
+    snap->starting   = starting;
+    snap->realized   = realized;
+    snap->unrealized = unrealized;
+    snap->total_pnl  = realized + unrealized;
+    snap->return_pct = (starting != 0.0) ? (snap->total_pnl / starting) * 100.0 : 0.0;
+    snap->equity     = balance + snap->total_value;
+    snap->exposure_pct = (starting != 0.0) ? ((starting - balance) / starting) * 100.0 : 0.0;
+    snap->max_exp    = FPN_ToDouble(ctrl->config.max_exposure_pct) * 100.0;
+    snap->fees       = FPN_ToDouble(ctrl->total_fees);
+    snap->fee_rate_pct = fee_r * 100.0;
+    snap->risk_amt   = FPN_ToDouble(ctrl->config.risk_pct) * 100.0;
+    snap->max_dd     = FPN_ToDouble(ctrl->config.max_drawdown_pct) * 100.0;
+    snap->breaker_tripped = (snap->total_pnl < -(starting * FPN_ToDouble(ctrl->config.max_drawdown_pct)));
+
+    // config
+    snap->cfg_tp  = FPN_ToDouble(ctrl->config.take_profit_pct) * 100.0;
+    snap->cfg_sl  = FPN_ToDouble(ctrl->config.stop_loss_pct) * 100.0;
+    snap->cfg_fee = fee_r * 100.0;
+    snap->trailing_enabled = !FPN_IsZero(ctrl->config.tp_hold_score);
+    snap->cfg_hold_score   = FPN_ToDouble(ctrl->config.tp_hold_score);
+    snap->cfg_trail_mult   = FPN_ToDouble(ctrl->config.tp_trail_mult);
+    snap->cfg_sl_trail_mult = FPN_ToDouble(ctrl->config.sl_trail_mult);
+    snap->cfg_offset_val = snap->stddev_mode
+        ? FPN_ToDouble(ctrl->config.offset_stddev_mult)
+        : FPN_ToDouble(ctrl->config.entry_offset_pct) * 100.0;
+
+    // stats
+    snap->total_buys = ctrl->total_buys;
+    snap->wins       = ctrl->wins;
+    snap->losses     = ctrl->losses;
+    uint32_t total_exits = ctrl->wins + ctrl->losses;
+    snap->win_rate      = (total_exits > 0) ? ((double)ctrl->wins / total_exits) * 100.0 : 0.0;
+    double g_wins  = FPN_ToDouble(ctrl->gross_wins);
+    double g_losses = FPN_ToDouble(ctrl->gross_losses);
+    snap->profit_factor = (g_losses > 0.001) ? g_wins / g_losses : 0.0;
+    snap->avg_win  = (ctrl->wins > 0)  ? g_wins / ctrl->wins : 0.0;
+    snap->avg_loss = (ctrl->losses > 0) ? g_losses / ctrl->losses : 0.0;
+    snap->avg_hold = (total_exits > 0)  ? (double)ctrl->total_hold_ticks / total_exits : 0.0;
+}
+
+//======================================================================================================
+// [RENDER FROM SNAPSHOT]
+//======================================================================================================
+// runs on TUI thread. reads only from snapshot (all doubles, no FPN).
+//======================================================================================================
+static inline void TUI_Render_Snapshot(EngineTUI *tui, const TUISnapshot *s) {
+    if (!tui->enabled) return;
+
+    uint64_t now = (uint64_t)time(NULL);
+    uint64_t elapsed = now - tui->start_time;
+    uint32_t hours = (uint32_t)(elapsed / 3600);
+    uint32_t mins  = (uint32_t)((elapsed % 3600) / 60);
+    uint32_t secs  = (uint32_t)(elapsed % 60);
+    const char *state_str = s->state_warmup ? "WARMUP" : "ACTIVE";
+
+    // pre-render positions
+    #define SNAP_POS_MAX 70
+    #define SNAP_POS_W 200
+    char pos_buf[SNAP_POS_MAX][SNAP_POS_W];
+    int pln = 0;
+    snprintf(pos_buf[pln++], SNAP_POS_W, C_BOLD C_PEACH "POSITIONS " C_DIM "(%d/16):" C_RESET, s->active_count);
+    int displayed = 0;
+    for (int i = 0; i < 16; i++) {
+        const TUIPositionSnap *ps = &s->positions[i];
+        if (ps->idx < 0) continue;
+        double diff = s->price - ps->entry;
+        if (displayed > 0)
+            snprintf(pos_buf[pln++], SNAP_POS_W, C_SURF "·" C_RESET);
+        snprintf(pos_buf[pln++], SNAP_POS_W,
+                 C_WHEAT "#%-2d " C_FG "$%.2f" C_DIM "->" C_WHEAT "$%.2f %s%+.2f" C_RESET,
+                 ps->idx, ps->entry, s->price, C_PNL(diff), diff);
+        snprintf(pos_buf[pln++], SNAP_POS_W,
+                 C_SAND "    qty:" C_FG "%.6f" C_SAND " val:" C_FG "$%.2f" C_RESET, ps->qty, ps->value);
+        const char *trail_status = "";
+        if (ps->above_orig_tp && ps->is_trailing)
+            trail_status = C_BOLD C_YELLOW " HOLDING" C_RESET;
+        else if (ps->is_trailing)
+            trail_status = C_YELLOW " trail" C_RESET;
+        snprintf(pos_buf[pln++], SNAP_POS_W,
+                 C_SAND "    TP:" C_GREEN "$%.0f" C_RESET "%s" C_SAND " SL:" C_RED "$%.0f" C_RESET,
+                 ps->tp, trail_status, ps->sl);
+        snprintf(pos_buf[pln++], SNAP_POS_W,
+                 C_SAND "    g:" "%s%+.2f%%" C_SAND " n:" "%s%+.2f%%" C_RESET,
+                 C_PNL(ps->gross_pnl), ps->gross_pnl, C_PNL(ps->net_pnl), ps->net_pnl);
+        displayed++;
+        if (pln >= SNAP_POS_MAX - 4) break;
+    }
+
+    // left column
+    printf("\033[H\033[2J");
+    int row = 1;
+    printf(C_SAND "  ================================================================" C_RESET "\n"); row++;
+    printf(C_BOLD C_PEACH "     /\\_/\\   FOXML TRADER" C_RESET "\n"); row++;
+    printf(C_BOLD C_PEACH "    ( o.o )  " C_WHEAT "engine v0.7" C_RESET "\n"); row++;
+    printf(C_BOLD C_PEACH "     > ^ <" C_RESET "\n"); row++;
+    printf(C_SAND "  ================================================================" C_RESET "\n"); row++;
+    printf(C_SAND "  STATE: " C_FG "%-8s" C_RESET C_DIM "  |  " C_SAND "UPTIME: " C_FG "%02u:%02u:%02u" C_RESET "%s\n",
+           state_str, hours, mins, secs,
+           s->is_paused ? C_DIM "  |  " C_BOLD C_YELLOW "PAUSED" C_RESET : ""); row++;
+    printf(C_SURF "  ----------------------------------------------------------------" C_RESET "\n"); row++;
+    printf(C_SAND "  PRICE: " C_BOLD C_WHEAT "%-12.2f" C_RESET C_DIM "  |  " C_SAND "VOLUME: " C_FG "%-12.8f" C_RESET "\n", s->price, s->volume); row++;
+    printf(C_SURF "  ----------------------------------------------------------------" C_RESET "\n"); row++;
+    int pos_start_row = row;
+
+    // market structure
+    const char *trend_color = (s->slope_pct > 0.001) ? C_GREEN : (s->slope_pct < -0.001) ? C_RED : C_DIM;
+    const char *trend_str   = (s->slope_pct > 0.001) ? "UP" : (s->slope_pct < -0.001) ? "DOWN" : "FLAT";
+    const char *lt_color = (s->long_slope_pct > 0.001) ? C_GREEN : (s->long_slope_pct < -0.001) ? C_RED : C_DIM;
+    const char *lt_str   = (s->long_slope_pct > 0.001) ? "UP" : (s->long_slope_pct < -0.001) ? "DOWN" : "FLAT";
+
+    printf(C_BOLD C_PEACH "  MARKET STRUCTURE " C_DIM "(rolling %d-tick window):" C_RESET "\n", s->roll_count); row++;
+    printf(C_SAND "    avg price:  " C_FG "%-12.2f" C_DIM "  |  " C_SAND "stddev: " C_FG "%-10.2f" C_RESET "\n", s->roll_price_avg, s->roll_stddev); row++;
+    printf(C_SAND "    range:      " C_FG "%-12.2f" C_DIM "  -  " C_FG "%-12.2f" C_RESET "\n", s->roll_p_min, s->roll_p_max); row++;
+    printf(C_SAND "    avg volume: " C_FG "%-12.8f" C_DIM "  |  " C_SAND "vol slope: " C_FG "%+.8f" C_RESET "\n", s->roll_vol_avg, s->roll_vol_slope); row++;
+    printf(C_SAND "    price slope: " C_FG "%+.6f%%/tick" C_DIM "  |  " C_SAND "trend: %s%s" C_RESET "\n", s->slope_pct, trend_color, trend_str); row++;
+    printf(C_SAND "    long window " C_DIM "(%d-tick):" C_FG " %+.6f%%/tick" C_DIM "  |  %s%s" C_RESET "\n", s->long_count, s->long_slope_pct, lt_color, lt_str); row++;
+    printf(C_SURF "  ----------------------------------------------------------------" C_RESET "\n"); row++;
+
+    // buy gate
+    printf(C_BOLD C_PEACH "  BUY GATE " C_DIM "(adaptive):" C_RESET "\n"); row++;
+    if (s->stddev_mode)
+        printf(C_SAND "    price <= " C_FG "%-12.2f" C_DIM "  (stddev: %.2fx)" C_RESET "\n", s->buy_p, s->live_sm);
+    else
+        printf(C_SAND "    price <= " C_FG "%-12.2f" C_DIM "  (offset: %.3f%%)" C_RESET "\n", s->buy_p, s->live_offset);
+    row++;
+    printf(C_SAND "    vol   >= " C_FG "%-12.8f" C_DIM "  (mult: %.2fx)" C_RESET "\n", s->buy_v, s->live_vmult); row++;
+    if (s->buy_p > 0.01)
+        printf(C_SAND "    distance:   " C_FG "$%-10.2f" C_DIM "  (%.3f%% away)" C_RESET "\n", s->gate_dist, s->gate_dist_pct);
+    else
+        printf(C_SAND "    distance:   " C_DIM "—  (gate disabled)" C_RESET "\n");
+    row++;
+    printf(C_SAND "    spacing:    " C_FG "$%-10.2f" C_DIM "  (%.3f%% of avg)" C_RESET "\n", s->spacing, s->spacing_pct); row++;
+    if (s->long_gate_enabled) {
+        if (s->long_gate_ok)
+            printf(C_SAND "    long trend: " C_GREEN "OK" C_RESET "\n");
+        else
+            printf(C_SAND "    long trend: " C_BOLD C_RED "BLOCKED" C_RESET C_DIM " (%+.6f < %+.6f)" C_RESET "\n", s->long_rel_slope, s->long_min_ls);
+        row++;
+    }
+    printf(C_SURF "  ----------------------------------------------------------------" C_RESET "\n"); row++;
+
+    // portfolio
+    printf(C_BOLD C_PEACH "  PORTFOLIO:" C_RESET "\n"); row++;
+    printf(C_SAND "    equity:     " C_BOLD C_FG "$%-12.4f" C_RESET C_DIM "  (cash + positions)" C_RESET "\n", s->equity); row++;
+    printf(C_SAND "    balance:    " C_FG "$%-12.4f" C_RESET C_DIM "  (started: $%.0f)" C_RESET "\n", s->balance, s->starting); row++;
+    printf(C_SAND "    held:       " C_FG "$%-12.4f" C_RESET C_DIM "  (qty: %.6f)" C_RESET "\n", s->total_value, s->total_qty); row++;
+    printf(C_SAND "    exposure:   " C_FG "%.1f%%/%.0f%%" C_RESET C_DIM "  |  " C_SAND "fees: " C_FG "$%.4f" C_DIM " (%.1f%%)" C_RESET "\n",
+           s->exposure_pct, s->max_exp, s->fees, s->fee_rate_pct); row++;
+    printf(C_SURF "  ----------------------------------------------------------------" C_RESET "\n"); row++;
+
+    // P&L
+    printf(C_BOLD C_PEACH "  P&L:" C_RESET "\n"); row++;
+    printf(C_SAND "    realized:   %s$%-+12.4f" C_RESET C_DIM "  (after fees)" C_RESET "\n", C_PNL(s->realized), s->realized); row++;
+    printf(C_SAND "    unrealized: %s$%-+12.4f" C_RESET C_DIM "  (open positions)" C_RESET "\n", C_PNL(s->unrealized), s->unrealized); row++;
+    printf(C_SAND "    total:      " C_BOLD "%s$%-+12.4f" C_RESET C_DIM "  (%s%+.2f%%" C_DIM ")" C_RESET "\n",
+           C_PNL(s->total_pnl), s->total_pnl, C_PNL(s->return_pct), s->return_pct); row++;
+    printf(C_SURF "  ----------------------------------------------------------------" C_RESET "\n"); row++;
+
+    // risk
+    printf(C_BOLD C_PEACH "  RISK:" C_RESET "\n"); row++;
+    printf(C_SAND "    risk/pos:   " C_FG "%.1f%%" C_RESET C_DIM "  |  " C_SAND "breaker: %s%s" C_RESET C_DIM " (max dd: %.0f%%)" C_RESET "\n",
+           s->risk_amt, s->breaker_tripped ? C_BOLD C_RED : C_GREEN, s->breaker_tripped ? "TRIPPED" : "OK", s->max_dd); row++;
+    printf(C_SAND "    strategy:   " C_FG "MEAN REVERSION" C_RESET C_DIM " (%s)  |  " C_YELLOW "PAPER" C_RESET "\n",
+           s->stddev_mode ? "stddev" : "pct"); row++;
+    printf(C_SURF "  ----------------------------------------------------------------" C_RESET "\n"); row++;
+
+    // config
+    printf(C_BOLD C_PEACH "  CONFIG:" C_RESET "\n"); row++;
+    printf(C_SAND "    TP: " C_FG "%.1f%%" C_RESET C_SAND "  SL: " C_FG "%.1f%%" C_RESET
+           C_SAND "  risk: " C_FG "%.1f%%" C_RESET C_SAND "  fee: " C_FG "%.1f%%" C_RESET "\n",
+           s->cfg_tp, s->cfg_sl, s->risk_amt, s->cfg_fee); row++;
+    if (s->stddev_mode)
+        printf(C_SAND "    offset: " C_FG "stddev %.1fx" C_RESET, s->cfg_offset_val);
+    else
+        printf(C_SAND "    offset: " C_FG "%.3f%%" C_RESET, s->cfg_offset_val);
+    if (s->trailing_enabled)
+        printf(C_SAND "  trail: " C_FG "%.1f" C_DIM "σ" C_RESET C_SAND " sl: " C_FG "%.1f" C_DIM "σ" C_RESET
+               C_SAND " score: " C_FG "%.2f" C_RESET, s->cfg_trail_mult, s->cfg_sl_trail_mult, s->cfg_hold_score);
+    else
+        printf(C_DIM "  trailing: off" C_RESET);
+    printf("\n"); row++;
+    printf(C_SURF "  ----------------------------------------------------------------" C_RESET "\n"); row++;
+
+    // stats
+    uint32_t total_exits = s->wins + s->losses;
+    printf(C_BOLD C_PEACH "  STATS:" C_RESET "\n"); row++;
+    printf(C_SAND "    buys: " C_FG "%-4u" C_RESET C_DIM "  |  " C_SAND "exits: " C_FG "%-4u" C_RESET
+           C_DIM "  |  " C_SAND "hold: " C_FG "%.0f ticks" C_RESET "\n", s->total_buys, total_exits, s->avg_hold); row++;
+    printf(C_SAND "    wins: " C_GREEN "%-4u" C_RESET C_SAND "  losses: " C_RED "%-4u" C_RESET
+           C_SAND "  rate: %s%.1f%%" C_RESET C_DIM "  |  " C_SAND "pf: %s%.2f" C_RESET "\n",
+           s->wins, s->losses,
+           (s->win_rate >= 50.0) ? C_GREEN : (total_exits > 0 ? C_RED : C_DIM), s->win_rate,
+           (s->profit_factor >= 1.0) ? C_GREEN : (total_exits > 0 ? C_RED : C_DIM), s->profit_factor); row++;
+    printf(C_SAND "    avg win: " C_GREEN "$%.4f" C_RESET C_SAND "  avg loss: " C_RED "$%.4f" C_RESET "\n",
+           s->avg_win, s->avg_loss); row++;
+    printf(C_DIM "    log: btcusdt_order_history.csv" C_RESET "\n"); row++;
+    printf(C_SAND "  ================================================" C_RESET "\n"); row++;
+
+#ifdef LATENCY_PROFILING
+    printf(C_SURF "  ----------------------------------------------------------------" C_RESET "\n"); row++;
+    printf(C_BOLD C_PEACH "  LATENCY " C_DIM "(profiling, multicore):" C_RESET "\n"); row++;
+    if (s->hot_count > 0) {
+        printf(C_SAND "    hot path:  " C_FG "avg %.0fns" C_DIM "  min " C_FG "%.0fns" C_DIM "  max " C_FG "%.0fns"
+               C_DIM "  (%lu ticks)" C_RESET "\n", s->hot_avg_ns, s->hot_min_ns, s->hot_max_ns, (unsigned long)s->hot_count); row++;
+    }
+    if (s->slow_count > 0) {
+        const char *su = (s->slow_avg_ns >= 1000.0) ? "us" : "ns";
+        double sa = (s->slow_avg_ns >= 1000.0) ? s->slow_avg_ns / 1000.0 : s->slow_avg_ns;
+        double sn = (s->slow_min_ns >= 1000.0) ? s->slow_min_ns / 1000.0 : s->slow_min_ns;
+        double sx = (s->slow_max_ns >= 1000.0) ? s->slow_max_ns / 1000.0 : s->slow_max_ns;
+        printf(C_SAND "    slow path: " C_FG "avg %.1f%s" C_DIM "  min " C_FG "%.1f%s" C_DIM "  max " C_FG "%.1f%s"
+               C_DIM "  (%lu cycles)" C_RESET "\n", sa, su, sn, su, sx, su, (unsigned long)s->slow_count); row++;
+    }
+#endif
+
+    printf(C_PINK "  [q]" C_DIM "uit  " C_PINK "[p]" C_DIM "ause  " C_PINK "[r]" C_DIM "eload config" C_RESET "                \n"); row++;
+
+    // right column positions
+    int sep_col = 66;
+    for (int i = 0; i < pln; i++) {
+        printf("\033[%d;%dH" C_SURF "||" C_RESET " %s", pos_start_row + i, sep_col, pos_buf[i]);
+    }
+    fflush(stdout);
+}
+
+//======================================================================================================
+// [TUI READ KEY]
+//======================================================================================================
+static inline char TUI_ReadKey(EngineTUI *tui) {
+    if (!tui->enabled) return 0;
+    char c = 0;
+    read(STDIN_FILENO, &c, 1);
+    return c;
+}
+
+//======================================================================================================
+// [TUI THREAD FUNCTION]
+//======================================================================================================
+static inline void *tui_thread_fn(void *arg) {
+    TUISharedState *shared = (TUISharedState *)arg;
+
+    // TUI thread owns the terminal
+    TUI_Init(&shared->tui, 1, 10);
+
+    while (!__atomic_load_n(&shared->quit_requested, __ATOMIC_ACQUIRE)) {
+        int idx = __atomic_load_n(&shared->active_idx, __ATOMIC_ACQUIRE);
+        TUI_Render_Snapshot(&shared->tui, &shared->snapshots[idx]);
+
+        char c = TUI_ReadKey(&shared->tui);
+        if (c == 'q' || c == 'Q')
+            __atomic_store_n(&shared->quit_requested, 1, __ATOMIC_RELEASE);
+        else if (c == 'p' || c == 'P')
+            __atomic_store_n(&shared->pause_requested, 1, __ATOMIC_RELEASE);
+        else if (c == 'r' || c == 'R')
+            __atomic_store_n(&shared->reload_requested, 1, __ATOMIC_RELEASE);
+
+        usleep(100000); // 10 FPS
+    }
+
+    TUI_Cleanup(&shared->tui);
+    return NULL;
+}
+
+#endif // MULTICORE_TUI
+
+//======================================================================================================
 //======================================================================================================
 #endif // ENGINE_TUI_HPP

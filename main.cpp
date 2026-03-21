@@ -113,12 +113,38 @@ int main(int argc, char *argv[]) {
     //==================================================================================================
     // init TUI
     //==================================================================================================
+#ifdef MULTICORE_TUI
+    // multicore: TUI runs on separate thread, engine thread never renders
+    TUISharedState shared = {};
+    shared.config_path = cfg_path;
+    shared.active_idx = 0;
+    shared.quit_requested = 0;
+    shared.pause_requested = 0;
+    shared.reload_requested = 0;
+
+    pthread_t tui_tid;
+    pthread_create(&tui_tid, NULL, tui_thread_fn, &shared);
+
+#ifdef __linux__
+    // pin engine to core 0, TUI to core 1
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset); CPU_SET(0, &cpuset);
+    pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
+    CPU_ZERO(&cpuset); CPU_SET(1, &cpuset);
+    pthread_setaffinity_np(tui_tid, sizeof(cpuset), &cpuset);
+#endif
+
+    // latency stats live on engine thread (not shared TUI struct)
+    EngineTUI tui = {};  // dummy for latency stats in profiling mode
+    tui.start_time = (uint64_t)time(NULL);
+#else
     EngineTUI tui;
 #ifdef LATENCY_BENCH
     TUI_Init(&tui, 0, 10);  // bench mode: TUI disabled for clean latency measurement
 #else
     TUI_Init(&tui, 1, 10);  // TODO: read tui_enabled and render_interval from config
 #endif
+#endif // MULTICORE_TUI
 
 #ifdef LATENCY_PROFILING
     // calibrate TSC: measure cycles over a known 10ms sleep to get cycles-per-nanosecond
@@ -178,9 +204,59 @@ int main(int argc, char *argv[]) {
         //==============================================================================================
         // TUI INPUT
         //==============================================================================================
+#ifdef MULTICORE_TUI
+        // multicore: check atomic flags from TUI thread
+        if (__atomic_load_n(&shared.quit_requested, __ATOMIC_ACQUIRE))
+            running = 0;
+        if (__atomic_exchange_n(&shared.pause_requested, 0, __ATOMIC_ACQ_REL)) {
+            int is_paused = FPN_IsZero(ctrl.buy_conds.price);
+            if (is_paused)
+                ctrl.buy_conds = MeanReversion_BuySignal(&ctrl.mean_rev, &ctrl.rolling,
+                                                          &ctrl.rolling_long, &ctrl.config);
+            else {
+                ctrl.buy_conds.price  = FPN_Zero<FP>();
+                ctrl.buy_conds.volume = FPN_Zero<FP>();
+            }
+        }
+        if (__atomic_exchange_n(&shared.reload_requested, 0, __ATOMIC_ACQ_REL)) {
+            ControllerConfig<FP> new_cfg = ControllerConfig_Load<FP>(cfg_path);
+            ctrl.config.poll_interval     = new_cfg.poll_interval;
+            ctrl.config.r2_threshold      = new_cfg.r2_threshold;
+            ctrl.config.slope_scale_buy   = new_cfg.slope_scale_buy;
+            ctrl.config.max_shift         = new_cfg.max_shift;
+            ctrl.config.take_profit_pct   = new_cfg.take_profit_pct;
+            ctrl.config.stop_loss_pct     = new_cfg.stop_loss_pct;
+            ctrl.config.fee_rate          = new_cfg.fee_rate;
+            ctrl.config.risk_pct          = new_cfg.risk_pct;
+            ctrl.config.volume_multiplier = new_cfg.volume_multiplier;
+            ctrl.config.entry_offset_pct  = new_cfg.entry_offset_pct;
+            ctrl.config.spacing_multiplier = new_cfg.spacing_multiplier;
+            ctrl.config.offset_min        = new_cfg.offset_min;
+            ctrl.config.offset_max        = new_cfg.offset_max;
+            ctrl.config.vol_mult_min      = new_cfg.vol_mult_min;
+            ctrl.config.vol_mult_max      = new_cfg.vol_mult_max;
+            ctrl.config.filter_scale      = new_cfg.filter_scale;
+            ctrl.config.max_drawdown_pct  = new_cfg.max_drawdown_pct;
+            ctrl.config.max_exposure_pct  = new_cfg.max_exposure_pct;
+            ctrl.config.offset_stddev_mult = new_cfg.offset_stddev_mult;
+            ctrl.config.offset_stddev_min  = new_cfg.offset_stddev_min;
+            ctrl.config.offset_stddev_max  = new_cfg.offset_stddev_max;
+            ctrl.config.min_long_slope     = new_cfg.min_long_slope;
+            ctrl.config.tp_hold_score      = new_cfg.tp_hold_score;
+            ctrl.config.tp_trail_mult      = new_cfg.tp_trail_mult;
+            ctrl.config.sl_trail_mult      = new_cfg.sl_trail_mult;
+            ctrl.config.max_hold_ticks     = new_cfg.max_hold_ticks;
+            ctrl.config.min_hold_gain_pct  = new_cfg.min_hold_gain_pct;
+            ctrl.mean_rev.live_offset_pct  = new_cfg.entry_offset_pct;
+            ctrl.mean_rev.live_vol_mult    = new_cfg.volume_multiplier;
+            ctrl.mean_rev.live_stddev_mult = new_cfg.offset_stddev_mult;
+            fprintf(stderr, "[ENGINE] config reloaded from %s\n", cfg_path);
+        }
+#else
         if (ready & POLL_STDIN) {
             TUI_HandleInput(&tui, &ctrl, cfg_path, &running);
         }
+#endif
 
         //==============================================================================================
         // SESSION LIFECYCLE
@@ -244,15 +320,37 @@ int main(int argc, char *argv[]) {
             }
 #endif
 
-            // save snapshot every slow-path cycle (portfolio state survives crashes)
+            // save snapshot + copy TUI snapshot every slow-path cycle
             if (ctrl.tick_count == 0) {
                 PortfolioController_SaveSnapshot(&ctrl, snapshot_path);
+#ifdef MULTICORE_TUI
+                // copy display state to back buffer, then atomic swap
+                int back = !__atomic_load_n(&shared.active_idx, __ATOMIC_ACQUIRE);
+                TUI_CopySnapshot(&shared.snapshots[back], &ctrl, &last_stream);
+#ifdef LATENCY_PROFILING
+                // copy latency stats to snapshot (engine-side stats → display)
+                if (tui.hot_count > 0) {
+                    shared.snapshots[back].hot_avg_ns = (double)tui.hot_sum / tui.hot_count / tui.tsc_per_ns;
+                    shared.snapshots[back].hot_min_ns = (double)tui.hot_min / tui.tsc_per_ns;
+                    shared.snapshots[back].hot_max_ns = (double)tui.hot_max / tui.tsc_per_ns;
+                    shared.snapshots[back].hot_count  = tui.hot_count;
+                }
+                if (tui.slow_count > 0) {
+                    shared.snapshots[back].slow_avg_ns = (double)tui.slow_sum / tui.slow_count / tui.tsc_per_ns;
+                    shared.snapshots[back].slow_min_ns = (double)tui.slow_min / tui.tsc_per_ns;
+                    shared.snapshots[back].slow_max_ns = (double)tui.slow_max / tui.tsc_per_ns;
+                    shared.snapshots[back].slow_count  = tui.slow_count;
+                }
+#endif
+                __atomic_store_n(&shared.active_idx, back, __ATOMIC_RELEASE);
+#endif
             }
         }
 
         //==============================================================================================
-        // TUI RENDER
+        // TUI RENDER (single-threaded mode only)
         //==============================================================================================
+#ifndef MULTICORE_TUI
 #ifdef LATENCY_BENCH
         // bench mode: TUI disabled, dump stats to stderr periodically
         if (ctrl.total_ticks > 0 && (ctrl.total_ticks % 10000) == 0) {
@@ -267,6 +365,7 @@ int main(int argc, char *argv[]) {
 #else
         TUI_Render(&tui, &ctrl, &last_stream, ctrl.total_ticks);
 #endif
+#endif // !MULTICORE_TUI
     }
 
     //==================================================================================================
@@ -307,7 +406,13 @@ int main(int argc, char *argv[]) {
     //==================================================================================================
     // cleanup
     //==================================================================================================
+#ifdef MULTICORE_TUI
+    // signal TUI thread to exit, wait for clean terminal restore
+    __atomic_store_n(&shared.quit_requested, 1, __ATOMIC_RELEASE);
+    pthread_join(tui_tid, NULL);
+#else
     TUI_Cleanup(&tui);
+#endif
     TradeLog_Close(&log);
     BinanceStream_Close(&bs);
     free(pool.slots);
