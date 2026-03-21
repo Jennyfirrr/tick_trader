@@ -342,6 +342,88 @@ static inline Element Widget_Latency(const TUISnapshot *s) {
 #endif
 
 //======================================================================================================
+// [PRICE GRAPH WIDGET]
+//======================================================================================================
+static inline Element Widget_PriceGraph(const TUISnapshot *s) {
+    if (s->graph_count < 2) return text("  (collecting data...)") | color(foxml::dim);
+
+    // read ring buffer in order (oldest → newest)
+    int len = s->graph_count;
+    int start = (s->graph_head - len + TUISnapshot::GRAPH_LEN) % TUISnapshot::GRAPH_LEN;
+
+    // find min/max for scaling
+    double mn = 1e18, mx = -1e18;
+    for (int i = 0; i < len; i++) {
+        double v = s->price_history[(start + i) % TUISnapshot::GRAPH_LEN];
+        if (v < mn) mn = v;
+        if (v > mx) mx = v;
+    }
+    double range = mx - mn;
+    if (range < 0.01) range = 0.01;
+
+    // build graph data (0-100 scaled)
+    auto graph_fn = [&](int width, int height) {
+        std::vector<int> out(width, 0);
+        for (int x = 0; x < width; x++) {
+            int idx = (int)((double)x / width * len);
+            if (idx >= len) idx = len - 1;
+            double v = s->price_history[(start + idx) % TUISnapshot::GRAPH_LEN];
+            out[x] = (int)(((v - mn) / range) * (height - 1));
+        }
+        return out;
+    };
+
+    return vbox({
+        hbox({text("PRICE") | bold | color(foxml::peach),
+              text(fmt("  $%.2f", mx)) | color(foxml::dim)}),
+        graph(graph_fn) | size(HEIGHT, EQUAL, 8) | color(foxml::wheat),
+        hbox({text(fmt("  $%.2f", mn)) | color(foxml::dim)}),
+    }) | flex;
+}
+
+//======================================================================================================
+// [P&L GRAPH WIDGET]
+//======================================================================================================
+static inline Element Widget_PnLGraph(const TUISnapshot *s) {
+    if (s->graph_count < 2) return text("  (collecting data...)") | color(foxml::dim);
+
+    int len = s->graph_count;
+    int start = (s->graph_head - len + TUISnapshot::GRAPH_LEN) % TUISnapshot::GRAPH_LEN;
+
+    double mn = 1e18, mx = -1e18;
+    for (int i = 0; i < len; i++) {
+        double v = s->pnl_history[(start + i) % TUISnapshot::GRAPH_LEN];
+        if (v < mn) mn = v;
+        if (v > mx) mx = v;
+    }
+    // include zero line in range
+    if (mn > 0) mn = 0;
+    if (mx < 0) mx = 0;
+    double range = mx - mn;
+    if (range < 0.01) range = 0.01;
+
+    auto graph_fn = [&](int width, int height) {
+        std::vector<int> out(width, 0);
+        for (int x = 0; x < width; x++) {
+            int idx = (int)((double)x / width * len);
+            if (idx >= len) idx = len - 1;
+            double v = s->pnl_history[(start + idx) % TUISnapshot::GRAPH_LEN];
+            out[x] = (int)(((v - mn) / range) * (height - 1));
+        }
+        return out;
+    };
+
+    Color graph_color = s->total_pnl >= 0 ? foxml::green : foxml::red;
+
+    return vbox({
+        hbox({text("P&L") | bold | color(foxml::peach),
+              text(fmt("  $%+.2f", mx)) | color(foxml::dim)}),
+        graph(graph_fn) | size(HEIGHT, EQUAL, 6) | color(graph_color),
+        hbox({text(fmt("  $%+.2f", mn)) | color(foxml::dim)}),
+    }) | flex;
+}
+
+//======================================================================================================
 // [CONTROLS WIDGET]
 //======================================================================================================
 static inline Element Widget_Controls() {

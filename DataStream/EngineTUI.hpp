@@ -640,6 +640,12 @@ struct TUISnapshot {
     TUIPositionSnap positions[16];
     // P&L
     double realized, unrealized, total_pnl, return_pct;
+    // graph history (ring buffers, updated every snapshot copy)
+    static constexpr int GRAPH_LEN = 120;  // ~2 min at 1 update/sec
+    double price_history[GRAPH_LEN];
+    double pnl_history[GRAPH_LEN];
+    int graph_head;
+    int graph_count;
     // risk
     double risk_amt, max_dd;
     int breaker_tripped;

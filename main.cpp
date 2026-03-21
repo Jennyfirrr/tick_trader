@@ -381,7 +381,20 @@ int main(int argc, char *argv[]) {
             // decoupled from slow path so the display stays responsive
             if (ctrl.total_ticks % 10 == 0) {
                 int back = !__atomic_load_n(&shared.active_idx, __ATOMIC_ACQUIRE);
-                TUI_CopySnapshot(&shared.snapshots[back], &ctrl, &last_stream);
+                int front = !back;
+                // carry graph history from front buffer before overwriting
+                TUISnapshot *bs = &shared.snapshots[back];
+                const TUISnapshot *fs = &shared.snapshots[front];
+                memcpy(bs->price_history, fs->price_history, sizeof(bs->price_history));
+                memcpy(bs->pnl_history, fs->pnl_history, sizeof(bs->pnl_history));
+                bs->graph_head = fs->graph_head;
+                bs->graph_count = fs->graph_count;
+                TUI_CopySnapshot(bs, &ctrl, &last_stream);
+                // append current data point to graph ring buffers
+                bs->price_history[bs->graph_head] = bs->price;
+                bs->pnl_history[bs->graph_head] = bs->total_pnl;
+                bs->graph_head = (bs->graph_head + 1) % TUISnapshot::GRAPH_LEN;
+                if (bs->graph_count < TUISnapshot::GRAPH_LEN) bs->graph_count++;
 #ifdef LATENCY_PROFILING
                 if (tui.hot_count > 0) {
                     shared.snapshots[back].hot_avg_ns = (double)tui.hot_sum / tui.hot_count / tui.tsc_per_ns;
