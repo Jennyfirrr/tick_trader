@@ -35,8 +35,8 @@ The engine connects to Binance's public websocket, receives real-time BTC/USDT t
 ## Architecture
 
 ```
-HOT PATH (every tick, p50 ~950ns):
-  BuyGate          branchless price+volume gate           (~80ns avg)
+HOT PATH (every tick, p50 ~950ns, min ~62ns):
+  BuyGate          branchless price+volume gate           (~62ns min)
   PositionExitGate bitmap walk, per-position TP/SL        (~130ns/pos)
   FillConsumption  sizing, spacing, risk checks            (~750ns avg)
 
