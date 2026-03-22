@@ -1,6 +1,6 @@
 # Next Steps
 
-Prioritized improvements beyond the current engine. Updated 2026-03-21 (v3.0.1).
+Prioritized improvements beyond the current engine. Updated 2026-03-21 (v3.0.6).
 
 Items marked ~~strikethrough~~ are DONE. Remaining items ordered by impact.
 
@@ -10,7 +10,8 @@ Items marked ~~strikethrough~~ are DONE. Remaining items ordered by impact.
 
 ### 1.1 Fill rejection diagnostics
 Add a rejection reason to stderr on slow path when fills are rejected (spacing? balance?
-exposure? circuit breaker?). Helps tune config without guessing.
+exposure? circuit breaker? cooldown?). Helps tune config without guessing why entries
+aren't happening.
 
 ### ~~1.2 Session analytics on quit~~ DONE (v0.4.2+)
 Win/loss count, win rate, profit factor, avg win/loss, avg hold time — all in TUI and
@@ -19,11 +20,20 @@ session summary.
 ### 1.3 Longer paper trading runs
 Run for hours/days. Collect enough data (hundreds of trades) to evaluate win rate, average
 P&L per trade, and whether fees eat the profit. First few minutes tell you nothing.
+Need to validate: adaptive TP/SL R² scaling, volume spike spacing, SL cooldown effectiveness.
 
 ### 1.4 Regime detector tuning
 Paper trade with regime switching enabled. Log every regime transition with timestamp and
 subsequent P&L. After 2+ weeks, analyze which transitions were profitable. See
 DOCS/FUTURE_AUTOTUNE.md.
+
+### 1.5 Config sensitivity analysis
+Key parameters to tune based on paper trading data:
+- `momentum_tp_mult` / `momentum_sl_mult` — base stddev multipliers for momentum TP/SL
+- `spike_threshold` — volume spike ratio to trigger spacing relaxation (default 5x)
+- `sl_cooldown_cycles` — how long to pause after SL (default 5 cycles ≈ 2.5 min)
+- `regime_r2_threshold` — R² required for TRENDING classification (default 0.70)
+- `regime_vol_spike_ratio` — variance ratio for VOLATILE detection (default 2.0)
 
 ---
 
@@ -39,6 +49,11 @@ resets on each new SL. RollingStats keep updating so regression adapts to post-d
 ### ~~2.3 Trailing take-profit~~ DONE (v0.7.0)
 SNR × R² gated trailing TP/SL.
 
+### 2.4 Orderbook imbalance signal
+Use `@depth` websocket stream for bid/ask imbalance. More bids than asks at current price
+= buying pressure = stronger dip buy signal. Free Binance data, no API key needed.
+Could feed into RegimeSignals as a new field (one field + one comparison).
+
 ---
 
 ## Priority 3: Strategy improvements
@@ -51,9 +66,9 @@ spacing relaxation (0.5x) for tighter position clustering on high-conviction dip
 Momentum_BuySignal buys breakouts above rolling avg. Regime detector switches between
 MR and momentum based on market state.
 
-### 3.3 Dynamic TP/SL ratio
-TP/SL ratio informed by regime — trending markets get asymmetric (wider TP, tighter SL).
-Partially done via strategy-aware fill path (momentum uses different multipliers).
+### ~~3.3 Dynamic TP/SL ratio~~ DONE (v3.0.3)
+Momentum TP/SL scaled by R² at fill time (0.5x-1.5x range). ROR acceleration bonus
+(+20% TP when trend accelerating). MR still uses static config percentages.
 
 ### ~~3.4 Time-based exits~~ DONE (v0.7.1)
 `max_hold_ticks` + `min_hold_gain_pct`.
@@ -61,6 +76,11 @@ Partially done via strategy-aware fill path (momentum uses different multipliers
 ### 3.5 Volatile regime strategy
 Replace "pause buying" with active management. See DOCS/FUTURE_VOLATILE_STRATEGY.md.
 Options: exit-only management (v1), reduced exposure (v2), wide straddle (v3).
+
+### 3.6 MR adaptive TP/SL
+Apply the same R²-scaling approach from momentum to mean reversion. Currently MR uses
+static `take_profit_pct` / `stop_loss_pct` from config. Could scale by R² to tighten
+exits in choppy markets and widen in consistent ranging.
 
 ---
 
@@ -70,17 +90,24 @@ Only after paper trading proves profitable over multiple days.
 
 ### 4.1 Slippage simulation
 Add configurable slippage (e.g. 0.01% worse on both buy and sell) to make paper trading
-more realistic.
+more realistic. Currently fills at exact market price which overstates performance.
 
 ### 4.2 Binance REST API order execution
 HTTPS POST with HMAC-SHA256 signing. API key + secret in `secrets.cfg` (gitignored).
-Testnet first.
+Testnet first. Convert paper fills to real limit/market orders.
 
 ### 4.3 Order status tracking
 Handle partial fills, rejections, timeouts. Current instant-fill model is a simplification.
+Need order state machine: PENDING → FILLED / PARTIAL / REJECTED / EXPIRED.
 
 ### 4.4 Notifications
-Webhook/email on: position opened, TP/SL hit, circuit breaker tripped, disconnect.
+Webhook/email on: position opened, TP/SL hit, circuit breaker tripped, disconnect,
+regime switch. Critical for running unattended.
+
+### 4.5 FoxML model bridge
+Feed FoxML prediction model outputs into the buy gate via `model_score` field in
+RegimeSignals. Heavier ML models classify dip vs reversal for smarter entries.
+See memory: project_foxml_bridge.md, project_buy_gate_ml.md.
 
 ---
 
@@ -124,15 +151,15 @@ Track correlation between positions across symbols. Prevent concentrated exposur
 correlated assets (BTC + ETH move together ~70% of the time). Portfolio Manager should
 reduce position size when entering a correlated asset that already has exposure.
 
-### ~~5.3 Strategy library~~ DONE (v0.5.0, v1.0.0)
+### ~~5.4 Strategy library~~ DONE (v0.5.0, v1.0.0)
 StrategyInterface.hpp contract, MeanReversion.hpp, Momentum.hpp, RegimeDetector.hpp.
 Runtime dispatch via strategy_id. See README for extensibility guide.
 
-### 5.4 Strategy dispatch refactor (when adding strategy #3)
+### 5.5 Strategy dispatch refactor (when adding strategy #3)
 - Replace switch statements with macro-generated dispatch or vtable
 - Split ControllerConfig into per-strategy config files
 - See README Build Modes for current architecture
 
-### 5.5 Separate strategy server
+### 5.6 Separate strategy server
 Move strategy logic to separate process. Engine stays fast (executes conditions),
 strategy server does analysis and sends updates over IPC.
