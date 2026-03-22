@@ -691,6 +691,11 @@ struct TUISnapshot {
     double pc_nofill_avg_ns, pc_nofill_max_ns;
     uint64_t pc_nofill_count;
 #endif
+    // right panel: session stats + fill diagnostics
+    double session_high, session_low;
+    double tick_rate;
+    uint32_t fills_rejected;
+    int last_reject_reason;  // 0=none, 1=spacing, 2=balance, 3=exposure, 4=breaker, 5=full, 6=dup
 };
 
 //======================================================================================================
@@ -833,6 +838,12 @@ static inline void TUI_CopySnapshot(TUISnapshot *snap,
     snap->spike_active = FPN_GreaterThanOrEqual(ctrl->volume_spike_ratio,
                                                  ctrl->config.spike_threshold);
     snap->sl_cooldown = (int)ctrl->sl_cooldown_counter;
+    // session stats + fill diagnostics
+    snap->session_high = ctrl->session_high;
+    snap->session_low = ctrl->session_low;
+    snap->tick_rate = (double)ctrl->total_ticks;  // raw count, TUI computes rate from uptime
+    snap->fills_rejected = ctrl->fills_rejected;
+    snap->last_reject_reason = ctrl->last_reject_reason;
 
     // config
     snap->cfg_tp  = FPN_ToDouble(ctrl->config.take_profit_pct) * 100.0;

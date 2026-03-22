@@ -75,6 +75,10 @@ template <unsigned F> struct PortfolioController {
   RORRegressor<F> regime_ror;  // slope-of-slopes for trend acceleration detection
   FPN<F> volume_spike_ratio;   // current_volume / rolling.volume_max (spike detection)
   uint32_t sl_cooldown_counter; // remaining slow-path cycles before buy gate re-enables
+  double session_high;         // highest price since startup
+  double session_low;          // lowest price since startup
+  uint32_t fills_rejected;     // total fills rejected since startup
+  int last_reject_reason;      // 0=none, 1=spacing, 2=balance, 3=exposure, 4=breaker, 5=full, 6=dup
   TradeLogBuffer trade_buf;    // buffered trade log — hot path pushes, slow path drains
 
   //================================================================================================
@@ -138,6 +142,10 @@ inline void PortfolioController_Init(PortfolioController<F> *ctrl,
   ctrl->regime_ror = RORRegressor_Init<F>();
   ctrl->volume_spike_ratio = FPN_Zero<F>();
   ctrl->sl_cooldown_counter = 0;
+  ctrl->session_high = 0.0;
+  ctrl->session_low = 0.0;
+  ctrl->fills_rejected = 0;
+  ctrl->last_reject_reason = 0;
 
   ExitBuffer_Init(&ctrl->exit_buf);
   TradeLogBuffer_Init(&ctrl->trade_buf);
@@ -171,6 +179,12 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
                                      TradeLog *trade_log) {
   // always increment tick counter (branchless, single add)
   ctrl->total_ticks++;
+
+  // session high/low tracking
+  double pd = FPN_ToDouble(current_price);
+  if (ctrl->session_high == 0.0) { ctrl->session_high = pd; ctrl->session_low = pd; }
+  if (pd > ctrl->session_high) ctrl->session_high = pd;
+  if (pd < ctrl->session_low) ctrl->session_low = pd;
 
   //==================================================================================================
   // WARMUP PHASE
@@ -430,6 +444,15 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
                               _stddev, _avg, FPN_ToDouble(ctrl->balance),
                               FPN_ToDouble(entry_fee), _spacing, _gdist,
                               ctrl->strategy_id, ctrl->regime.current_regime); }
+    } else {
+      // fill rejected — track reason for TUI diagnostics
+      ctrl->fills_rejected++;
+      if (!not_blown) ctrl->last_reject_reason = 4;       // breaker
+      else if (!can_afford) ctrl->last_reject_reason = 2;  // balance
+      else if (!under_limit) ctrl->last_reject_reason = 3; // exposure
+      else if (found) ctrl->last_reject_reason = 6;        // duplicate
+      else if (too_close) ctrl->last_reject_reason = 1;    // spacing
+      else ctrl->last_reject_reason = 5;                    // full
     }
 
     fills &= fills - 1;
