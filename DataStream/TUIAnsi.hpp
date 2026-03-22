@@ -447,6 +447,17 @@ static inline int ANSI_Section_BuyGate(AnsiBuf *ab, const TUISnapshot *s, int y,
         ab_printf(ab, A_DIM "  " A_BOLD A_YELLOW "COOLDOWN (%d)" A_RESET, s->sl_cooldown);
     y++;
 
+    // fill rejection diagnostics
+    if (s->fills_rejected > 0 && s->last_reject_reason > 0 && s->last_reject_reason <= 6) {
+        static const char *reasons[] = {"", "spacing", "balance", "exposure",
+                                         "breaker", "full", "duplicate"};
+        ab_goto(ab, y, 3);
+        ab_printf(ab, A_SAND "fills: " A_FG "%u" A_SAND " accepted  " A_FG "%u"
+                  A_SAND " rejected  last: " A_YELLOW "%s" A_RESET,
+                  s->total_buys, s->fills_rejected, reasons[s->last_reject_reason]);
+        y++;
+    }
+
     return y;
 }
 
