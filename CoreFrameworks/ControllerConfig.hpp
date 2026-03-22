@@ -60,7 +60,8 @@ template <unsigned F> struct ControllerConfig {
   // regime detection
   FPN<F> regime_slope_threshold;  // relative slope magnitude for TRENDING (e.g. 0.001 = 0.1%/tick)
   FPN<F> regime_r2_threshold;     // min R² for TRENDING (e.g. 0.70)
-  FPN<F> regime_volatile_stddev;  // stddev/price ratio for VOLATILE (e.g. 0.003 = 0.3%)
+  FPN<F> regime_volatile_stddev;  // stddev/price ratio for VOLATILE (legacy, kept for compat)
+  FPN<F> regime_vol_spike_ratio;  // variance ratio threshold: short/long variance > this = volatile spike
   uint32_t regime_hysteresis;     // slow-path cycles before regime switch (e.g. 5)
   // momentum strategy
   FPN<F> momentum_breakout_mult;  // buy when price > avg + stddev * this (e.g. 1.5)
@@ -104,7 +105,8 @@ template <unsigned F> inline ControllerConfig<F> ControllerConfig_Default() {
   // regime detection
   cfg.regime_slope_threshold = FPN_FromDouble<F>(0.00002); // 0.002%/tick ≈ $180 move over 128-tick window at BTC $70k
   cfg.regime_r2_threshold    = FPN_FromDouble<F>(0.70);   // 70% consistency for trending
-  cfg.regime_volatile_stddev = FPN_FromDouble<F>(0.0005); // 0.05% stddev/price ≈ $35 at BTC $70k
+  cfg.regime_volatile_stddev = FPN_FromDouble<F>(0.0005); // 0.05% stddev/price (legacy compat)
+  cfg.regime_vol_spike_ratio = FPN_FromDouble<F>(2.0);   // variance spike: 2x baseline = volatile
   cfg.regime_hysteresis      = 5;                          // 5 slow-path cycles before switch
   // momentum strategy
   cfg.momentum_breakout_mult = FPN_FromDouble<F>(1.5);    // buy 1.5σ above avg
@@ -233,6 +235,8 @@ inline ControllerConfig<F> ControllerConfig_Load(const char *filepath) {
       cfg.regime_r2_threshold = FPN_FromDouble<F>(atof(val) / 100.0);
     else if (strcmp(key, "regime_volatile_stddev") == 0)
       cfg.regime_volatile_stddev = FPN_FromDouble<F>(atof(val));
+    else if (strcmp(key, "regime_vol_spike_ratio") == 0)
+      cfg.regime_vol_spike_ratio = FPN_FromDouble<F>(atof(val));
     else if (strcmp(key, "regime_hysteresis") == 0)
       cfg.regime_hysteresis = (uint32_t)atol(val);
     // momentum strategy

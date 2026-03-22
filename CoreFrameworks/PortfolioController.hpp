@@ -72,11 +72,8 @@ template <unsigned F> struct PortfolioController {
   MomentumState<F> momentum;
   RegimeState<F> regime;
 
-  // regime detection's own P&L regression — independent of active strategy
-  RegressionFeederX<F> regime_feeder;
-  LinearRegression3XResult<F> regime_regression;
-  int regime_has_regression;
-  TradeLogBuffer trade_buf;  // buffered trade log — hot path pushes, slow path drains
+  RORRegressor<F> regime_ror;  // slope-of-slopes for trend acceleration detection
+  TradeLogBuffer trade_buf;    // buffered trade log — hot path pushes, slow path drains
 
   //================================================================================================
   // COLD — slow path only, kept at end to avoid polluting hot cache lines
@@ -136,9 +133,7 @@ inline void PortfolioController_Init(PortfolioController<F> *ctrl,
   ctrl->momentum.has_regression = 0;
   // regime detector
   Regime_Init(&ctrl->regime, config.regime_hysteresis);
-  ctrl->regime_feeder = RegressionFeederX_Init<F>();
-  ctrl->regime_regression = {};
-  ctrl->regime_has_regression = 0;
+  ctrl->regime_ror = RORRegressor_Init<F>();
 
   ExitBuffer_Init(&ctrl->exit_buf);
   TradeLogBuffer_Init(&ctrl->trade_buf);
@@ -298,8 +293,32 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
       FPN<F> hundred = FPN_FromDouble<F>(100.0);
       FPN<F> tp_mult, sl_mult;
       if (ctrl->strategy_id == STRATEGY_MOMENTUM) {
-          tp_mult = FPN_Mul(ctrl->config.momentum_tp_mult, hundred);
-          sl_mult = FPN_Mul(ctrl->config.momentum_sl_mult, hundred);
+          // adaptive momentum TP/SL — scale by R² from rolling stats
+          // R² ∈ [0,1]: high R² = consistent trend → widen TP, tighten SL
+          //              low R²  = choppy           → tighten TP, widen SL
+          FPN<F> r2 = ctrl->rolling.price_r_squared;
+          FPN<F> half = FPN_FromDouble<F>(0.5);
+
+          // TP: base * (0.5 + R²) → range [0.5x, 1.5x] of config value
+          // strong trend lets winners run, weak trend takes profits early
+          FPN<F> tp_scale = FPN_AddSat(half, r2);
+          tp_mult = FPN_Mul(ctrl->config.momentum_tp_mult, tp_scale);
+
+          // SL: base * (1.5 - R²*0.5) → range [1.0x, 1.5x] of config value
+          // choppy = wider SL (avoid whipsaw stops), consistent = tighter SL
+          FPN<F> one_five = FPN_FromDouble<F>(1.5);
+          FPN<F> sl_scale = FPN_SubSat(one_five, FPN_Mul(r2, half));
+          sl_mult = FPN_Mul(ctrl->config.momentum_sl_mult, sl_scale);
+
+          // ROR bonus: accelerating trend → 20% wider TP
+          // uses direction only (not magnitude) to avoid calibration issues
+          if (ctrl->regime_ror.count >= MAX_WINDOW) {
+              LinearRegression3XResult<F> ror_r = RORRegressor_Compute(
+                  const_cast<RORRegressor<F>*>(&ctrl->regime_ror));
+              if (FPN_GreaterThan(ror_r.model.slope, FPN_Zero<F>())) {
+                  tp_mult = FPN_Mul(tp_mult, FPN_FromDouble<F>(1.2));
+              }
+          }
       } else {
           tp_mult = FPN_Mul(ctrl->config.take_profit_pct, hundred);
           sl_mult = FPN_Mul(ctrl->config.stop_loss_pct, hundred);
@@ -534,20 +553,25 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
   FPN<F> estimated_exit_fees = FPN_Mul(portfolio_value, ctrl->config.fee_rate);
   ctrl->portfolio_delta = FPN_Sub(gross_pnl, estimated_exit_fees);
 
-  // always update regime regression — independent of active strategy so R² stays fresh
-  RegressionFeederX_Push(&ctrl->regime_feeder, ctrl->portfolio_delta);
-  if (ctrl->regime_feeder.count >= MAX_WINDOW) {
-    ctrl->regime_regression = RegressionFeederX_Compute(&ctrl->regime_feeder);
-    ctrl->regime_has_regression = 1;
+  // feed rolling price slope to ROR for trend acceleration detection
+  // ROR gives us slope-of-slopes: is the trend getting steeper or flattening?
+  // fills after 8 slow-path cycles (~4 min), much faster than the old feeder chain
+  {
+    // construct a minimal regression result to push to ROR (it stores slope + r2)
+    LinearRegression3XResult<F> slope_sample;
+    slope_sample.model.slope = ctrl->rolling.price_slope;
+    slope_sample.model.intercept = FPN_Zero<F>();
+    slope_sample.r_squared = ctrl->rolling.price_r_squared;
+    RORRegressor_Push(&ctrl->regime_ror, slope_sample);
   }
 
-  // regime detection: classify market state and switch strategy if needed
+  // regime detection: compute signals from rolling stats + ROR, then classify
   {
-    FPN<F> regime_r2 = ctrl->regime_has_regression
-        ? ctrl->regime_regression.r_squared : FPN_Zero<F>();
+    RegimeSignals<F> signals;
+    Regime_ComputeSignals(&signals, &ctrl->rolling, ctrl->rolling_long, &ctrl->regime_ror);
+
     int old_regime = ctrl->regime.current_regime;
-    Regime_Classify(&ctrl->regime, &ctrl->rolling, ctrl->rolling_long,
-                    regime_r2, &ctrl->config);
+    Regime_Classify(&ctrl->regime, &signals, &ctrl->config);
     int new_regime = ctrl->regime.current_regime;
     if (new_regime != old_regime) {
       int old_strategy = ctrl->strategy_id;
@@ -669,6 +693,7 @@ inline void PortfolioController_HotReload(PortfolioController<F> *ctrl,
     ctrl->config.regime_slope_threshold = new_cfg.regime_slope_threshold;
     ctrl->config.regime_r2_threshold    = new_cfg.regime_r2_threshold;
     ctrl->config.regime_volatile_stddev = new_cfg.regime_volatile_stddev;
+    ctrl->config.regime_vol_spike_ratio = new_cfg.regime_vol_spike_ratio;
     ctrl->config.regime_hysteresis      = new_cfg.regime_hysteresis;
     ctrl->config.momentum_breakout_mult = new_cfg.momentum_breakout_mult;
     ctrl->config.momentum_tp_mult       = new_cfg.momentum_tp_mult;

@@ -1,16 +1,18 @@
 # Tick Trader
 
-Tick-level crypto trading engine in C++. Branchless fixed-point arithmetic, bitmap-based portfolio management, regime-adaptive strategy switching. Single-symbol, single-threaded hot path with multicore FTXUI dashboard.
+Tick-level crypto trading engine in C++. Branchless fixed-point arithmetic, bitmap-based portfolio management, regime-adaptive strategy switching. Single-symbol, single-threaded hot path with multicore TUI dashboard.
 
 ![Tick Trader TUI](assets/tui-screenshot.png)
 
 ## Quick Start
 
 ```bash
-make          # build (multicore TUI, production)
-./engine      # connects to Binance, paper trades BTC
+make          # build (ANSI TUI, zero deps beyond OpenSSL)
+make run      # build + run (connects to Binance, paper trades BTC)
 make test     # run 101 tests
 ```
+
+The engine binary lives in `build/` and reads `engine.cfg` from its working directory (symlinked by `make`).
 
 ## Architecture
 
@@ -25,7 +27,7 @@ SLOW PATH (every 100 ticks):
   StrategyDispatch adapt + buy signal (MR or momentum)
   RollingStats     128-tick + 512-tick market statistics
   TradeLog         buffered CSV drain
-  Snapshot         binary state persistence (v5)
+  Snapshot         binary state persistence (v7)
 ```
 
 ## Strategies
@@ -37,14 +39,20 @@ SLOW PATH (every 100 ticks):
 
 ### Momentum (TRENDING regime)
 - **Entry:** buy when price breaks above rolling average + stddev offset
-- **Exit:** wider TP (let trends run), tighter SL (cut false breakouts)
+- **Exit:** wider TP (3σ), tighter SL (1σ) — let trends run, cut false breakouts
 - **Adaptation:** P&L regression adjusts breakout threshold
 
-### Regime Detection
+### Regime Detection (score-based)
 - **RANGING** → mean reversion (buy dips)
 - **TRENDING** → momentum (buy breakouts)
 - **VOLATILE** → pause buying (existing positions keep TP/SL)
-- Classification: slope magnitude + R² consistency + stddev level
+- 7 input signals via `RegimeSignals` struct:
+  - Short/long slope magnitude (128-tick + 512-tick windows)
+  - R² consistency (least-squares regression fit)
+  - ROR slope (trend acceleration — slope-of-slopes)
+  - Volume slope confirmation
+  - Vol ratio (short/long variance — volatility spike detection)
+- Weighted scoring: trending needs 2/5 signals, volatile needs 2/2
 - Hysteresis prevents rapid switching (configurable cycles)
 - Position TP/SL adjusted on regime transition
 
@@ -61,35 +69,55 @@ No duplicate code to sync — shared functions handle config reload, unpause, an
 
 ## Build
 
-Requires: g++ (C++17), OpenSSL, CMake 3.14+. FTXUI is fetched automatically.
+Requires: g++ (C++17), OpenSSL, CMake 3.14+. Default build has zero external TUI dependencies.
 
 ```bash
-make              # build (cmake + FTXUI, multicore TUI)
+make              # build (ANSI TUI, no library deps)
+make run          # build + run engine
 make test         # run 101 tests
+make ftxui        # build with FTXUI TUI (auto-fetched)
+make notcurses    # build with notcurses TUI (requires system lib)
 make profile      # with per-component latency profiling
 make profile-lite # total-only latency (lower overhead)
 make bench        # headless profiling to stderr
 make clean        # remove build directory
 ```
 
+Or directly with CMake:
+
+```bash
+cmake -B build && cmake --build build                       # ANSI TUI (default)
+cmake -B build -DUSE_FTXUI=ON && cmake --build build        # FTXUI TUI (auto-fetched)
+cmake -B build -DUSE_NOTCURSES=ON && cmake --build build    # notcurses TUI (requires system lib)
+```
+
 ### CMake Options
 
 | Option | Default | Effect |
 |--------|---------|--------|
+| `USE_FTXUI` | OFF | Use FTXUI for TUI (auto-fetched from GitHub) |
+| `USE_NOTCURSES` | OFF | Use notcurses for TUI (requires system lib) |
 | `LATENCY_PROFILING` | OFF | RDTSCP timing with per-component breakdown |
 | `LATENCY_LITE` | OFF | Total-only timing (2 rdtscp vs 4) |
 | `LATENCY_BENCH` | OFF | Headless profiling to stderr |
 
 ## TUI
 
-FTXUI-based terminal dashboard with FoxML color theme. Engine runs on core 0,
-TUI renders on core 1 from a double-buffered snapshot (zero engine contention).
+Zero-dependency ANSI terminal dashboard with FoxML warm-forest color palette (truecolor).
+Engine runs on core 0, TUI renders on core 1 from a double-buffered snapshot (zero engine contention).
+Designed for transparent terminals — foreground-only colors, synchronized output protocol for flicker-free rendering.
+
+Three backends available:
+- **ANSI** (default) — raw escape codes, no library deps, works everywhere including tmux
+- **FTXUI** (`-DUSE_FTXUI=ON`) — DOM-based rendering, auto-fetched
+- **notcurses** (`-DUSE_NOTCURSES=ON`) — experimental, requires system lib
 
 Features:
-- 3 preset layouts: Standard, Positions Focus, Compact (cycle with `l`)
-- Live price + P&L sparkline graphs (120-point ring buffer)
-- Scrollable position list with hold time, trailing status
-- Exposure gauge, regime status with duration
+- 3 preset layouts: Standard, Charts, Compact (cycle with `l`)
+- Regime signal dashboard: R² bars, vol_ratio, ror_slope with directional arrows
+- Price + P&L sparkline charts (▁▂▃▄▅▆▇█ from 120-point ring buffer)
+- Position list with TP/SL, hold time, trailing status
+- Exposure, regime classification with duration, strategy display
 - Auto-resizes to terminal dimensions
 
 ## TUI Controls
@@ -100,7 +128,7 @@ Features:
 | `p` | Pause/unpause buying (exit gate keeps running) |
 | `r` | Hot-reload engine.cfg |
 | `s` | Cycle regime (RANGING→TRENDING→VOLATILE) for testing |
-| `l` | Cycle layout (Standard→Positions→Compact) |
+| `l` | Cycle layout (Standard→Charts→Compact) |
 
 ## Project Structure
 
@@ -108,7 +136,7 @@ Features:
 CoreFrameworks/
   OrderGates.hpp          BuyGate (direction-aware), SellGate
   Portfolio.hpp            Position storage, ExitGate, bitmap ops
-  PortfolioController.hpp  Tick function, dispatch, shared functions, snapshot v5
+  PortfolioController.hpp  Tick function, dispatch, shared functions, snapshot v7
   ControllerConfig.hpp     Config struct, parser, defaults
 
 Strategies/
@@ -120,6 +148,9 @@ Strategies/
 DataStream/
   BinanceCrypto.hpp        WebSocket stream (TCP/TLS/WS/JSON)
   EngineTUI.hpp            Terminal dashboard, multicore snapshot
+  TUIAnsi.hpp              ANSI TUI renderer (default, zero deps)
+  TUIWidgets/TUILayout.hpp FTXUI widgets/layouts (opt-in)
+  TUINotcurses.hpp         notcurses renderer (experimental)
   TradeLog.hpp             CSV logger + ring buffer
 
 FixedPoint/

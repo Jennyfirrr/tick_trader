@@ -1,17 +1,21 @@
 //======================================================================================================
 // [ROLLING MARKET STATISTICS]
 //======================================================================================================
-// tracks rolling averages and trends for price and volume over a configurable window
-// used by the controller to set dynamic buy gate conditions based on actual market behavior
-// instead of static warmup means
+// tracks rolling averages, trends, and regression quality for price and volume
+// used by the controller to set dynamic buy gate conditions and classify market regime
 //
-// three outputs:
-//   1. rolling volume average - filters out micro-fills (is this tick significant?)
-//   2. volume slope - is volume trending up or down? (should we be more/less aggressive?)
-//   3. rolling price standard deviation - dynamic entry spacing based on actual volatility
+// outputs (recomputed every push via least-squares regression):
+//   price_avg, price_slope, price_r_squared  — where is price, which direction, how consistent
+//   price_stddev (range/4 approx)            — volatility proxy for spacing/TP/SL
+//   price_variance                           — real variance for ratio comparisons
+//   volume_avg, volume_slope                 — volume trend for filtering and confirmation
+//   price_min, price_max                     — range bounds
 //
-// uses the same ring buffer pattern as RegressionFeederX with branchless power-of-2 wrap
-// window size W is a template parameter, defaulting to 128, for branchless operation
+// regression math follows LinearRegression3X_Fit (ordinary least squares, 5 sums)
+// x-values are time indices 0..count-1, precomputable: sum_x = n(n-1)/2, sum_x2 = n(n-1)(2n-1)/6
+//
+// uses ring buffer with branchless power-of-2 wrap
+// window size W is a template parameter, defaulting to 128
 //======================================================================================================
 #ifndef ROLLING_STATS_HPP
 #define ROLLING_STATS_HPP
@@ -33,13 +37,15 @@ template <unsigned F, unsigned W = 128> struct RollingStats {
     int count;
 
     // cached outputs - recomputed every push
-    FPN<F> volume_avg;         // mean volume over window
-    FPN<F> volume_slope;       // linear trend of volume (positive = increasing)
     FPN<F> price_avg;          // mean price over window
-    FPN<F> price_slope;        // linear trend of price (positive = rising)
-    FPN<F> price_stddev;       // standard deviation of price over window (volatility proxy)
-    FPN<F> price_min;          // min price in window (for range-based spacing)
-    FPN<F> price_max;          // max price in window (for range-based spacing)
+    FPN<F> price_slope;        // least-squares regression slope (positive = rising)
+    FPN<F> price_r_squared;    // regression R² (0-1, trend consistency)
+    FPN<F> price_variance;     // real variance (sum((p-avg)²)/n, no sqrt)
+    FPN<F> price_stddev;       // range/4 approximation (kept for config compatibility)
+    FPN<F> price_min;          // min price in window
+    FPN<F> price_max;          // max price in window
+    FPN<F> volume_avg;         // mean volume over window
+    FPN<F> volume_slope;       // least-squares regression slope of volume
 };
 
 //======================================================================================================
@@ -51,15 +57,17 @@ template <unsigned F, unsigned W = 128> inline RollingStats<F, W> RollingStats_I
         rs.price_buf[i]  = FPN_Zero<F>();
         rs.volume_buf[i] = FPN_Zero<F>();
     }
-    rs.head         = 0;
-    rs.count        = 0;
-    rs.volume_avg   = FPN_Zero<F>();
-    rs.volume_slope = FPN_Zero<F>();
-    rs.price_avg    = FPN_Zero<F>();
-    rs.price_slope  = FPN_Zero<F>();
-    rs.price_stddev = FPN_Zero<F>();
-    rs.price_min    = FPN_Zero<F>();
-    rs.price_max    = FPN_Zero<F>();
+    rs.head            = 0;
+    rs.count           = 0;
+    rs.price_avg       = FPN_Zero<F>();
+    rs.price_slope     = FPN_Zero<F>();
+    rs.price_r_squared = FPN_Zero<F>();
+    rs.price_variance  = FPN_Zero<F>();
+    rs.price_stddev    = FPN_Zero<F>();
+    rs.price_min       = FPN_Zero<F>();
+    rs.price_max       = FPN_Zero<F>();
+    rs.volume_avg      = FPN_Zero<F>();
+    rs.volume_slope    = FPN_Zero<F>();
     return rs;
 }
 
@@ -69,6 +77,10 @@ template <unsigned F, unsigned W = 128> inline RollingStats<F, W> RollingStats_I
 // adds a new price/volume sample and recomputes all rolling statistics
 // this runs on the slow path (every poll_interval ticks), not every tick
 // the computation is O(W) which at default 128 is well within the slow-path budget
+//
+// single pass computes 5 regression sums (following LinearRegression3X_Fit):
+//   sum_y (price), sum_y2 (price²), sum_xy (index*price), sum_vol, sum_vol_xy
+// x-values are time indices 0..count-1, so sum_x and sum_x2 are computed from count alone
 //======================================================================================================
 template <unsigned F, unsigned W>
 inline void RollingStats_Push(RollingStats<F, W> *rs, FPN<F> price, FPN<F> volume) {
@@ -80,48 +92,77 @@ inline void RollingStats_Push(RollingStats<F, W> *rs, FPN<F> price, FPN<F> volum
 
     if (rs->count < 2) return; // need at least 2 samples for meaningful stats
 
-    // single pass: compute sums for price avg, volume avg, price min/max
-    FPN<F> price_sum  = FPN_Zero<F>();
-    FPN<F> volume_sum = FPN_Zero<F>();
-    FPN<F> p_min = rs->price_buf[(rs->head - rs->count + (int)W) & ((int)W - 1)];
+    int n = rs->count;
+
+    // single pass: accumulate sums for regression, averages, and min/max
+    FPN<F> price_sum    = FPN_Zero<F>();
+    FPN<F> volume_sum   = FPN_Zero<F>();
+    FPN<F> price_sum_xy = FPN_Zero<F>();   // sum(i * price[i])
+    FPN<F> price_sum_y2 = FPN_Zero<F>();   // sum(price[i]²)
+    FPN<F> vol_sum_xy   = FPN_Zero<F>();   // sum(i * volume[i])
+
+    FPN<F> p_min = rs->price_buf[(rs->head - n + (int)W) & ((int)W - 1)];
     FPN<F> p_max = p_min;
 
-    for (int i = 0; i < rs->count; i++) {
-        int idx = (rs->head - rs->count + i + (int)W) & ((int)W - 1);
+    for (int i = 0; i < n; i++) {
+        int idx = (rs->head - n + i + (int)W) & ((int)W - 1);
         FPN<F> p = rs->price_buf[idx];
         FPN<F> v = rs->volume_buf[idx];
+        FPN<F> i_fp = FPN_FromDouble<F>((double)i);
 
-        price_sum  = FPN_AddSat(price_sum, p);
-        volume_sum = FPN_AddSat(volume_sum, v);
+        price_sum    = FPN_AddSat(price_sum, p);
+        volume_sum   = FPN_AddSat(volume_sum, v);
+        price_sum_xy = FPN_AddSat(price_sum_xy, FPN_Mul(i_fp, p));
+        price_sum_y2 = FPN_AddSat(price_sum_y2, FPN_Mul(p, p));
+        vol_sum_xy   = FPN_AddSat(vol_sum_xy, FPN_Mul(i_fp, v));
+
         p_min = FPN_Min(p_min, p);
         p_max = FPN_Max(p_max, p);
     }
 
-    FPN<F> n_fp = FPN_FromDouble<F>((double)rs->count);
+    // precompute x-sums from count (x = 0, 1, ..., n-1)
+    // sum_x  = n*(n-1)/2
+    // sum_x2 = n*(n-1)*(2n-1)/6
+    FPN<F> n_fp   = FPN_FromDouble<F>((double)n);
+    FPN<F> sum_x  = FPN_FromDouble<F>((double)n * (double)(n - 1) / 2.0);
+    FPN<F> sum_x2 = FPN_FromDouble<F>((double)n * (double)(n - 1) * (double)(2 * n - 1) / 6.0);
+
+    // averages and range
     rs->price_avg  = FPN_DivNoAssert(price_sum, n_fp);
     rs->volume_avg = FPN_DivNoAssert(volume_sum, n_fp);
     rs->price_min  = p_min;
     rs->price_max  = p_max;
 
-    // second pass: price standard deviation (sqrt of variance)
-    // variance = sum((p - mean)^2) / count
-    // we use the price range (max - min) as an approximation of 4*stddev to avoid sqrt
-    // range / 4 is a rough stddev estimate - good enough for spacing decisions
-    // actual stddev would require FPN_Sqrt which we dont have and dont need
+    // stddev approximation (kept for config compatibility — all existing multipliers tuned for this)
     FPN<F> range = FPN_Sub(p_max, p_min);
-    FPN<F> four  = FPN_FromDouble<F>(4.0);
-    rs->price_stddev = FPN_DivNoAssert(range, four);
+    rs->price_stddev = FPN_DivNoAssert(range, FPN_FromDouble<F>(4.0));
 
-    // price and volume slopes: first-last difference over the window
-    // positive = increasing, negative = decreasing
-    int oldest_idx = (rs->head - rs->count + (int)W) & ((int)W - 1);
-    int newest_idx = (rs->head - 1 + (int)W) & ((int)W - 1);
+    // real variance: var = (sum_y2 / n) - (sum_y / n)²  =  (n*sum_y2 - sum_y²) / n²
+    FPN<F> ss_total = FPN_SubSat(FPN_Mul(n_fp, price_sum_y2), FPN_Mul(price_sum, price_sum));
+    FPN<F> n_sq = FPN_Mul(n_fp, n_fp);
+    rs->price_variance = FPN_DivNoAssert(ss_total, n_sq);
 
-    FPN<F> price_diff = FPN_Sub(rs->price_buf[newest_idx], rs->price_buf[oldest_idx]);
-    rs->price_slope = FPN_DivNoAssert(price_diff, n_fp);
+    // price slope via ordinary least squares (same formula as LinearRegression3X_Fit)
+    // slope = (n*sum_xy - sum_x*sum_y) / (n*sum_x2 - sum_x²)
+    FPN<F> numerator   = FPN_Sub(FPN_Mul(n_fp, price_sum_xy), FPN_Mul(sum_x, price_sum));
+    FPN<F> denominator = FPN_Sub(FPN_Mul(n_fp, sum_x2), FPN_Mul(sum_x, sum_x));
 
-    FPN<F> vol_diff = FPN_Sub(rs->volume_buf[newest_idx], rs->volume_buf[oldest_idx]);
-    rs->volume_slope = FPN_DivNoAssert(vol_diff, n_fp);
+    int denom_nonzero = !FPN_IsZero(denominator);
+    FPN<F> safe_denom  = denom_nonzero ? denominator : FPN_FromDouble<F>(1.0);
+    FPN<F> raw_slope   = FPN_DivNoAssert(numerator, safe_denom);
+    rs->price_slope    = denom_nonzero ? raw_slope : FPN_Zero<F>();
+
+    // R² = slope * numerator / ss_total
+    // splits the fraction to avoid squaring large values (same trick as LinearRegression3X_Fit)
+    int total_nonzero   = (!FPN_IsZero(ss_total)) & denom_nonzero;
+    FPN<F> safe_total   = total_nonzero ? ss_total : FPN_FromDouble<F>(1.0);
+    FPN<F> raw_r2       = FPN_Mul(rs->price_slope, FPN_DivNoAssert(numerator, safe_total));
+    rs->price_r_squared = total_nonzero ? raw_r2 : FPN_Zero<F>();
+
+    // volume slope via same formula
+    FPN<F> vol_num   = FPN_Sub(FPN_Mul(n_fp, vol_sum_xy), FPN_Mul(sum_x, volume_sum));
+    FPN<F> vol_slope = FPN_DivNoAssert(vol_num, safe_denom);
+    rs->volume_slope = denom_nonzero ? vol_slope : FPN_Zero<F>();
 }
 
 //======================================================================================================
