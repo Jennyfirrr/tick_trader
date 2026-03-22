@@ -94,8 +94,9 @@ Strategy dispatch → position adjustment on regime switch
 
 ## Current State
 
-- Portfolio controller: COMPLETE (101/101 tests passing)
+- Portfolio controller: COMPLETE (118/118 tests passing)
 - Regime detection: score-based with 7 signals, extensible RegimeSignals struct
+- Volume spike detection: current/max ratio, spacing relaxation on 5x+ spikes
 - RollingStats: real least-squares regression (slope, R², variance)
 - Snapshot persistence: v7 (entry_time + session stats survive restarts)
 - Binance websocket: WORKING (live market data)

@@ -43,9 +43,9 @@ SNR × R² gated trailing TP/SL.
 
 ## Priority 3: Strategy improvements
 
-### 3.1 Volume-weighted entries
-Spike detection: current tick volume / rolling max volume. A 10x volume spike on a dip is
-a stronger signal than gradual 3x above average.
+### ~~3.1 Volume-weighted entries~~ DONE (v3.0.4)
+Volume spike detection: `current_volume / rolling.volume_max`. Spike ratio ≥ 5x triggers
+spacing relaxation (0.5x) for tighter position clustering on high-conviction dips.
 
 ### ~~3.2 Momentum strategy~~ DONE (v1.0.0)
 Momentum_BuySignal buys breakouts above rolling avg. Regime detector switches between

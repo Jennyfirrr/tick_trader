@@ -4,6 +4,8 @@
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 3.0.5 | 2026-03-21 | Spike ratio bugfixes (init + stale data), momentum/regime test coverage (118 assertions) |
+| 3.0.4 | 2026-03-21 | Volume spike detection, spacing relaxation on high-conviction dips |
 | 3.0.3 | 2026-03-21 | Adaptive momentum TP/SL (R²-scaled + ROR acceleration bonus) |
 | 3.0.2 | 2026-03-21 | Momentum TP/SL ×100 bugfix, diff-based rendering (zero flicker), adaptive position layout |
 | 3.0.1 | 2026-03-21 | Flicker fix, uptime fix, kaomoji fox art, per-bar P&L sparkline, enriched positions, volume chart |
