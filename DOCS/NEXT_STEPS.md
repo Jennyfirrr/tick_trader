@@ -1,6 +1,6 @@
 # Next Steps
 
-Prioritized improvements beyond the current engine. Updated 2026-03-22 (v3.0.7).
+Prioritized improvements beyond the current engine. Updated 2026-03-22 (v3.0.12).
 
 Items marked ~~strikethrough~~ are DONE. Remaining items ordered by impact.
 

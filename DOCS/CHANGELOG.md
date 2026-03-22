@@ -4,6 +4,7 @@
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 3.0.12 | 2026-03-22 | Always warmup after snapshot load, exit drain during warmup, revert TUI to 9-section layout |
 | 3.0.11 | 2026-03-22 | TUI consolidation (9→6 sections), fox art fix, BUYING PAUSED wording, W/L in top bar |
 | 3.0.10 | 2026-03-22 | Warmup waits for full short window (128 samples), version strings synced, dynamic warmup display |
 | 3.0.9 | 2026-03-22 | Public release — README rewrite, screenshots, gitignore cleanup |
@@ -38,7 +39,7 @@
 
 ## Detailed Changelogs
 
-- [2026-03-22](changelogs/2026-03-22.md) — v3.0.7 through v3.0.11 (warmup fix, fill diagnostics, TUI consolidation, public release)
+- [2026-03-22](changelogs/2026-03-22.md) — v3.0.7 through v3.0.12 (warmup fix, fill diagnostics, snapshot warmup, public release)
 - [2026-03-21](changelogs/2026-03-21.md) — v0.7.1 through v3.0.6 (regime switching, latency profiling, ANSI TUI, volume spikes, SL cooldown)
 - [2026-03-20](changelogs/2026-03-20.md) — v0.2.0 through v0.7.0 (live trading, strategies, risk management)
 - [2026-03-19](changelogs/2026-03-19.md) — v0.1.0 (initial release)
