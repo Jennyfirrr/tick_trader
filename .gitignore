@@ -5,13 +5,17 @@ tests/controller_test
 
 # config with secrets
 secrets.cfg
+*.key
+*.pem
 
-# trade logs
+# trade logs + runtime data
 *_order_history.csv
 *_metrics.csv
+*.log
 
 # runtime state
 portfolio.snapshot
+*.snapshot
 
 # engine binaries
 engine
@@ -22,15 +26,28 @@ engine_mc
 engine_mc_prof
 tests/binance_test
 
+# live config (use engine.cfg.example as template)
+engine.cfg
+
 # backup configs
 *.cfg.bak
 
 # claude code
 .claude/
 CLAUDE.md
+claude-skills/
 
 # plan files
 plans/
+
+# editor / IDE
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+compile_commands.json
+.cache/
 
 # cmake
 build/
