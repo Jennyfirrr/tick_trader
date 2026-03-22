@@ -4,6 +4,8 @@ Tick-level crypto trading engine in C++17. Branchless fixed-point arithmetic, bi
 
 > **Paper trading only.** This engine connects to the public Binance websocket for market data. No API key required for data — order execution is not yet implemented.
 
+[![Donate](https://img.shields.io/badge/Donate-PayPal-blue.svg)](https://www.paypal.com/ncp/payment/8M6XLK7M8569C)
+
 ### Standard Layout
 ![Standard Layout](assets/tui-standard.png)
 
@@ -160,16 +162,12 @@ DOCS/                    Architecture, configuration, performance, changelogs
 
 See `DOCS/CONTRIBUTING.md` for the full guide.
 
-## Support
-
-If this project is useful to you, consider supporting continued development:
-
-[![Donate](https://img.shields.io/badge/Donate-PayPal-blue.svg)](https://www.paypal.com/ncp/payment/8M6XLK7M8569C)
-
-<a href="https://www.paypal.com/ncp/payment/8M6XLK7M8569C">
-  <img src="assets/donate-qr.png" alt="Donate QR Code" width="200">
-</a>
-
 ## License
 
 See `LICENSE` file.
+
+---
+
+<a href="https://www.paypal.com/ncp/payment/8M6XLK7M8569C">
+  <img src="assets/donate-qr.png" alt="Support development" width="150">
+</a>
