@@ -9,7 +9,7 @@ Tick-level crypto trading engine in C++. Branchless fixed-point arithmetic, bitm
 ```bash
 make          # build (ANSI TUI, zero deps beyond OpenSSL)
 make run      # build + run (connects to Binance, paper trades BTC)
-make test     # run 101 tests
+make test     # run 128 tests
 ```
 
 The engine binary lives in `build/` and reads `engine.cfg` from its working directory (symlinked by `make`).

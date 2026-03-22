@@ -11,7 +11,7 @@ CMake with zero-dependency ANSI TUI (default):
 cmake -B build && cmake --build build         # production (ANSI TUI, no deps)
 cmake -B build -DUSE_FTXUI=ON && cmake --build build      # FTXUI TUI (auto-fetched)
 cmake -B build -DUSE_NOTCURSES=ON && cmake --build build  # notcurses TUI (experimental)
-./build/controller_test                        # run tests (101 assertions)
+./build/controller_test                        # run tests (128 assertions)
 cd build && ./engine                           # run engine (needs engine.cfg symlink)
 ```
 
@@ -110,7 +110,7 @@ Strategy dispatch → position adjustment on regime switch
 2. Per-position TP/SL exits on hot path, portfolio management on slow path
 3. Fill consumption happens EVERY tick (zero unprotected exposure)
 4. Sell logic is per-position percentage-based, buy gate is regression-driven
-5. Warmup phase observes market before trading (symbol-agnostic initial conditions)
+5. Warmup phase observes market before trading (gates on slow-path sample count, not raw ticks)
 6. 24-hour session lifecycle: warmup -> trade -> wind down -> close all -> reconnect
 7. TUI is independent of engine (engine runs headless, TUI only reads state)
 8. No API key needed for market data websocket (public endpoint)
