@@ -63,6 +63,7 @@ template <unsigned F> struct ControllerConfig {
   FPN<F> regime_volatile_stddev;  // stddev/price ratio for VOLATILE (legacy, kept for compat)
   FPN<F> regime_vol_spike_ratio;  // variance ratio threshold: short/long variance > this = volatile spike
   uint32_t regime_hysteresis;     // slow-path cycles before regime switch (e.g. 5)
+  uint32_t min_warmup_samples;   // min rolling stats samples before trading (0 = use warmup_ticks only)
   // post-SL cooldown
   uint32_t sl_cooldown_cycles;   // slow-path cycles to pause buying after SL (0 = disabled)
   // momentum strategy
@@ -77,7 +78,8 @@ template <unsigned F> struct ControllerConfig {
 template <unsigned F> inline ControllerConfig<F> ControllerConfig_Default() {
   ControllerConfig<F> cfg;
   cfg.poll_interval = 100;
-  cfg.warmup_ticks = 1000; // observe market before trading (~5.5 min at BTC rate, needs price diversity)
+  cfg.warmup_ticks = 128; // minimum raw ticks before trading
+  cfg.min_warmup_samples = 0; // min slow-path samples in rolling window (0 = warmup_ticks only)
   cfg.r2_threshold = FPN_FromDouble<F>(0.30);
   cfg.slope_scale_buy = FPN_FromDouble<F>(0.50);
   cfg.max_shift = FPN_FromDouble<F>(0.0001); // 0.01% of price — e.g. $7 at BTC $70k
@@ -248,6 +250,8 @@ inline ControllerConfig<F> ControllerConfig_Load(const char *filepath) {
       cfg.regime_vol_spike_ratio = FPN_FromDouble<F>(atof(val));
     else if (strcmp(key, "regime_hysteresis") == 0)
       cfg.regime_hysteresis = (uint32_t)atol(val);
+    else if (strcmp(key, "min_warmup_samples") == 0)
+      cfg.min_warmup_samples = (uint32_t)atol(val);
     else if (strcmp(key, "sl_cooldown_cycles") == 0)
       cfg.sl_cooldown_cycles = (uint32_t)atol(val);
     // momentum strategy

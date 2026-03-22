@@ -180,14 +180,21 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
     ctrl->volume_sum = FPN_AddSat(ctrl->volume_sum, current_volume);
     ctrl->warmup_count++;
 
-    // feed rolling stats during warmup (both windows so long window has data at activation)
-    RollingStats_Push(&ctrl->rolling, current_price, current_volume);
-    RollingStats_Push(ctrl->rolling_long, current_price, current_volume);
+    // feed rolling stats at slow-path rate during warmup
+    // each push is one slow-path sample — spacing them out ensures each sample
+    // represents a different point in time (real price diversity, not 128 copies
+    // of the same second). tests use poll_interval=1 so every tick IS a sample.
+    if (ctrl->warmup_count % ctrl->config.poll_interval == 0) {
+      RollingStats_Push(&ctrl->rolling, current_price, current_volume);
+      RollingStats_Push(ctrl->rolling_long, current_price, current_volume);
+    }
 
-    if (ctrl->warmup_count >= ctrl->config.warmup_ticks) {
-      // warmup_ticks controls how long to observe before trading
-      // default 1000 (~5.5 min at BTC rate) ensures enough price diversity
-      // for meaningful stddev/R² before the buy gate enables
+    // gate on rolling stats having real data, not just raw tick count
+    // requires warmup_ticks raw ticks AND rolling window having enough slow-path
+    // samples for meaningful regression (stddev/R²/slope)
+    // min_warmup_samples=0 skips the check (tests, backward compat)
+    if (ctrl->warmup_count >= ctrl->config.warmup_ticks
+        && ctrl->rolling.count >= (int)ctrl->config.min_warmup_samples) {
       MeanReversion_Init(&ctrl->mean_rev, &ctrl->rolling, &ctrl->buy_conds);
       Momentum_Init(&ctrl->momentum, &ctrl->rolling, &ctrl->buy_conds);
       ctrl->buy_conds = MeanReversion_BuySignal(&ctrl->mean_rev, &ctrl->rolling,

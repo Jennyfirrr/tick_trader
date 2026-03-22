@@ -30,6 +30,21 @@ static void check(const char *name, int condition) {
 
 constexpr unsigned FP = 64;
 
+// helper: run warmup to completion, auto-computes tick count from config
+// handles both warmup_ticks and min_warmup_samples gates
+static void test_warmup_ctrl(PortfolioController<FP> *ctrl, OrderPool<FP> *pool,
+                              TradeLog *log, double base_price, double base_vol) {
+    int ticks = (int)ctrl->config.warmup_ticks;
+    int for_samples = (int)ctrl->config.min_warmup_samples * (int)ctrl->config.poll_interval;
+    if (for_samples > ticks) ticks = for_samples;
+    ticks += 5; // margin
+    for (int i = 0; i < ticks; i++) {
+        PortfolioController_Tick(ctrl, pool,
+            FPN_FromDouble<FP>(base_price + (i % 10) * 0.3),
+            FPN_FromDouble<FP>(base_vol), log);
+    }
+}
+
 //======================================================================================================
 // [TEST 1: CONFIG PARSER]
 //======================================================================================================
@@ -369,6 +384,7 @@ static void test_warmup() {
 
     ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
     cfg.warmup_ticks = 10;
+    cfg.poll_interval = 1; // every tick pushes to rolling stats during warmup
 
     PortfolioController<FP> ctrl = {};
     PortfolioController_Init(&ctrl, cfg);
