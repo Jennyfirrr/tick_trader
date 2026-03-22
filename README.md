@@ -36,11 +36,17 @@ SLOW PATH (every 100 ticks):
 - **Entry:** buy when price dips below rolling average (stddev-scaled offset)
 - **Exit:** per-position TP/SL, trailing TP (SNR×R² gated), time-based exit
 - **Adaptation:** P&L regression loosens/tightens entry filters
+- **Volume spikes:** 5x+ volume spike halves entry spacing (tighter clustering on high-conviction dips)
 
 ### Momentum (TRENDING regime)
 - **Entry:** buy when price breaks above rolling average + stddev offset
-- **Exit:** wider TP (3σ), tighter SL (1σ) — let trends run, cut false breakouts
+- **Exit:** adaptive TP/SL (R²-scaled: high R² widens TP, ROR acceleration adds 20% bonus)
 - **Adaptation:** P&L regression adjusts breakout threshold
+
+### Risk Controls
+- **Post-SL cooldown:** pauses buying for N cycles after stop loss (prevents falling knife entries)
+- **Circuit breaker:** halts trading if total P&L exceeds max drawdown
+- **Exposure limit:** caps total deployed capital as percentage of balance
 
 ### Regime Detection (score-based)
 - **RANGING** → mean reversion (buy dips)

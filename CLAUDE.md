@@ -94,7 +94,8 @@ Strategy dispatch → position adjustment on regime switch
 
 ## Current State
 
-- Portfolio controller: COMPLETE (118/118 tests passing)
+- Portfolio controller: COMPLETE (128/128 tests passing)
+- Post-SL cooldown: pauses buying for N cycles after stop loss (anti-falling-knife)
 - Regime detection: score-based with 7 signals, extensible RegimeSignals struct
 - Volume spike detection: current/max ratio, spacing relaxation on 5x+ spikes
 - RollingStats: real least-squares regression (slope, R², variance)

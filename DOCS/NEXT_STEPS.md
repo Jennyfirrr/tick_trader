@@ -29,9 +29,9 @@ DOCS/FUTURE_AUTOTUNE.md.
 
 ## Priority 2: Entry quality
 
-### 2.1 Cooldown after stop loss
-After SL hit, skip N slow-path cycles before allowing new buys. Prevents repeated SL hits
-in falling markets (catching falling knives). Branchless counter decrement.
+### ~~2.1 Cooldown after stop loss~~ DONE (v3.0.6)
+`sl_cooldown_cycles=5` pauses buying for 5 slow-path cycles after any SL exit. Counter
+resets on each new SL. RollingStats keep updating so regression adapts to post-drop price.
 
 ### ~~2.2 Multiple timeframe confirmation~~ DONE (v0.6.0)
 512-tick long window + `min_long_slope` gate.
