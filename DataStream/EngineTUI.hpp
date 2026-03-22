@@ -665,6 +665,7 @@ struct TUISnapshot {
     double volume_spike_ratio; // current volume / rolling max (spike detection)
     int spike_active;     // 1 if spike_ratio >= threshold
     int sl_cooldown;      // remaining slow-path cycles in post-SL cooldown
+    int min_warmup_samples; // configured minimum for warmup display
     int engine_state;     // 0=warmup, 1=active, 2=closing
     // config display
     double cfg_tp, cfg_sl, cfg_fee;
@@ -838,6 +839,7 @@ static inline void TUI_CopySnapshot(TUISnapshot *snap,
     snap->spike_active = FPN_GreaterThanOrEqual(ctrl->volume_spike_ratio,
                                                  ctrl->config.spike_threshold);
     snap->sl_cooldown = (int)ctrl->sl_cooldown_counter;
+    snap->min_warmup_samples = (int)ctrl->config.min_warmup_samples;
     // session stats + fill diagnostics
     snap->session_high = ctrl->session_high;
     snap->session_low = ctrl->session_low;

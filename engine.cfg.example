@@ -17,7 +17,7 @@ wind_down_minutes=5             # minutes before 24h boundary to stop new buys a
 
 # warmup phase
 warmup_ticks=128                # minimum raw ticks before trading
-min_warmup_samples=20           # min slow-path samples in rolling window (20 × poll_interval ticks ≈ 11 min)
+min_warmup_samples=128          # wait for short window to fill (128 × poll_interval ≈ 71 min at BTC rate)
 
 #==============================================================================
 # REGRESSION GATE

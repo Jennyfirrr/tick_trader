@@ -274,7 +274,7 @@ static inline int ANSI_Section_Header(AnsiBuf *ab, const TUISnapshot *s,
     if (s->engine_state == 0) {
         ab_goto(ab, y, 2);
         ab_printf(ab, A_BOLD A_YELLOW " ▌ TRADING BLOCKED" A_DIM "  warmup — waiting for market data (%d/%d samples)" A_RESET,
-                  s->roll_count, 20);  // min_warmup_samples default
+                  s->roll_count, s->min_warmup_samples);
         y++;
     } else if (s->sl_cooldown > 0) {
         ab_goto(ab, y, 2);
