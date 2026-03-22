@@ -76,7 +76,7 @@ static inline int NC_Section_Header(struct ncplane *n, const TUISnapshot *s, int
     nc_printf(n, y++, 2, "/\\_/\\   FOXML TRADER");
     nc_printf(n, y, 2, "( o.o )  ");
     nc_foxml::wheat(n);
-    nc_printf(n, y++, 11, "engine v0.8");
+    nc_printf(n, y++, 11, "engine v3.0.9");
     nc_foxml::peach(n);
     nc_printf(n, y++, 2, " > ^ <");
     nc_foxml::bold_off(n);
