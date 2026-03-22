@@ -4,6 +4,8 @@
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 3.0.9 | 2026-03-22 | Public release — README rewrite, screenshots, gitignore cleanup |
+| 3.0.8 | 2026-03-22 | Fill rejection diagnostics in BuyGate section, right panel data tracking |
 | 3.0.7 | 2026-03-22 | Warmup gates on slow-path sample count — prevents buy spam on restart |
 | 3.0.6 | 2026-03-21 | Post-SL cooldown — pauses buying after stop loss to prevent falling knife entries |
 | 3.0.5 | 2026-03-21 | Spike ratio bugfixes (init + stale data), momentum/regime test coverage (118 assertions) |
@@ -34,7 +36,7 @@
 
 ## Detailed Changelogs
 
-- [2026-03-22](changelogs/2026-03-22.md) — v3.0.7 (warmup slow-path gating)
+- [2026-03-22](changelogs/2026-03-22.md) — v3.0.7 through v3.0.9 (warmup fix, fill diagnostics, public release)
 - [2026-03-21](changelogs/2026-03-21.md) — v0.7.1 through v3.0.6 (regime switching, latency profiling, ANSI TUI, volume spikes, SL cooldown)
 - [2026-03-20](changelogs/2026-03-20.md) — v0.2.0 through v0.7.0 (live trading, strategies, risk management)
 - [2026-03-19](changelogs/2026-03-19.md) — v0.1.0 (initial release)
