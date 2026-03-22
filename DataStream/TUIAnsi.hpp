@@ -311,6 +311,13 @@ static inline int ANSI_Section_TopBar(AnsiBuf *ab, const TUISnapshot *s, int y, 
                              (s->current_regime == 2) ? "VOLAT" : "RANGE";
     ab_printf(ab, A_DIM "  │ " A_BOLD "%s%s" A_RESET, regime_color, regime_str);
     ab_printf(ab, A_DIM "  │ " A_SAND "POS " A_FG "%d/16" A_RESET, s->active_count);
+    uint32_t total_exits = s->wins + s->losses;
+    if (total_exits > 0) {
+        ab_printf(ab, A_DIM "  │ " A_GREEN "W:%u " A_RED "L:%u "
+                  "%s%.0f%%" A_RESET,
+                  s->wins, s->losses,
+                  (s->win_rate >= 50.0) ? A_GREEN : A_RED, s->win_rate);
+    }
     y++;
 
     ab_divider(ab, y++, w, false);
@@ -447,14 +454,15 @@ static inline int ANSI_Section_BuyGate(AnsiBuf *ab, const TUISnapshot *s, int y,
         ab_printf(ab, A_DIM "  " A_BOLD A_YELLOW "COOLDOWN (%d)" A_RESET, s->sl_cooldown);
     y++;
 
-    // fill rejection diagnostics
+    // fill rejection diagnostics (compact)
     if (s->fills_rejected > 0 && s->last_reject_reason > 0 && s->last_reject_reason <= 6) {
         static const char *reasons[] = {"", "spacing", "balance", "exposure",
-                                         "breaker", "full", "duplicate"};
+                                         "breaker", "full", "dup"};
         ab_goto(ab, y, 3);
-        ab_printf(ab, A_SAND "fills: " A_FG "%u" A_SAND " accepted  " A_FG "%u"
-                  A_SAND " rejected  last: " A_YELLOW "%s" A_RESET,
-                  s->total_buys, s->fills_rejected, reasons[s->last_reject_reason]);
+        ab_printf(ab, A_DIM "fills " A_FG "%u" A_DIM "/" A_FG "%u"
+                  A_DIM "  last reject: " A_YELLOW "%s" A_RESET,
+                  s->total_buys, s->total_buys + s->fills_rejected,
+                  reasons[s->last_reject_reason]);
         y++;
     }
 
@@ -462,91 +470,42 @@ static inline int ANSI_Section_BuyGate(AnsiBuf *ab, const TUISnapshot *s, int y,
 }
 
 //======================================================================================================
-// [SECTION: PORTFOLIO]
+// [SECTION: ACCOUNT — portfolio, P&L, risk, config merged]
 //======================================================================================================
-static inline int ANSI_Section_Portfolio(AnsiBuf *ab, const TUISnapshot *s, int y, int w) {
+static inline int ANSI_Section_Account(AnsiBuf *ab, const TUISnapshot *s, int y, int w) {
     ab_goto(ab, y, 2);
-    ab_printf(ab, A_BOLD A_PEACH " PORTFOLIO" A_RESET);
+    ab_printf(ab, A_BOLD A_PEACH " ACCOUNT" A_RESET);
     y++;
 
+    // line 1: equity, balance, exposure
     ab_goto(ab, y, 3);
-    ab_printf(ab, A_SAND "equity: " A_FG "$%.2f" A_DIM "       "
-              A_SAND "balance: " A_FG "$%.2f" A_RESET,
-              s->equity, s->balance);
+    ab_printf(ab, A_SAND "equity: " A_FG "$%.2f" A_SAND "  bal: " A_FG "$%.2f"
+              A_SAND "  exp: " A_FG "%.1f%%/%.0f%%" A_RESET,
+              s->equity, s->balance, s->exposure_pct, s->max_exp);
     y++;
 
+    // line 2: P&L summary
     ab_goto(ab, y, 3);
-    ab_printf(ab, A_SAND "exposure: " A_FG "%.1f%%/%.0f%%" A_DIM "       "
-              A_SAND "fees: " A_FG "$%.4f" A_RESET,
-              s->exposure_pct, s->max_exp, s->fees);
-    y++;
-
-    return y;
-}
-
-//======================================================================================================
-// [SECTION: P&L]
-//======================================================================================================
-static inline int ANSI_Section_PnL(AnsiBuf *ab, const TUISnapshot *s, int y, int w) {
-    ab_goto(ab, y, 2);
-    ab_printf(ab, A_BOLD A_PEACH " P&L" A_RESET);
-    y++;
-
-    ab_goto(ab, y, 3);
-    ab_printf(ab, A_SAND "realized: " "%s$%+.4f" A_RESET A_DIM "     "
-              A_SAND "unrealized: " "%s$%+.4f" A_RESET,
+    ab_printf(ab, A_SAND "P&L: " A_BOLD "%s$%+.4f" A_RESET
+              A_DIM " (" "%s%+.2f%%" A_DIM ")" A_RESET
+              A_SAND "  real: " "%s$%+.4f" A_SAND "  unrl: " "%s$%+.4f" A_RESET,
+              A_PNL(s->total_pnl), s->total_pnl,
+              A_PNL(s->return_pct), s->return_pct,
               A_PNL(s->realized), s->realized,
               A_PNL(s->unrealized), s->unrealized);
     y++;
 
+    // line 3: risk + config
     ab_goto(ab, y, 3);
-    ab_printf(ab, A_SAND "total: " A_BOLD "%s$%+.4f" A_RESET
-              A_DIM "          (" "%s%+.2f%%" A_DIM ")" A_RESET,
-              A_PNL(s->total_pnl), s->total_pnl,
-              A_PNL(s->return_pct), s->return_pct);
-    y++;
-
-    return y;
-}
-
-//======================================================================================================
-// [SECTION: RISK]
-//======================================================================================================
-static inline int ANSI_Section_Risk(AnsiBuf *ab, const TUISnapshot *s, int y, int w) {
-    ab_goto(ab, y, 2);
-    ab_printf(ab, A_BOLD A_PEACH " RISK" A_RESET);
-    y++;
-
-    ab_goto(ab, y, 3);
-    ab_printf(ab, A_SAND "risk/pos: " A_FG "%.1f%%" A_RESET A_DIM "  │  "
-              A_SAND "breaker: ", s->risk_amt);
+    ab_printf(ab, A_SAND "risk: " A_FG "%.1f%%" A_SAND "  breaker: ", s->risk_amt);
     if (s->breaker_tripped)
         ab_printf(ab, A_BOLD A_RED "TRIPPED" A_RESET);
     else
         ab_printf(ab, A_GREEN "OK" A_RESET);
-    y++;
-
-    return y;
-}
-
-//======================================================================================================
-// [SECTION: CONFIG]
-//======================================================================================================
-static inline int ANSI_Section_Config(AnsiBuf *ab, const TUISnapshot *s, int y, int w) {
-    ab_goto(ab, y, 2);
-    ab_printf(ab, A_BOLD A_PEACH " CONFIG" A_RESET);
-    y++;
-
-    ab_goto(ab, y, 3);
-    ab_printf(ab, A_SAND "TP: " A_FG "%.1f%%" A_SAND "  SL: " A_FG "%.1f%%"
-              A_SAND "  fee: " A_FG "%.1f%%" A_RESET,
+    ab_printf(ab, A_DIM "  │  " A_SAND "TP:" A_FG "%.1f%%" A_SAND " SL:" A_FG "%.1f%%"
+              A_SAND " fee:" A_FG "%.1f%%" A_RESET,
               s->cfg_tp, s->cfg_sl, s->cfg_fee);
-    if (s->trailing_enabled)
-        ab_printf(ab, A_DIM "  " A_SAND "trail: " A_FG "%.1f" A_DIM "σ"
-                  A_SAND " score: " A_FG "%.2f" A_RESET,
-                  s->cfg_trail_mult, s->cfg_hold_score);
-    else
-        ab_printf(ab, A_DIM "  trailing: off" A_RESET);
+    ab_printf(ab, A_SAND "  fees: " A_FG "$%.2f" A_RESET, s->fees);
     y++;
 
     return y;
@@ -835,17 +794,9 @@ static inline void ANSI_Layout_Standard(AnsiBuf *ab, const TUISnapshot *s,
     ab_divider(ab, y++, w, false);
     y = ANSI_Section_BuyGate(ab, s, y, w);
     ab_divider(ab, y++, w, false);
-    y = ANSI_Section_Portfolio(ab, s, y, w);
+    y = ANSI_Section_Account(ab, s, y, w);
     ab_divider(ab, y++, w, false);
-    y = ANSI_Section_PnL(ab, s, y, w);
-    ab_divider(ab, y++, w, false);
-    y = ANSI_Section_Risk(ab, s, y, w);
-    ab_divider(ab, y++, w, false);
-    y = ANSI_Section_Config(ab, s, y, w);
-    ab_divider(ab, y++, w, false);
-    y = ANSI_Section_Positions(ab, s, y, w, h - 8);
-    ab_divider(ab, y++, w, false);
-    y = ANSI_Section_Stats(ab, s, y, w);
+    y = ANSI_Section_Positions(ab, s, y, w, h - 6);
     ab_divider(ab, y++, w, false);
     y = ANSI_Section_Charts(ab, s, y, w);
 #ifdef LATENCY_PROFILING
