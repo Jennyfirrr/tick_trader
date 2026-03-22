@@ -416,6 +416,8 @@ static inline int ANSI_Section_BuyGate(AnsiBuf *ab, const TUISnapshot *s, int y,
         else
             ab_printf(ab, A_DIM "     " A_SAND "long trend: " A_BOLD A_RED "BLOCKED" A_RESET);
     }
+    if (s->sl_cooldown > 0)
+        ab_printf(ab, A_DIM "  " A_BOLD A_YELLOW "COOLDOWN (%d)" A_RESET, s->sl_cooldown);
     y++;
 
     return y;

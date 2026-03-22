@@ -63,6 +63,8 @@ template <unsigned F> struct ControllerConfig {
   FPN<F> regime_volatile_stddev;  // stddev/price ratio for VOLATILE (legacy, kept for compat)
   FPN<F> regime_vol_spike_ratio;  // variance ratio threshold: short/long variance > this = volatile spike
   uint32_t regime_hysteresis;     // slow-path cycles before regime switch (e.g. 5)
+  // post-SL cooldown
+  uint32_t sl_cooldown_cycles;   // slow-path cycles to pause buying after SL (0 = disabled)
   // momentum strategy
   FPN<F> momentum_breakout_mult;  // buy when price > avg + stddev * this (e.g. 1.5)
   FPN<F> momentum_tp_mult;        // TP multiplier for momentum (e.g. 3.0 stddevs)
@@ -111,6 +113,7 @@ template <unsigned F> inline ControllerConfig<F> ControllerConfig_Default() {
   cfg.regime_volatile_stddev = FPN_FromDouble<F>(0.0005); // 0.05% stddev/price (legacy compat)
   cfg.regime_vol_spike_ratio = FPN_FromDouble<F>(2.0);   // variance spike: 2x baseline = volatile
   cfg.regime_hysteresis      = 5;                          // 5 slow-path cycles before switch
+  cfg.sl_cooldown_cycles     = 5;                          // 5 slow-path cycles pause after SL
   // momentum strategy
   cfg.momentum_breakout_mult = FPN_FromDouble<F>(1.5);    // buy 1.5σ above avg
   cfg.momentum_tp_mult       = FPN_FromDouble<F>(3.0);    // wider TP for trends
@@ -245,6 +248,8 @@ inline ControllerConfig<F> ControllerConfig_Load(const char *filepath) {
       cfg.regime_vol_spike_ratio = FPN_FromDouble<F>(atof(val));
     else if (strcmp(key, "regime_hysteresis") == 0)
       cfg.regime_hysteresis = (uint32_t)atol(val);
+    else if (strcmp(key, "sl_cooldown_cycles") == 0)
+      cfg.sl_cooldown_cycles = (uint32_t)atol(val);
     // momentum strategy
     else if (strcmp(key, "momentum_breakout_mult") == 0)
       cfg.momentum_breakout_mult = FPN_FromDouble<F>(atof(val));

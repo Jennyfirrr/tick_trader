@@ -74,6 +74,7 @@ template <unsigned F> struct PortfolioController {
 
   RORRegressor<F> regime_ror;  // slope-of-slopes for trend acceleration detection
   FPN<F> volume_spike_ratio;   // current_volume / rolling.volume_max (spike detection)
+  uint32_t sl_cooldown_counter; // remaining slow-path cycles before buy gate re-enables
   TradeLogBuffer trade_buf;    // buffered trade log — hot path pushes, slow path drains
 
   //================================================================================================
@@ -136,6 +137,7 @@ inline void PortfolioController_Init(PortfolioController<F> *ctrl,
   Regime_Init(&ctrl->regime, config.regime_hysteresis);
   ctrl->regime_ror = RORRegressor_Init<F>();
   ctrl->volume_spike_ratio = FPN_Zero<F>();
+  ctrl->sl_cooldown_counter = 0;
 
   ExitBuffer_Init(&ctrl->exit_buf);
   TradeLogBuffer_Init(&ctrl->trade_buf);
@@ -470,6 +472,9 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
     const char *reason = (rec->reason == 0) ? "TP" : "SL";
     ctrl->wins += (rec->reason == 0);
     ctrl->losses += (rec->reason == 1);
+    // trigger cooldown on SL (resets counter if another SL fires during cooldown)
+    if (rec->reason == 1 && ctrl->config.sl_cooldown_cycles > 0)
+        ctrl->sl_cooldown_counter = ctrl->config.sl_cooldown_cycles;
 
     // track win/loss dollar amounts for profit factor
     // pos_pnl is net (after fees), positive for wins, negative for losses
@@ -634,6 +639,14 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
     ctrl->buy_conds.price = FPN_Zero<F>();
     ctrl->buy_conds.volume = FPN_Zero<F>();
   }
+
+  // post-SL cooldown: pause buying after stop loss to let market settle
+  // during cooldown, RollingStats keep updating so regression adapts to new price level
+  if (ctrl->sl_cooldown_counter > 0) {
+    ctrl->sl_cooldown_counter--;
+    ctrl->buy_conds.price = FPN_Zero<F>();
+    ctrl->buy_conds.volume = FPN_Zero<F>();
+  }
 }
 //======================================================================================================
 // [SHARED FUNCTIONS — used by both multicore and single-threaded TUI paths]
@@ -721,6 +734,7 @@ inline void PortfolioController_HotReload(PortfolioController<F> *ctrl,
     ctrl->config.momentum_sl_mult       = new_cfg.momentum_sl_mult;
     ctrl->config.spike_threshold         = new_cfg.spike_threshold;
     ctrl->config.spike_spacing_reduction = new_cfg.spike_spacing_reduction;
+    ctrl->config.sl_cooldown_cycles      = new_cfg.sl_cooldown_cycles;
     // reset adaptive filters to new values
     ctrl->mean_rev.live_offset_pct    = new_cfg.entry_offset_pct;
     ctrl->mean_rev.live_vol_mult      = new_cfg.volume_multiplier;
