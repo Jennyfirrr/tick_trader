@@ -847,8 +847,9 @@ static inline void ANSI_Layout_Standard(AnsiBuf *ab, const TUISnapshot *s,
     ab_divider(ab, h - 1, w, true);
     ANSI_Section_Controls(ab, h, w);
 
-    // right panel overlay (after everything else, only on wide terminals)
-    ANSI_Section_RightPanel(ab, s, h, w, start_time);
+    // right panel disabled — overlay approach causes flicker because ab_goto's
+    // deferred \033[K] erases right-column content. needs proper two-column layout.
+    // ANSI_Section_RightPanel(ab, s, h, w, start_time);
 }
 
 //======================================================================================================
