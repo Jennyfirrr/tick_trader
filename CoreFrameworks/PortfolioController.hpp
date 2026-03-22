@@ -73,6 +73,7 @@ template <unsigned F> struct PortfolioController {
   RegimeState<F> regime;
 
   RORRegressor<F> regime_ror;  // slope-of-slopes for trend acceleration detection
+  FPN<F> volume_spike_ratio;   // current_volume / rolling.volume_max (spike detection)
   TradeLogBuffer trade_buf;    // buffered trade log — hot path pushes, slow path drains
 
   //================================================================================================
@@ -227,6 +228,20 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
     // levels instead of clustering
     FPN<F> min_spacing = RollingStats_EntrySpacing(
         &ctrl->rolling, ctrl->config.spacing_multiplier);
+
+    // volume spike: reduce spacing requirement for high-conviction entries
+    // a 5x+ volume spike on a dip is a stronger signal — allow tighter clustering
+    int is_spike = FPN_GreaterThanOrEqual(ctrl->volume_spike_ratio,
+                                           ctrl->config.spike_threshold);
+    FPN<F> spike_spacing = FPN_Mul(min_spacing, ctrl->config.spike_spacing_reduction);
+    uint64_t spike_mask = -(uint64_t)is_spike;
+    for (unsigned w = 0; w < FPN<F>::N; w++) {
+        min_spacing.w[w] = (spike_spacing.w[w] & spike_mask) |
+                           (min_spacing.w[w] & ~spike_mask);
+    }
+    min_spacing.sign = (spike_spacing.sign & is_spike) |
+                       (min_spacing.sign & !is_spike);
+
     int too_close = 0;
     {
       uint16_t active_pos = ctrl->portfolio.active_bitmap;
@@ -543,6 +558,12 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
   RollingStats_Push(&ctrl->rolling, current_price, current_volume);
   RollingStats_Push(ctrl->rolling_long, current_price, current_volume);
 
+  // volume spike detection: ratio of current tick volume to rolling max
+  if (!FPN_IsZero(ctrl->rolling.volume_max))
+      ctrl->volume_spike_ratio = FPN_DivNoAssert(current_volume, ctrl->rolling.volume_max);
+  else
+      ctrl->volume_spike_ratio = FPN_Zero<F>();
+
   // compute unrealized P&L and estimate exit fees on open positions
   // gross P&L is what Portfolio_ComputePnL returns (price delta * qty)
   // net P&L subtracts estimated exit fees so the regression optimizes on real
@@ -698,6 +719,8 @@ inline void PortfolioController_HotReload(PortfolioController<F> *ctrl,
     ctrl->config.momentum_breakout_mult = new_cfg.momentum_breakout_mult;
     ctrl->config.momentum_tp_mult       = new_cfg.momentum_tp_mult;
     ctrl->config.momentum_sl_mult       = new_cfg.momentum_sl_mult;
+    ctrl->config.spike_threshold         = new_cfg.spike_threshold;
+    ctrl->config.spike_spacing_reduction = new_cfg.spike_spacing_reduction;
     // reset adaptive filters to new values
     ctrl->mean_rev.live_offset_pct    = new_cfg.entry_offset_pct;
     ctrl->mean_rev.live_vol_mult      = new_cfg.volume_multiplier;

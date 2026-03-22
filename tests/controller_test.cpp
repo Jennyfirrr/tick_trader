@@ -1205,6 +1205,66 @@ int main() {
     test_trailing_ratchet();
     test_original_tp_sl();
 
+    //==================================================================================================
+    // [TEST: VOLUME SPIKE DETECTION]
+    //==================================================================================================
+    {
+        printf("\n--- Volume Spike Detection ---\n");
+
+        // rolling max tracking
+        RollingStats<FP> rs = RollingStats_Init<FP>();
+        FPN<FP> p = FPN_FromDouble<FP>(100.0);
+        for (int i = 0; i < 10; i++) {
+            FPN<FP> v = FPN_FromDouble<FP>(1.0 + i * 0.5); // volumes: 1.0, 1.5, 2.0, ..., 5.5
+            RollingStats_Push(&rs, p, v);
+        }
+        double vmax = FPN_ToDouble(rs.volume_max);
+        check("rolling volume_max tracks max", fabs(vmax - 5.5) < 0.01);
+
+        // spike ratio computation
+        ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+        cfg.spike_threshold = FPN_FromDouble<FP>(3.0); // 3x max triggers spike
+        cfg.spike_spacing_reduction = FPN_FromDouble<FP>(0.5);
+
+        // ratio = current / max: 5.5 / 5.5 = 1.0 (not a spike)
+        FPN<FP> current_vol = FPN_FromDouble<FP>(5.5);
+        FPN<FP> ratio = FPN_DivNoAssert(current_vol, rs.volume_max);
+        int is_spike = FPN_GreaterThanOrEqual(ratio, cfg.spike_threshold);
+        check("spike: 1x max is not a spike", !is_spike);
+
+        // ratio = 20.0 / 5.5 = 3.6x (IS a spike)
+        FPN<FP> big_vol = FPN_FromDouble<FP>(20.0);
+        FPN<FP> ratio2 = FPN_DivNoAssert(big_vol, rs.volume_max);
+        int is_spike2 = FPN_GreaterThanOrEqual(ratio2, cfg.spike_threshold);
+        check("spike: 3.6x max triggers spike", is_spike2);
+
+        // spacing reduction: normal spacing vs spike spacing
+        FPN<FP> spacing = FPN_FromDouble<FP>(100.0);
+        FPN<FP> reduced = FPN_Mul(spacing, cfg.spike_spacing_reduction);
+        double reduced_d = FPN_ToDouble(reduced);
+        check("spike: spacing reduced to 50%", fabs(reduced_d - 50.0) < 0.01);
+
+        // branchless mask-select produces correct result
+        uint64_t spike_mask = -(uint64_t)is_spike2;
+        FPN<FP> selected;
+        for (unsigned w = 0; w < FPN<FP>::N; w++) {
+            selected.w[w] = (reduced.w[w] & spike_mask) | (spacing.w[w] & ~spike_mask);
+        }
+        selected.sign = (reduced.sign & is_spike2) | (spacing.sign & !is_spike2);
+        double sel_d = FPN_ToDouble(selected);
+        check("spike: mask-select picks reduced spacing", fabs(sel_d - 50.0) < 0.01);
+
+        // non-spike mask-select keeps original
+        uint64_t no_mask = -(uint64_t)is_spike; // is_spike = 0
+        FPN<FP> selected2;
+        for (unsigned w = 0; w < FPN<FP>::N; w++) {
+            selected2.w[w] = (reduced.w[w] & no_mask) | (spacing.w[w] & ~no_mask);
+        }
+        selected2.sign = (reduced.sign & is_spike) | (spacing.sign & !is_spike);
+        double sel2_d = FPN_ToDouble(selected2);
+        check("spike: mask-select keeps normal when no spike", fabs(sel2_d - 100.0) < 0.01);
+    }
+
     printf("\n======================================\n");
     printf("  RESULTS: %d passed, %d failed\n", tests_passed, tests_failed);
     printf("======================================\n");
