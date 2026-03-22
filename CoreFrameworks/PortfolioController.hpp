@@ -167,6 +167,73 @@ inline void PortfolioController_Init(PortfolioController<F> *ctrl,
   *ctrl->rolling_long = RollingStats_Init<F, 512>();
 }
 //======================================================================================================
+// [EXIT BUFFER DRAIN]
+//======================================================================================================
+// processes TP/SL exits: books P&L, updates balance, logs trades, triggers cooldown
+// called from both warmup (loaded positions can exit) and slow path
+//======================================================================================================
+template <unsigned F>
+inline void PortfolioController_DrainExits(PortfolioController<F> *ctrl) {
+  for (uint32_t i = 0; i < ctrl->exit_buf.count; i++) {
+    ExitRecord<F> *rec = &ctrl->exit_buf.records[i];
+    Position<F> *pos = &ctrl->portfolio.positions[rec->position_index];
+
+    double entry_d = FPN_ToDouble(pos->entry_price);
+    double exit_d = FPN_ToDouble(rec->exit_price);
+    double qty_d = FPN_ToDouble(pos->quantity);
+    double delta_pct = 0.0;
+    if (entry_d != 0.0)
+      delta_pct = ((exit_d - entry_d) / entry_d) * 100.0;
+
+    FPN<F> gross_proceeds = FPN_Mul(rec->exit_price, pos->quantity);
+    FPN<F> exit_fee = FPN_Mul(gross_proceeds, ctrl->config.fee_rate);
+    FPN<F> net_proceeds = FPN_SubSat(gross_proceeds, exit_fee);
+
+    FPN<F> entry_cost = FPN_Mul(pos->entry_price, pos->quantity);
+    FPN<F> entry_fee_recon = FPN_Mul(entry_cost, ctrl->config.fee_rate);
+    FPN<F> total_entry_cost = FPN_AddSat(entry_cost, entry_fee_recon);
+    FPN<F> pos_pnl = FPN_Sub(net_proceeds, total_entry_cost);
+    ctrl->realized_pnl = FPN_AddSat(ctrl->realized_pnl, pos_pnl);
+
+    ctrl->balance = FPN_AddSat(ctrl->balance, net_proceeds);
+    ctrl->total_fees = FPN_AddSat(ctrl->total_fees, exit_fee);
+
+    const char *reason = (rec->reason == 0) ? "TP" : "SL";
+    ctrl->wins += (rec->reason == 0);
+    ctrl->losses += (rec->reason == 1);
+    if (rec->reason == 1 && ctrl->config.sl_cooldown_cycles > 0)
+        ctrl->sl_cooldown_counter = ctrl->config.sl_cooldown_cycles;
+
+    int is_win = !pos_pnl.sign & !FPN_IsZero(pos_pnl);
+    int is_loss = pos_pnl.sign;
+    {
+      constexpr unsigned N2 = FPN<F>::N;
+      uint64_t win_mask = -(uint64_t)is_win;
+      uint64_t loss_mask = -(uint64_t)is_loss;
+      FPN<F> neg_pnl = FPN_Negate(pos_pnl);
+      FPN<F> win_add, loss_add;
+      for (unsigned w = 0; w < N2; w++) {
+        win_add.w[w] = pos_pnl.w[w] & win_mask;
+        loss_add.w[w] = neg_pnl.w[w] & loss_mask;
+      }
+      win_add.sign = 0;
+      loss_add.sign = 0;
+      ctrl->gross_wins = FPN_AddSat(ctrl->gross_wins, win_add);
+      ctrl->gross_losses = FPN_AddSat(ctrl->gross_losses, loss_add);
+    }
+
+    uint64_t entry_tick = ctrl->entry_ticks[rec->position_index];
+    ctrl->total_hold_ticks +=
+        (rec->tick > entry_tick) ? (rec->tick - entry_tick) : 0;
+    TradeLogBuffer_PushSell(&ctrl->trade_buf, rec->tick, exit_d, qty_d, entry_d,
+                            delta_pct, reason,
+                            FPN_ToDouble(ctrl->balance), FPN_ToDouble(exit_fee),
+                            ctrl->entry_strategy[rec->position_index],
+                            ctrl->regime.current_regime);
+  }
+  ExitBuffer_Clear(&ctrl->exit_buf);
+}
+//======================================================================================================
 // [TICK - MAIN CONTROLLER FUNCTION]
 //======================================================================================================
 // called every tick. fill consumption runs every tick (zero unprotected
@@ -216,6 +283,12 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
       ctrl->buy_conds.gate_direction = 0;
       ctrl->state = CONTROLLER_ACTIVE;
     }
+
+    // drain exits during warmup — loaded positions need TP/SL processed
+    // (exit gate runs every tick regardless of state, but drain is slow-path)
+    if (ctrl->exit_buf.count > 0)
+      PortfolioController_DrainExits(ctrl);
+
     return;
   }
 
@@ -470,76 +543,8 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
     return;
   ctrl->tick_count = 0;
 
-  // drain exit buffer - log sells
-  for (uint32_t i = 0; i < ctrl->exit_buf.count; i++) {
-    ExitRecord<F> *rec = &ctrl->exit_buf.records[i];
-    Position<F> *pos = &ctrl->portfolio.positions[rec->position_index];
-
-    double entry_d = FPN_ToDouble(pos->entry_price);
-    double exit_d = FPN_ToDouble(rec->exit_price);
-    double qty_d = FPN_ToDouble(pos->quantity);
-    double delta_pct = 0.0;
-    if (entry_d != 0.0)
-      delta_pct = ((exit_d - entry_d) / entry_d) * 100.0;
-
-    // exit fee: fee_rate * (exit_price * quantity)
-    FPN<F> gross_proceeds = FPN_Mul(rec->exit_price, pos->quantity);
-    FPN<F> exit_fee = FPN_Mul(gross_proceeds, ctrl->config.fee_rate);
-    FPN<F> net_proceeds = FPN_SubSat(gross_proceeds, exit_fee);
-
-    // realized P&L: net proceeds - total cost (entry cost + entry fee)
-    // entry fee = entry_price * qty * fee_rate (reconstructed since we dont
-    // store it per position)
-    FPN<F> entry_cost = FPN_Mul(pos->entry_price, pos->quantity);
-    FPN<F> entry_fee_recon = FPN_Mul(entry_cost, ctrl->config.fee_rate);
-    FPN<F> total_entry_cost = FPN_AddSat(entry_cost, entry_fee_recon);
-    FPN<F> pos_pnl = FPN_Sub(net_proceeds, total_entry_cost);
-    ctrl->realized_pnl = FPN_AddSat(ctrl->realized_pnl, pos_pnl);
-
-    // return net proceeds to paper trading balance (after exit fee)
-    ctrl->balance = FPN_AddSat(ctrl->balance, net_proceeds);
-    ctrl->total_fees = FPN_AddSat(ctrl->total_fees, exit_fee);
-
-    const char *reason = (rec->reason == 0) ? "TP" : "SL";
-    ctrl->wins += (rec->reason == 0);
-    ctrl->losses += (rec->reason == 1);
-    // trigger cooldown on SL (resets counter if another SL fires during cooldown)
-    if (rec->reason == 1 && ctrl->config.sl_cooldown_cycles > 0)
-        ctrl->sl_cooldown_counter = ctrl->config.sl_cooldown_cycles;
-
-    // track win/loss dollar amounts for profit factor
-    // pos_pnl is net (after fees), positive for wins, negative for losses
-    int is_win = !pos_pnl.sign & !FPN_IsZero(pos_pnl);
-    int is_loss = pos_pnl.sign;
-    // branchless accumulate: add to wins if positive, add negated to losses if
-    // negative
-    {
-      constexpr unsigned N2 = FPN<F>::N;
-      uint64_t win_mask = -(uint64_t)is_win;
-      uint64_t loss_mask = -(uint64_t)is_loss;
-      FPN<F> neg_pnl = FPN_Negate(pos_pnl);
-      FPN<F> win_add, loss_add;
-      for (unsigned w = 0; w < N2; w++) {
-        win_add.w[w] = pos_pnl.w[w] & win_mask;
-        loss_add.w[w] = neg_pnl.w[w] & loss_mask;
-      }
-      win_add.sign = 0;
-      loss_add.sign = 0;
-      ctrl->gross_wins = FPN_AddSat(ctrl->gross_wins, win_add);
-      ctrl->gross_losses = FPN_AddSat(ctrl->gross_losses, loss_add);
-    }
-
-    // track hold time
-    uint64_t entry_tick = ctrl->entry_ticks[rec->position_index];
-    ctrl->total_hold_ticks +=
-        (rec->tick > entry_tick) ? (rec->tick - entry_tick) : 0;
-    TradeLogBuffer_PushSell(&ctrl->trade_buf, rec->tick, exit_d, qty_d, entry_d,
-                            delta_pct, reason,
-                            FPN_ToDouble(ctrl->balance), FPN_ToDouble(exit_fee),
-                            ctrl->entry_strategy[rec->position_index],
-                            ctrl->regime.current_regime);
-  }
-  ExitBuffer_Clear(&ctrl->exit_buf);
+  // drain exit buffer — books P&L, updates balance, logs trades
+  PortfolioController_DrainExits(ctrl);
 
   // TIME-BASED EXIT: close positions held too long with insufficient gain
   // frees capital trapped in positions where TP became unreachable (e.g. volatility
@@ -910,9 +915,9 @@ inline int PortfolioController_LoadSnapshot(PortfolioController<F> *ctrl,
     }
   }
 
-  // skip warmup if we have positions - we're resuming a session
-  if (ctrl->portfolio.active_bitmap != 0)
-    ctrl->state = CONTROLLER_ACTIVE;
+  // loaded positions keep their TP/SL exits (exit gate runs during warmup)
+  // but do NOT skip warmup — rolling stats need real data before new buys
+  // the buy gate stays disabled until warmup completes normally
 
   // v5 backward compat: entry_time wasn't saved, approximate from now
   if (version < 6) {
