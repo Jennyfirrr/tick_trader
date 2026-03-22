@@ -237,18 +237,18 @@ static inline int ANSI_Section_Header(AnsiBuf *ab, const TUISnapshot *s,
     ab_divider(ab, y++, w, true);
 
     // kaomoji fox + title (use CHA \033[G for second position on same row)
-    ab_goto(ab, y, 5);
+    ab_goto(ab, y, 4);
     ab_printf(ab, A_BOLD A_PEACH "/l、" A_RESET);
     ab_printf(ab, "\033[20G" A_BOLD A_PEACH "FOXML TRADER" A_RESET);
     y++;
+    ab_goto(ab, y, 3);
+    ab_printf(ab, A_BOLD A_PEACH "( °_ ° 7" A_RESET);
+    ab_printf(ab, "\033[20G" A_WHEAT "engine v3.0.10" A_RESET);
+    y++;
     ab_goto(ab, y, 4);
-    ab_printf(ab, A_BOLD A_PEACH "( °_° 7" A_RESET);
-    ab_printf(ab, "\033[20G" A_WHEAT "engine v3.0.9" A_RESET);
+    ab_printf(ab, A_BOLD A_PEACH "ド  ヘ" A_RESET);
     y++;
-    ab_goto(ab, y, 5);
-    ab_printf(ab, A_BOLD A_PEACH "|、 ~\\" A_RESET);
-    y++;
-    ab_goto(ab, y, 5);
+    ab_goto(ab, y, 4);
     ab_printf(ab, A_BOLD A_PEACH "じし_,)ノ" A_RESET);
     y++;
 
