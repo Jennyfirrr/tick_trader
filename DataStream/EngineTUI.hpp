@@ -22,7 +22,7 @@
 
 #include "../CoreFrameworks/PortfolioController.hpp"
 #include "../CoreFrameworks/OrderGates.hpp"
-#ifdef USE_FTXUI
+#if defined(USE_FTXUI) || defined(USE_ANSI_TUI)
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #endif
@@ -1078,6 +1078,8 @@ static inline char TUI_ReadKey(EngineTUI *tui) {
 //======================================================================================================
 #ifdef USE_NOTCURSES
 #include "TUINotcurses.hpp"
+#elif defined(USE_ANSI_TUI)
+#include "TUIAnsi.hpp"
 #elif defined(USE_FTXUI)
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/screen_interactive.hpp>
@@ -1160,6 +1162,68 @@ static inline void *tui_thread_fn(void *arg) {
 
     NC_Charts_Destroy(&charts);
     notcurses_stop(nc);
+
+#elif defined(USE_ANSI_TUI)
+    // raw ANSI TUI — zero library dependencies
+    // same terminal management as FTXUI path: raw mode + non-blocking stdin
+    struct termios old_term, raw_term;
+    tcgetattr(STDIN_FILENO, &old_term);
+    raw_term = old_term;
+    raw_term.c_lflag &= ~(ICANON | ECHO);
+    raw_term.c_cc[VMIN] = 0;
+    raw_term.c_cc[VTIME] = 0;
+    tcsetattr(STDIN_FILENO, TCSANOW, &raw_term);
+
+    int stdin_flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+    fcntl(STDIN_FILENO, F_SETFL, stdin_flags | O_NONBLOCK);
+
+    printf("\033[?25l\033[2J");
+    fflush(stdout);
+
+    uint64_t tui_start = (uint64_t)time(NULL);
+    int current_layout = ANSI_LAYOUT_STANDARD;
+
+    struct winsize ws;
+    ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws);
+    int term_w = ws.ws_col, term_h = ws.ws_row;
+    int frame_count = 0;
+
+    while (!__atomic_load_n(&shared->quit_requested, __ATOMIC_ACQUIRE)) {
+        if (++frame_count % 20 == 0) {
+            struct winsize ws2;
+            if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws2) == 0) {
+                if (ws2.ws_col != term_w || ws2.ws_row != term_h) {
+                    term_w = ws2.ws_col;
+                    term_h = ws2.ws_row;
+                }
+            }
+        }
+
+        int idx = __atomic_load_n(&shared->active_idx, __ATOMIC_ACQUIRE);
+        const TUISnapshot *s = &shared->snapshots[idx];
+        ANSI_Render(s, current_layout, term_h, term_w, tui_start);
+
+        char c = 0;
+        if (read(STDIN_FILENO, &c, 1) == 1) {
+            if (c == 'q' || c == 'Q')
+                __atomic_store_n(&shared->quit_requested, 1, __ATOMIC_RELEASE);
+            else if (c == 'p' || c == 'P')
+                __atomic_store_n(&shared->pause_requested, 1, __ATOMIC_RELEASE);
+            else if (c == 'r' || c == 'R')
+                __atomic_store_n(&shared->reload_requested, 1, __ATOMIC_RELEASE);
+            else if (c == 's' || c == 'S')
+                __atomic_store_n(&shared->regime_cycle_requested, 1, __ATOMIC_RELEASE);
+            else if (c == 'l' || c == 'L')
+                current_layout = (current_layout + 1) % ANSI_LAYOUT_COUNT;
+        }
+
+        usleep(100000); // 10 FPS
+    }
+
+    fcntl(STDIN_FILENO, F_SETFL, stdin_flags);
+    tcsetattr(STDIN_FILENO, TCSANOW, &old_term);
+    printf("\033[?25h\033[2J");
+    fflush(stdout);
 
 #elif defined(USE_FTXUI)
     // DOM-only FTXUI rendering with manual terminal management

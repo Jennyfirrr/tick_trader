@@ -6,9 +6,10 @@ Tick-level crypto trading engine in C++. Branchless fixed-point arithmetic, bitm
 
 ## Build
 
-CMake with FTXUI auto-fetched:
+CMake with zero-dependency ANSI TUI (default):
 ```bash
-cmake -B build && cmake --build build         # production (FTXUI TUI)
+cmake -B build && cmake --build build         # production (ANSI TUI, no deps)
+cmake -B build -DUSE_FTXUI=ON && cmake --build build      # FTXUI TUI (auto-fetched)
 cmake -B build -DUSE_NOTCURSES=ON && cmake --build build  # notcurses TUI (experimental)
 ./build/controller_test                        # run tests (101 assertions)
 cd build && ./engine                           # run engine (needs engine.cfg symlink)
@@ -74,7 +75,7 @@ Strategy dispatch → position adjustment on regime switch
 
 - **CoreFrameworks/** - OrderGates (buy gate), Portfolio (bitmap positions, exit gate), PortfolioController (feedback loop, regime wiring)
 - **Strategies/** - RegimeDetector (RegimeSignals, score-based classify, position adjustment), MeanReversion, Momentum, StrategyInterface
-- **DataStream/** - FauxFIX, MockGenerator, TradeLog, BinanceCrypto (websocket), EngineTUI (snapshot, thread), TUIWidgets/TUILayout (FTXUI), TUINotcurses (notcurses, experimental)
+- **DataStream/** - FauxFIX, MockGenerator, TradeLog, BinanceCrypto (websocket), EngineTUI (snapshot, thread), TUIAnsi (default, zero-dep), TUIWidgets/TUILayout (FTXUI opt-in), TUINotcurses (notcurses, experimental)
 - **FixedPoint/** - FPN arbitrary-width fixed-point arithmetic library
 - **MemHeaders/** - PoolAllocator (bitmap order pool), BuddyAllocator
 - **ML_Headers/** - RollingStats (regression + R²), LinearRegression3X, ROR_regressor (slope-of-slopes), GateControlNetwork
@@ -98,8 +99,8 @@ Strategy dispatch → position adjustment on regime switch
 - RollingStats: real least-squares regression (slope, R², variance)
 - Snapshot persistence: v7 (entry_time + session stats survive restarts)
 - Binance websocket: WORKING (live market data)
-- TUI: FTXUI works but janky, notcurses blocked by tmux DA query issue
-- Next: direct ANSI TUI (no library dependency), or fix notcurses tmux compat
+- TUI: ANSI TUI is default (zero deps, diff-based rendering, foxml palette), FTXUI/notcurses opt-in
+- Momentum TP/SL: adaptive (R²-scaled + ROR acceleration bonus at fill time)
 
 ## Key Design Decisions
 

@@ -284,11 +284,12 @@ inline void Regime_AdjustPositions(Portfolio<F> *portfolio,
             Position<F> *pos = &portfolio->positions[idx];
 
             if (old_regime == REGIME_RANGING && new_regime == REGIME_TRENDING) {
-                FPN<F> wide_tp_offset = FPN_Mul(stddev, FPN_Mul(cfg->momentum_tp_mult, hundred));
+                // momentum_tp/sl_mult are direct stddev multipliers — no ×100
+                FPN<F> wide_tp_offset = FPN_Mul(stddev, cfg->momentum_tp_mult);
                 FPN<F> wide_tp = FPN_AddSat(pos->entry_price, wide_tp_offset);
                 pos->take_profit_price = FPN_Max(pos->take_profit_price, wide_tp);
 
-                FPN<F> tight_sl_offset = FPN_Mul(stddev, FPN_Mul(cfg->momentum_sl_mult, hundred));
+                FPN<F> tight_sl_offset = FPN_Mul(stddev, cfg->momentum_sl_mult);
                 FPN<F> tight_sl = FPN_SubSat(pos->entry_price, tight_sl_offset);
                 pos->stop_loss_price = FPN_Max(pos->stop_loss_price, tight_sl);
             }

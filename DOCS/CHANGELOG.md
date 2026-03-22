@@ -4,6 +4,10 @@
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 3.0.3 | 2026-03-21 | Adaptive momentum TP/SL (R²-scaled + ROR acceleration bonus) |
+| 3.0.2 | 2026-03-21 | Momentum TP/SL ×100 bugfix, diff-based rendering (zero flicker), adaptive position layout |
+| 3.0.1 | 2026-03-21 | Flicker fix, uptime fix, kaomoji fox art, per-bar P&L sparkline, enriched positions, volume chart |
+| 3.0.0 | 2026-03-21 | ANSI TUI (zero deps), regime signals display, score-based detection, RollingStats least-squares, snapshot v7 |
 | 2.0.1 | 2026-03-21 | Chart label fixes, jitter fix, graph rendering fixes |
 | 2.0.0 | 2026-03-21 | FTXUI TUI rewrite, canvas charts, preset layouts, CMake |
 | 1.0.4 | 2026-03-21 | Entry spacing floor 0.01%→0.03%, docs refresh |
@@ -26,6 +30,6 @@
 
 ## Detailed Changelogs
 
-- [2026-03-21](changelogs/2026-03-21.md) — v0.7.1 through v1.0.3 (regime switching, latency profiling, multicore TUI)
+- [2026-03-21](changelogs/2026-03-21.md) — v0.7.1 through v3.0.1 (regime switching, latency profiling, multicore TUI, ANSI TUI)
 - [2026-03-20](changelogs/2026-03-20.md) — v0.2.0 through v0.7.0 (live trading, strategies, risk management)
 - [2026-03-19](changelogs/2026-03-19.md) — v0.1.0 (initial release)

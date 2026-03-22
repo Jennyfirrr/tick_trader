@@ -1,3 +1,0 @@
-need to adjust buy price when price only trends up for longer than x rolling window
-
-in a colocated server, you would wanna have 1 simple strategy, per core, per ticker, using a single position, which would need a central portfolio controller, unless you just assign x% of portfolio per core/position/strat, because the more positions you add per strat and core, it increases latency linearly, so to keep thing as fast as possible, you wanna only track one position per strat, per core, per ticker, and then you can have a central portfolio controller that adjusts the position size based on the overall portfolio performance and risk management rules. This way, you can keep the latency low while still allowing for some flexibility in your trading strategy.

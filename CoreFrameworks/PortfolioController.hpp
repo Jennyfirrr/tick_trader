@@ -293,8 +293,32 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
       FPN<F> hundred = FPN_FromDouble<F>(100.0);
       FPN<F> tp_mult, sl_mult;
       if (ctrl->strategy_id == STRATEGY_MOMENTUM) {
-          tp_mult = FPN_Mul(ctrl->config.momentum_tp_mult, hundred);
-          sl_mult = FPN_Mul(ctrl->config.momentum_sl_mult, hundred);
+          // adaptive momentum TP/SL — scale by R² from rolling stats
+          // R² ∈ [0,1]: high R² = consistent trend → widen TP, tighten SL
+          //              low R²  = choppy           → tighten TP, widen SL
+          FPN<F> r2 = ctrl->rolling.price_r_squared;
+          FPN<F> half = FPN_FromDouble<F>(0.5);
+
+          // TP: base * (0.5 + R²) → range [0.5x, 1.5x] of config value
+          // strong trend lets winners run, weak trend takes profits early
+          FPN<F> tp_scale = FPN_AddSat(half, r2);
+          tp_mult = FPN_Mul(ctrl->config.momentum_tp_mult, tp_scale);
+
+          // SL: base * (1.5 - R²*0.5) → range [1.0x, 1.5x] of config value
+          // choppy = wider SL (avoid whipsaw stops), consistent = tighter SL
+          FPN<F> one_five = FPN_FromDouble<F>(1.5);
+          FPN<F> sl_scale = FPN_SubSat(one_five, FPN_Mul(r2, half));
+          sl_mult = FPN_Mul(ctrl->config.momentum_sl_mult, sl_scale);
+
+          // ROR bonus: accelerating trend → 20% wider TP
+          // uses direction only (not magnitude) to avoid calibration issues
+          if (ctrl->regime_ror.count >= MAX_WINDOW) {
+              LinearRegression3XResult<F> ror_r = RORRegressor_Compute(
+                  const_cast<RORRegressor<F>*>(&ctrl->regime_ror));
+              if (FPN_GreaterThan(ror_r.model.slope, FPN_Zero<F>())) {
+                  tp_mult = FPN_Mul(tp_mult, FPN_FromDouble<F>(1.2));
+              }
+          }
       } else {
           tp_mult = FPN_Mul(ctrl->config.take_profit_pct, hundred);
           sl_mult = FPN_Mul(ctrl->config.stop_loss_pct, hundred);
