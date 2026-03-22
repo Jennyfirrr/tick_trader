@@ -185,10 +185,11 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
     RollingStats_Push(ctrl->rolling_long, current_price, current_volume);
 
     if (ctrl->warmup_count >= ctrl->config.warmup_ticks) {
-      // init both strategies so either can activate instantly on regime switch
+      // warmup_ticks controls how long to observe before trading
+      // default 1000 (~5.5 min at BTC rate) ensures enough price diversity
+      // for meaningful stddev/R² before the buy gate enables
       MeanReversion_Init(&ctrl->mean_rev, &ctrl->rolling, &ctrl->buy_conds);
       Momentum_Init(&ctrl->momentum, &ctrl->rolling, &ctrl->buy_conds);
-      // apply active strategy's buy signal immediately
       ctrl->buy_conds = MeanReversion_BuySignal(&ctrl->mean_rev, &ctrl->rolling,
                                                  ctrl->rolling_long, &ctrl->config);
       ctrl->buy_conds.gate_direction = 0;
