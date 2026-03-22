@@ -4,7 +4,11 @@ Tick-level crypto trading engine in C++17. Branchless fixed-point arithmetic, bi
 
 > **Paper trading only.** This engine connects to the public Binance websocket for market data. No API key required for data — order execution is not yet implemented.
 
-![Tick Trader TUI](assets/tui-screenshot.png)
+### Standard Layout
+![Standard Layout](assets/tui-standard.png)
+
+### Charts Layout
+![Charts Layout](assets/tui-charts.png)
 
 ## Quick Start
 
