@@ -67,6 +67,9 @@ template <unsigned F> struct ControllerConfig {
   FPN<F> momentum_breakout_mult;  // buy when price > avg + stddev * this (e.g. 1.5)
   FPN<F> momentum_tp_mult;        // TP multiplier for momentum (e.g. 3.0 stddevs)
   FPN<F> momentum_sl_mult;        // SL multiplier for momentum (e.g. 1.0 stddevs)
+  // volume spike detection
+  FPN<F> spike_threshold;         // volume spike ratio (current/max) to trigger (e.g. 5.0 = 5x)
+  FPN<F> spike_spacing_reduction; // spacing multiplier during spike (e.g. 0.5 = half normal)
 };
 //======================================================================================================
 template <unsigned F> inline ControllerConfig<F> ControllerConfig_Default() {
@@ -112,6 +115,9 @@ template <unsigned F> inline ControllerConfig<F> ControllerConfig_Default() {
   cfg.momentum_breakout_mult = FPN_FromDouble<F>(1.5);    // buy 1.5σ above avg
   cfg.momentum_tp_mult       = FPN_FromDouble<F>(3.0);    // wider TP for trends
   cfg.momentum_sl_mult       = FPN_FromDouble<F>(1.0);    // tighter SL than MR
+  // volume spike detection
+  cfg.spike_threshold         = FPN_FromDouble<F>(5.0);    // 5x rolling max triggers spike
+  cfg.spike_spacing_reduction = FPN_FromDouble<F>(0.5);    // half spacing on spike
   return cfg;
 }
 //======================================================================================================
@@ -246,6 +252,10 @@ inline ControllerConfig<F> ControllerConfig_Load(const char *filepath) {
       cfg.momentum_tp_mult = FPN_FromDouble<F>(atof(val));
     else if (strcmp(key, "momentum_sl_mult") == 0)
       cfg.momentum_sl_mult = FPN_FromDouble<F>(atof(val));
+    else if (strcmp(key, "spike_threshold") == 0)
+      cfg.spike_threshold = FPN_FromDouble<F>(atof(val));
+    else if (strcmp(key, "spike_spacing_reduction") == 0)
+      cfg.spike_spacing_reduction = FPN_FromDouble<F>(atof(val));
   }
 
   fclose(f);

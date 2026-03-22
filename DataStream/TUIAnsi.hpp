@@ -373,8 +373,12 @@ static inline int ANSI_Section_Regime(AnsiBuf *ab, const TUISnapshot *s, int y, 
 
     ab_goto(ab, y, 3);
     ab_printf(ab, A_SAND "vol ratio: " "%s%.2f" A_RESET
-              A_DIM "          " A_SAND "ror slope: " "%s%+.6f %s" A_RESET,
+              A_DIM "    " A_SAND "ror: " "%s%+.6f %s" A_RESET,
               vr_color, s->vol_ratio, ror_color, s->ror_slope, ror_arrow);
+    if (s->spike_active)
+        ab_printf(ab, A_DIM "  " A_BOLD A_YELLOW "SPIKE %.1fx" A_RESET, s->volume_spike_ratio);
+    else if (s->volume_spike_ratio > 1.0)
+        ab_printf(ab, A_DIM "  vol:%.1fx" A_RESET, s->volume_spike_ratio);
     y++;
 
     return y;

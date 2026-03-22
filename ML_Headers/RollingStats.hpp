@@ -46,6 +46,7 @@ template <unsigned F, unsigned W = 128> struct RollingStats {
     FPN<F> price_max;          // max price in window
     FPN<F> volume_avg;         // mean volume over window
     FPN<F> volume_slope;       // least-squares regression slope of volume
+    FPN<F> volume_max;         // max volume in window (for spike detection)
 };
 
 //======================================================================================================
@@ -68,6 +69,7 @@ template <unsigned F, unsigned W = 128> inline RollingStats<F, W> RollingStats_I
     rs.price_max       = FPN_Zero<F>();
     rs.volume_avg      = FPN_Zero<F>();
     rs.volume_slope    = FPN_Zero<F>();
+    rs.volume_max      = FPN_Zero<F>();
     return rs;
 }
 
@@ -103,6 +105,7 @@ inline void RollingStats_Push(RollingStats<F, W> *rs, FPN<F> price, FPN<F> volum
 
     FPN<F> p_min = rs->price_buf[(rs->head - n + (int)W) & ((int)W - 1)];
     FPN<F> p_max = p_min;
+    FPN<F> v_max = rs->volume_buf[(rs->head - n + (int)W) & ((int)W - 1)];
 
     for (int i = 0; i < n; i++) {
         int idx = (rs->head - n + i + (int)W) & ((int)W - 1);
@@ -118,6 +121,7 @@ inline void RollingStats_Push(RollingStats<F, W> *rs, FPN<F> price, FPN<F> volum
 
         p_min = FPN_Min(p_min, p);
         p_max = FPN_Max(p_max, p);
+        v_max = FPN_Max(v_max, v);
     }
 
     // precompute x-sums from count (x = 0, 1, ..., n-1)
@@ -130,6 +134,7 @@ inline void RollingStats_Push(RollingStats<F, W> *rs, FPN<F> price, FPN<F> volum
     // averages and range
     rs->price_avg  = FPN_DivNoAssert(price_sum, n_fp);
     rs->volume_avg = FPN_DivNoAssert(volume_sum, n_fp);
+    rs->volume_max = v_max;
     rs->price_min  = p_min;
     rs->price_max  = p_max;
 

@@ -662,6 +662,8 @@ struct TUISnapshot {
     double long_r2;       // price regression R² (long window)
     double vol_ratio;     // short/long variance ratio (volatility spike)
     double ror_slope;     // slope-of-slopes (trend acceleration)
+    double volume_spike_ratio; // current volume / rolling max (spike detection)
+    int spike_active;     // 1 if spike_ratio >= threshold
     int engine_state;     // 0=warmup, 1=active, 2=closing
     // config display
     double cfg_tp, cfg_sl, cfg_fee;
@@ -825,6 +827,10 @@ static inline void TUI_CopySnapshot(TUISnapshot *snap,
             const_cast<RORRegressor<F>*>(&ctrl->regime_ror));
         snap->ror_slope = FPN_ToDouble(ror_r.model.slope);
     }
+    // volume spike
+    snap->volume_spike_ratio = FPN_ToDouble(ctrl->volume_spike_ratio);
+    snap->spike_active = FPN_GreaterThanOrEqual(ctrl->volume_spike_ratio,
+                                                 ctrl->config.spike_threshold);
 
     // config
     snap->cfg_tp  = FPN_ToDouble(ctrl->config.take_profit_pct) * 100.0;
