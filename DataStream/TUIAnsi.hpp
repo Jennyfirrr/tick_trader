@@ -264,6 +264,27 @@ static inline int ANSI_Section_Header(AnsiBuf *ab, const TUISnapshot *s,
     ab_append(ab, A_RESET);
     y++;
 
+    // trading blocked indicator — show reason when buy gate is disabled
+    if (s->engine_state == 0) {
+        ab_goto(ab, y, 2);
+        ab_printf(ab, A_BOLD A_YELLOW " ▌ TRADING BLOCKED" A_DIM "  warmup — waiting for market data (%d/%d samples)" A_RESET,
+                  s->roll_count, 20);  // min_warmup_samples default
+        y++;
+    } else if (s->sl_cooldown > 0) {
+        ab_goto(ab, y, 2);
+        ab_printf(ab, A_BOLD A_YELLOW " ▌ TRADING BLOCKED" A_DIM "  post-SL cooldown (%d cycles remaining)" A_RESET,
+                  s->sl_cooldown);
+        y++;
+    } else if (s->current_regime == 2) {  // REGIME_VOLATILE
+        ab_goto(ab, y, 2);
+        ab_printf(ab, A_BOLD A_YELLOW " ▌ TRADING BLOCKED" A_DIM "  volatile regime — buying paused" A_RESET);
+        y++;
+    } else if (s->breaker_tripped) {
+        ab_goto(ab, y, 2);
+        ab_printf(ab, A_BOLD A_RED " ▌ TRADING BLOCKED" A_DIM "  circuit breaker — max drawdown hit" A_RESET);
+        y++;
+    }
+
     return y;
 }
 
