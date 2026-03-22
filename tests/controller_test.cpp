@@ -1375,6 +1375,68 @@ int main() {
         check("regime switch: SL not absurd", sl_after > 65000.0);
     }
 
+    //==================================================================================================
+    // [TEST: POST-SL COOLDOWN]
+    //==================================================================================================
+    {
+        printf("\n--- Post-SL Cooldown ---\n");
+        ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+        cfg.warmup_ticks = 5;
+        cfg.poll_interval = 1; // slow path every tick for test speed
+        cfg.starting_balance = FPN_FromDouble<FP>(10000.0);
+        cfg.sl_cooldown_cycles = 3;
+
+        PortfolioController<FP> ctrl = {};
+        PortfolioController_Init(&ctrl, cfg);
+
+        OrderPool<FP> pool;
+        OrderPool_init(&pool, 64);
+        TradeLog log; log.file = 0; log.trade_count = 0;
+
+        // warmup
+        for (uint64_t t = 0; t < 10; t++)
+            PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(100.0),
+                                      FPN_FromDouble<FP>(1.0), &log);
+        check("cooldown: warmup done", ctrl.state == CONTROLLER_ACTIVE);
+        check("cooldown: counter starts at 0", ctrl.sl_cooldown_counter == 0);
+
+        // create a position and trigger SL exit
+        pool.slots[0].price    = FPN_FromDouble<FP>(100.0);
+        pool.slots[0].quantity = FPN_FromDouble<FP>(1.0);
+        pool.bitmap = 1;
+        PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(100.0),
+                                  FPN_FromDouble<FP>(1.0), &log);
+        check("cooldown: position created", Portfolio_CountActive(&ctrl.portfolio) == 1);
+
+        // drop price below SL to trigger exit
+        // SL is ~98.5 (entry 100, 1.5% SL), price at 50 is well below
+        // PositionExitGate runs on hot path, exit buffer drained on slow path
+        FPN<FP> drop_price = FPN_FromDouble<FP>(50.0);
+        FPN<FP> drop_vol = FPN_FromDouble<FP>(1.0);
+
+        // one tick: exit gate detects SL, controller drains it + sets cooldown
+        PositionExitGate(&ctrl.portfolio, drop_price, &ctrl.exit_buf, 100);
+        PortfolioController_Tick(&ctrl, &pool, drop_price, drop_vol, &log);
+
+        check("cooldown: SL exited", Portfolio_CountActive(&ctrl.portfolio) == 0);
+        check("cooldown: loss counted", ctrl.losses > 0);
+        // counter was set to 3, then decremented once this tick = 2
+        check("cooldown: counter set after SL", ctrl.sl_cooldown_counter > 0);
+        check("cooldown: buy gate disabled", FPN_IsZero(ctrl.buy_conds.price));
+
+        // tick through cooldown — counter should decrement each cycle
+        uint32_t counter_before = ctrl.sl_cooldown_counter;
+        PortfolioController_Tick(&ctrl, &pool, drop_price, drop_vol, &log);
+        check("cooldown: counter decremented", ctrl.sl_cooldown_counter < counter_before);
+
+        // tick until cooldown expires
+        for (int t = 0; t < 10; t++)
+            PortfolioController_Tick(&ctrl, &pool, drop_price, drop_vol, &log);
+        check("cooldown: counter expired", ctrl.sl_cooldown_counter == 0);
+        // gate should be re-enabled (non-zero buy price from strategy dispatch)
+        check("cooldown: buy gate re-enabled", !FPN_IsZero(ctrl.buy_conds.price));
+    }
+
     printf("\n======================================\n");
     printf("  RESULTS: %d passed, %d failed\n", tests_passed, tests_failed);
     printf("======================================\n");
