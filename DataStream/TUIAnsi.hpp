@@ -123,6 +123,12 @@ static inline void ab_clear_row(AnsiBuf *ab, int row) {
     ab_printf(ab, "\033[%d;1H\033[2K", row);
 }
 
+// position cursor for right-column overlay — does NOT clear or pad
+// does NOT interact with ab_goto/last_row tracking
+static inline void ab_goto_right(AnsiBuf *ab, int row, int col) {
+    ab_printf(ab, "\033[%d;%dH", row, col);
+}
+
 // horizontal divider line (heavy = ═, normal = ─)
 static inline void ab_divider(AnsiBuf *ab, int y, int w, bool heavy) {
     int dw = (w > 200) ? 200 : w;
@@ -738,6 +744,73 @@ static inline int ANSI_Section_Latency(AnsiBuf *ab, const TUISnapshot *s, int y,
 #define ANSI_LAYOUT_COUNT     3
 
 //======================================================================================================
+// [SECTION: RIGHT PANEL — session stats, fill diagnostics, trade summary]
+//======================================================================================================
+// overlays on existing rows using ab_goto_right (no interaction with ab_goto/last_row)
+// called AFTER left panel + gap clearing + bottom bar, so it writes on top of rendered rows
+// hidden on narrow terminals (< 100 columns)
+//======================================================================================================
+static inline void ANSI_Section_RightPanel(AnsiBuf *ab, const TUISnapshot *s,
+                                            int h, int w, uint64_t start_time) {
+    if (w < 100) return;  // not enough width
+    int rc = w - 36;
+    if (rc < 62) rc = 62;
+
+    // separator
+    for (int r = 7; r <= 22 && r < h - 2; r++) {
+        ab_goto_right(ab, r, rc - 2);
+        ab_printf(ab, A_SURF "│" A_RESET);
+    }
+
+    // SESSION
+    ab_goto_right(ab, 7, rc);
+    ab_printf(ab, A_BOLD A_PEACH "SESSION" A_RESET);
+    ab_goto_right(ab, 8, rc);
+    ab_printf(ab, A_SAND "high: " A_FG "$%.2f" A_RESET, s->session_high);
+    ab_goto_right(ab, 9, rc);
+    ab_printf(ab, A_SAND "low:  " A_FG "$%.2f" A_RESET, s->session_low);
+    ab_goto_right(ab, 10, rc);
+    // tick_rate field holds raw total_ticks, compute rate from uptime
+    time_t now = time(NULL);
+    double uptime = difftime(now, (time_t)start_time);
+    double rate = (uptime > 0) ? s->tick_rate / uptime : 0.0;
+    ab_printf(ab, A_SAND "rate: " A_FG "%.1f" A_DIM " ticks/s" A_RESET, rate);
+    ab_goto_right(ab, 11, rc);
+    ab_printf(ab, A_SAND "ticks: " A_FG "%.0f" A_RESET, s->tick_rate);
+
+    // FILLS
+    ab_goto_right(ab, 13, rc);
+    ab_printf(ab, A_BOLD A_PEACH "FILLS" A_RESET);
+    ab_goto_right(ab, 14, rc);
+    ab_printf(ab, A_SAND "accepted: " A_FG "%u" A_RESET, s->total_buys);
+    ab_goto_right(ab, 15, rc);
+    ab_printf(ab, A_SAND "rejected: " A_FG "%u" A_RESET, s->fills_rejected);
+    if (s->last_reject_reason > 0 && s->last_reject_reason <= 6) {
+        static const char *reasons[] = {"", "spacing", "balance", "exposure",
+                                         "breaker", "full", "duplicate"};
+        ab_goto_right(ab, 16, rc);
+        ab_printf(ab, A_SAND "last: " A_YELLOW "%s" A_RESET,
+                  reasons[s->last_reject_reason]);
+    }
+
+    // TRADES
+    ab_goto_right(ab, 18, rc);
+    ab_printf(ab, A_BOLD A_PEACH "TRADES" A_RESET);
+    ab_goto_right(ab, 19, rc);
+    ab_printf(ab, A_GREEN "W:" A_FG "%u " A_RED "L:" A_FG "%u " A_SAND "rate: "
+              "%s%.1f%%" A_RESET,
+              s->wins, s->losses,
+              (s->win_rate >= 50.0) ? A_GREEN : A_RED, s->win_rate);
+    ab_goto_right(ab, 20, rc);
+    ab_printf(ab, A_SAND "pf: " "%s%.2f" A_RESET,
+              (s->profit_factor >= 1.0) ? A_GREEN : A_RED, s->profit_factor);
+    ab_goto_right(ab, 21, rc);
+    ab_printf(ab, A_SAND "avg W: " A_GREEN "$%.2f" A_RESET, s->avg_win);
+    ab_goto_right(ab, 22, rc);
+    ab_printf(ab, A_SAND "avg L: " A_RED "$%.2f" A_RESET, s->avg_loss);
+}
+
+//======================================================================================================
 // [LAYOUT: STANDARD — full dashboard]
 //======================================================================================================
 static inline void ANSI_Layout_Standard(AnsiBuf *ab, const TUISnapshot *s,
@@ -773,6 +846,9 @@ static inline void ANSI_Layout_Standard(AnsiBuf *ab, const TUISnapshot *s,
     for (int r = y; r < h - 1; r++) ab_clear_row(ab, r);
     ab_divider(ab, h - 1, w, true);
     ANSI_Section_Controls(ab, h, w);
+
+    // right panel overlay (after everything else, only on wide terminals)
+    ANSI_Section_RightPanel(ab, s, h, w, start_time);
 }
 
 //======================================================================================================
