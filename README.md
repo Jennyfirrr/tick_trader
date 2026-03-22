@@ -1,191 +1,161 @@
 # Tick Trader
 
-Tick-level crypto trading engine in C++. Branchless fixed-point arithmetic, bitmap-based portfolio management, regime-adaptive strategy switching. Single-symbol, single-threaded hot path with multicore TUI dashboard.
+Tick-level crypto trading engine in C++17. Branchless fixed-point arithmetic, bitmap-based portfolio management, regime-adaptive strategy switching with score-based market classification. Sub-microsecond hot path, multicore TUI dashboard, zero external dependencies.
+
+> **Paper trading only.** This engine connects to the public Binance websocket for market data. No API key required for data — order execution is not yet implemented.
 
 ![Tick Trader TUI](assets/tui-screenshot.png)
 
 ## Quick Start
 
 ```bash
-make          # build (ANSI TUI, zero deps beyond OpenSSL)
-make run      # build + run (connects to Binance, paper trades BTC)
-make test     # run 128 tests
+cp engine.cfg.example engine.cfg   # create your config from template
+make                               # build (ANSI TUI, zero deps beyond OpenSSL)
+make run                           # build + connect to Binance, paper trade BTC
+make test                          # run 128 tests
 ```
 
-The engine binary lives in `build/` and reads `engine.cfg` from its working directory (symlinked by `make`).
+Requires: g++ (C++17), OpenSSL, CMake 3.14+. No other dependencies.
+
+## What This Does
+
+The engine connects to Binance's public websocket, receives real-time BTC/USDT trade data, and makes paper trading decisions on every tick:
+
+1. **Classify the market** — score-based regime detection (RANGING / TRENDING / VOLATILE) using 7 signals: multi-timeframe slope, R² consistency, trend acceleration, volume confirmation, volatility ratio
+2. **Pick a strategy** — mean reversion for ranging markets (buy dips), momentum for trending markets (buy breakouts), pause for volatile
+3. **Manage positions** — up to 16 concurrent positions with per-position TP/SL, trailing stops, adaptive entry spacing, volume spike detection
+4. **Control risk** — circuit breaker on max drawdown, exposure limits, post-SL cooldown to prevent catching falling knives
 
 ## Architecture
 
 ```
-HOT PATH (every tick, p50 ~950ns, min ~60ns):
-  BuyGate          direction-aware price+volume check     (~80ns avg)
-  PositionExitGate branchless bitmap walk, TP/SL per pos  (~130ns/pos)
-  FillConsumption  strategy-aware sizing, risk checks      (~750ns avg, ~4us on fill)
+HOT PATH (every tick, p50 ~950ns):
+  BuyGate          branchless price+volume gate           (~80ns avg)
+  PositionExitGate bitmap walk, per-position TP/SL        (~130ns/pos)
+  FillConsumption  sizing, spacing, risk checks            (~750ns avg)
 
 SLOW PATH (every 100 ticks):
-  RegimeDetector   classify RANGING/TRENDING/VOLATILE
-  StrategyDispatch adapt + buy signal (MR or momentum)
-  RollingStats     128-tick + 512-tick market statistics
+  RollingStats     128-tick + 512-tick least-squares regression
+  RegimeDetector   7-signal score → RANGING/TRENDING/VOLATILE
+  StrategyDispatch adapt parameters + generate buy signal
   TradeLog         buffered CSV drain
   Snapshot         binary state persistence (v7)
 ```
 
+All hot-path math uses arbitrary-width fixed-point arithmetic (`FPN<64>` = 4096-bit precision). No floating point on the critical path. Branchless patterns throughout: mask tricks with `-(uint64_t)condition`, word-level mask-select.
+
 ## Strategies
 
 ### Mean Reversion (RANGING regime)
-- **Entry:** buy when price dips below rolling average (stddev-scaled offset)
+- **Entry:** price dips below rolling average (stddev-scaled offset, P&L regression-adapted)
 - **Exit:** per-position TP/SL, trailing TP (SNR×R² gated), time-based exit
-- **Adaptation:** P&L regression loosens/tightens entry filters
-- **Volume spikes:** 5x+ volume spike halves entry spacing (tighter clustering on high-conviction dips)
+- **Volume spikes:** 5x+ spike halves entry spacing for tighter clustering on high-conviction dips
 
 ### Momentum (TRENDING regime)
-- **Entry:** buy when price breaks above rolling average + stddev offset
-- **Exit:** adaptive TP/SL (R²-scaled: high R² widens TP, ROR acceleration adds 20% bonus)
+- **Entry:** price breaks above rolling average + stddev offset
+- **Exit:** adaptive TP/SL — R²-scaled multipliers (high R² widens TP), ROR acceleration bonus (+20%)
 - **Adaptation:** P&L regression adjusts breakout threshold
 
+### Regime Detection
+7 input signals feed a weighted scoring system with hysteresis:
+
+| Signal | Source | What it measures |
+|--------|--------|-----------------|
+| Short slope | 128-tick regression | Recent price direction |
+| Long slope | 512-tick regression | Broader trend |
+| Short R² | 128-tick regression | Trend consistency |
+| ROR slope | Slope-of-slopes | Trend acceleration |
+| Volume slope | 128-tick regression | Volume trend |
+| Vol ratio | Short/long variance | Volatility spike |
+| Volume confirmation | Slope + volume | Compound signal |
+
+Trending needs 2/5 signals. Volatile needs 2/2. Hysteresis prevents rapid switching.
+
 ### Risk Controls
-- **Post-SL cooldown:** pauses buying for N cycles after stop loss (prevents falling knife entries)
-- **Circuit breaker:** halts trading if total P&L exceeds max drawdown
-- **Exposure limit:** caps total deployed capital as percentage of balance
-
-### Regime Detection (score-based)
-- **RANGING** → mean reversion (buy dips)
-- **TRENDING** → momentum (buy breakouts)
-- **VOLATILE** → pause buying (existing positions keep TP/SL)
-- 7 input signals via `RegimeSignals` struct:
-  - Short/long slope magnitude (128-tick + 512-tick windows)
-  - R² consistency (least-squares regression fit)
-  - ROR slope (trend acceleration — slope-of-slopes)
-  - Volume slope confirmation
-  - Vol ratio (short/long variance — volatility spike detection)
-- Weighted scoring: trending needs 2/5 signals, volatile needs 2/2
-- Hysteresis prevents rapid switching (configurable cycles)
-- Position TP/SL adjusted on regime transition
-
-## Adding a New Strategy
-
-1. Create `Strategies/NewStrategy.hpp` — implement Init, Adapt, BuySignal, ExitAdjust
-2. Add `STRATEGY_NEW = 2` to `StrategyInterface.hpp`
-3. Add case to `Strategy_Dispatch` switch in `PortfolioController.hpp`
-4. Add case to `PortfolioController_Unpause` switch
-5. Add config fields + defaults to `ControllerConfig.hpp`
-6. Map regime → strategy in `Regime_ToStrategy` (if applicable)
-
-No duplicate code to sync — shared functions handle config reload, unpause, and regime cycling.
-
-## Build
-
-Requires: g++ (C++17), OpenSSL, CMake 3.14+. Default build has zero external TUI dependencies.
-
-```bash
-make              # build (ANSI TUI, no library deps)
-make run          # build + run engine
-make test         # run 101 tests
-make ftxui        # build with FTXUI TUI (auto-fetched)
-make notcurses    # build with notcurses TUI (requires system lib)
-make profile      # with per-component latency profiling
-make profile-lite # total-only latency (lower overhead)
-make bench        # headless profiling to stderr
-make clean        # remove build directory
-```
-
-Or directly with CMake:
-
-```bash
-cmake -B build && cmake --build build                       # ANSI TUI (default)
-cmake -B build -DUSE_FTXUI=ON && cmake --build build        # FTXUI TUI (auto-fetched)
-cmake -B build -DUSE_NOTCURSES=ON && cmake --build build    # notcurses TUI (requires system lib)
-```
-
-### CMake Options
-
-| Option | Default | Effect |
-|--------|---------|--------|
-| `USE_FTXUI` | OFF | Use FTXUI for TUI (auto-fetched from GitHub) |
-| `USE_NOTCURSES` | OFF | Use notcurses for TUI (requires system lib) |
-| `LATENCY_PROFILING` | OFF | RDTSCP timing with per-component breakdown |
-| `LATENCY_LITE` | OFF | Total-only timing (2 rdtscp vs 4) |
-| `LATENCY_BENCH` | OFF | Headless profiling to stderr |
+- **Post-SL cooldown** — pauses buying for N cycles after stop loss
+- **Circuit breaker** — halts trading if P&L exceeds max drawdown
+- **Exposure limit** — caps deployed capital as % of balance
+- **Entry spacing** — prevents position clustering at same price
+- **Volume spike spacing** — relaxes spacing on high-conviction volume surges
+- **Fill rejection diagnostics** — tracks why fills are rejected (spacing, balance, exposure, breaker)
 
 ## TUI
 
-Zero-dependency ANSI terminal dashboard with FoxML warm-forest color palette (truecolor).
-Engine runs on core 0, TUI renders on core 1 from a double-buffered snapshot (zero engine contention).
-Designed for transparent terminals — foreground-only colors, synchronized output protocol for flicker-free rendering.
-
-Three backends available:
-- **ANSI** (default) — raw escape codes, no library deps, works everywhere including tmux
-- **FTXUI** (`-DUSE_FTXUI=ON`) — DOM-based rendering, auto-fetched
-- **notcurses** (`-DUSE_NOTCURSES=ON`) — experimental, requires system lib
+Zero-dependency ANSI terminal dashboard with warm-forest color palette (truecolor). Engine runs on core 0, TUI renders on core 1 from a double-buffered snapshot (zero engine contention). Diff-based rendering — unchanged content is never touched.
 
 Features:
-- 3 preset layouts: Standard, Charts, Compact (cycle with `l`)
-- Regime signal dashboard: R² bars, vol_ratio, ror_slope with directional arrows
-- Price + P&L sparkline charts (▁▂▃▄▅▆▇█ from 120-point ring buffer)
-- Position list with TP/SL, hold time, trailing status
-- Exposure, regime classification with duration, strategy display
+- 3 layouts: Standard, Charts, Compact (cycle with `l`)
+- Regime signals: R² bars, vol_ratio, ror_slope with directional arrows
+- Sparkline charts: price, P&L (per-bar green/red), volume (▁▂▃▄▅▆▇█)
+- Adaptive position list: expanded (≤4 positions) or compact (≥5)
+- Fill rejection diagnostics, session high/low, trading blocked indicator
 - Auto-resizes to terminal dimensions
-
-## TUI Controls
 
 | Key | Action |
 |-----|--------|
 | `q` | Quit (saves positions to snapshot) |
-| `p` | Pause/unpause buying (exit gate keeps running) |
+| `p` | Pause/unpause buying |
 | `r` | Hot-reload engine.cfg |
-| `s` | Cycle regime (RANGING→TRENDING→VOLATILE) for testing |
-| `l` | Cycle layout (Standard→Charts→Compact) |
+| `s` | Cycle regime for testing |
+| `l` | Cycle layout |
+
+## Build
+
+```bash
+make              # ANSI TUI (default, no library deps)
+make run          # build + run
+make test         # run 128 tests
+make ftxui        # FTXUI TUI (auto-fetched)
+make notcurses    # notcurses TUI (requires system lib)
+make profile      # with RDTSCP latency profiling
+make clean        # remove build directory
+```
+
+Or with CMake directly:
+
+```bash
+cmake -B build && cmake --build build                       # ANSI TUI
+cmake -B build -DUSE_FTXUI=ON && cmake --build build        # FTXUI
+cmake -B build -DUSE_NOTCURSES=ON && cmake --build build    # notcurses
+```
+
+## Configuration
+
+Copy `engine.cfg.example` to `engine.cfg` and edit. All parameters are documented in the file. Hot-reloadable with `r` in the TUI (except symbol, warmup_ticks).
+
+Key parameters:
+- `take_profit_pct` / `stop_loss_pct` — base TP/SL as percentage
+- `momentum_tp_mult` / `momentum_sl_mult` — stddev multipliers for momentum strategy
+- `spike_threshold` — volume spike ratio to trigger spacing relaxation
+- `sl_cooldown_cycles` — slow-path cycles to pause after stop loss
+- `min_warmup_samples` — slow-path samples required before trading starts
+- `regime_r2_threshold` — R² required for TRENDING classification
+
+See `DOCS/CONFIGURATION.md` for the full reference.
 
 ## Project Structure
 
 ```
-CoreFrameworks/
-  OrderGates.hpp          BuyGate (direction-aware), SellGate
-  Portfolio.hpp            Position storage, ExitGate, bitmap ops
-  PortfolioController.hpp  Tick function, dispatch, shared functions, snapshot v7
-  ControllerConfig.hpp     Config struct, parser, defaults
-
-Strategies/
-  StrategyInterface.hpp    Strategy contract + enum definitions
-  MeanReversion.hpp        Buy dips, stddev-scaled offset, P&L adaptation
-  Momentum.hpp             Buy breakouts, trend-following, tighter SL
-  RegimeDetector.hpp       Market classification + position adjustment
-
-DataStream/
-  BinanceCrypto.hpp        WebSocket stream (TCP/TLS/WS/JSON)
-  EngineTUI.hpp            Terminal dashboard, multicore snapshot
-  TUIAnsi.hpp              ANSI TUI renderer (default, zero deps)
-  TUIWidgets/TUILayout.hpp FTXUI widgets/layouts (opt-in)
-  TUINotcurses.hpp         notcurses renderer (experimental)
-  TradeLog.hpp             CSV logger + ring buffer
-
-FixedPoint/
-  FixedPointN.hpp          Arbitrary-width fixed-point arithmetic
-  FixedPoint64.hpp         Static 128-bit FP (experimental)
-
-ML_Headers/
-  RollingStats.hpp         Price/volume moving avg, stddev, slope
-  LinearRegression3X.hpp   3-sample rolling regression
-  ROR_regressor.hpp        Slope-of-slopes (second derivative)
-
-DOCS/
-  CHANGELOG.md             Version history
-  NEXT_STEPS.md            Roadmap (prioritized)
-  ARCHITECTURE.md          System design
-  CONFIGURATION.md         All config keys
-  PERFORMANCE.md           Hot-path optimization guide
-  LATENCY_PROFILING.md     Measurement guide
-  FUTURE_AUTOTUNE.md       Regime threshold auto-tuning (planned)
-  FUTURE_VOLATILE_STRATEGY.md  Volatile regime strategy (planned)
+CoreFrameworks/          Portfolio, OrderGates, PortfolioController, Config
+Strategies/              MeanReversion, Momentum, RegimeDetector, StrategyInterface
+DataStream/              BinanceCrypto (websocket), TUI renderers, TradeLog
+FixedPoint/              Arbitrary-width fixed-point arithmetic library
+ML_Headers/              RollingStats, LinearRegression, ROR regressor
+MemHeaders/              PoolAllocator, BuddyAllocator
+tests/                   128 assertions across 24 test functions
+DOCS/                    Architecture, configuration, performance, changelogs
 ```
 
-## Docs
+## Adding a Strategy
 
-- `DOCS/CONTRIBUTING.md` — guide for adding strategies and extending the engine
-- `DOCS/CHANGELOG.md` — version history
-- `DOCS/NEXT_STEPS.md` — roadmap with completed/remaining items
-- `DOCS/ARCHITECTURE.md` — system design and data flow
-- `DOCS/CONFIGURATION.md` — all config keys
-- `DOCS/PERFORMANCE.md` — hot-path breakdown, optimization guide
-- `DOCS/LATENCY_PROFILING.md` — measurement guide and build modes
-- `engine.cfg` — annotated config with all parameters
+1. Create `Strategies/NewStrategy.hpp` — implement Init, Adapt, BuySignal, ExitAdjust
+2. Add `STRATEGY_NEW = 2` to `StrategyInterface.hpp`
+3. Add case to dispatch switch in `PortfolioController.hpp`
+4. Add config fields + defaults to `ControllerConfig.hpp`
+5. Map regime → strategy in `Regime_ToStrategy`
+
+See `DOCS/CONTRIBUTING.md` for the full guide.
+
+## License
+
+See `LICENSE` file.
