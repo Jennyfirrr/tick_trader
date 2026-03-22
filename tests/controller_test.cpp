@@ -1265,6 +1265,116 @@ int main() {
         check("spike: mask-select keeps normal when no spike", fabs(sel2_d - 100.0) < 0.01);
     }
 
+    //==================================================================================================
+    // [TEST: MOMENTUM FILL TP/SL]
+    //==================================================================================================
+    {
+        printf("\n--- Momentum Fill TP/SL ---\n");
+        ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+        cfg.warmup_ticks = 10;
+        cfg.poll_interval = 5;
+        cfg.starting_balance = FPN_FromDouble<FP>(10000.0);
+        cfg.momentum_tp_mult = FPN_FromDouble<FP>(3.0);
+        cfg.momentum_sl_mult = FPN_FromDouble<FP>(1.0);
+
+        PortfolioController<FP> ctrl = {};
+        PortfolioController_Init(&ctrl, cfg);
+
+        OrderPool<FP> pool;
+        OrderPool_init(&pool, 64);
+        TradeLog log; log.file = 0; log.trade_count = 0;
+
+        // warmup with stable price to build stats
+        FPN<FP> vol = FPN_FromDouble<FP>(1.0);
+        for (uint64_t t = 0; t < 20; t++) {
+            FPN<FP> p = FPN_FromDouble<FP>(70000.0 + (t % 3) * 10.0);
+            PortfolioController_Tick(&ctrl, &pool, p, vol, &log);
+        }
+        check("momentum: warmup done", ctrl.state == CONTROLLER_ACTIVE);
+
+        // switch to momentum strategy
+        ctrl.strategy_id = STRATEGY_MOMENTUM;
+
+        // create a fill via pool
+        pool.slots[0].price    = FPN_FromDouble<FP>(70000.0);
+        pool.slots[0].quantity = FPN_FromDouble<FP>(0.01);
+        pool.bitmap = 1;
+
+        // tick to consume the fill
+        PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(70000.0), vol, &log);
+
+        int has_pos = Portfolio_CountActive(&ctrl.portfolio) > 0;
+        check("momentum: position created", has_pos);
+
+        if (has_pos) {
+            int pidx = __builtin_ctz(ctrl.portfolio.active_bitmap);
+            double tp = FPN_ToDouble(ctrl.portfolio.positions[pidx].take_profit_price);
+            double sl = FPN_ToDouble(ctrl.portfolio.positions[pidx].stop_loss_price);
+            double entry = 70000.0;
+
+            // TP should be reasonable (not 110k from ×100 bug)
+            check("momentum: TP not absurdly high", tp < entry + 5000.0);
+            check("momentum: TP above entry", tp > entry);
+            check("momentum: SL below entry", sl < entry);
+            check("momentum: SL not absurdly low", sl > entry - 5000.0);
+            check("momentum: entry_strategy is MOMENTUM",
+                  ctrl.entry_strategy[pidx] == STRATEGY_MOMENTUM);
+        }
+    }
+
+    //==================================================================================================
+    // [TEST: REGIME SWITCH POSITION ADJUSTMENT]
+    //==================================================================================================
+    {
+        printf("\n--- Regime Switch Position Adjustment ---\n");
+        ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+        cfg.warmup_ticks = 10;
+        cfg.starting_balance = FPN_FromDouble<FP>(10000.0);
+        cfg.momentum_tp_mult = FPN_FromDouble<FP>(3.0);
+        cfg.momentum_sl_mult = FPN_FromDouble<FP>(1.0);
+
+        PortfolioController<FP> ctrl = {};
+        PortfolioController_Init(&ctrl, cfg);
+
+        // build rolling stats with meaningful stddev
+        for (int i = 0; i < 20; i++) {
+            RollingStats_Push(&ctrl.rolling, FPN_FromDouble<FP>(70000.0 + i * 5.0),
+                              FPN_FromDouble<FP>(1.0));
+        }
+
+        // manually create a position under MR
+        ctrl.state = CONTROLLER_ACTIVE;
+        ctrl.strategy_id = STRATEGY_MEAN_REVERSION;
+        FPN<FP> entry_p = FPN_FromDouble<FP>(70000.0);
+        FPN<FP> qty = FPN_FromDouble<FP>(0.01);
+        Portfolio_AddPosition(&ctrl.portfolio, qty, entry_p);
+        int pidx = __builtin_ctz(ctrl.portfolio.active_bitmap);
+        ctrl.portfolio.positions[pidx].take_profit_price = FPN_FromDouble<FP>(70500.0);
+        ctrl.portfolio.positions[pidx].stop_loss_price   = FPN_FromDouble<FP>(69500.0);
+        ctrl.portfolio.positions[pidx].original_tp = ctrl.portfolio.positions[pidx].take_profit_price;
+        ctrl.portfolio.positions[pidx].original_sl = ctrl.portfolio.positions[pidx].stop_loss_price;
+        ctrl.entry_strategy[pidx] = STRATEGY_MEAN_REVERSION;
+
+        double tp_before = FPN_ToDouble(ctrl.portfolio.positions[pidx].take_profit_price);
+        double sl_before = FPN_ToDouble(ctrl.portfolio.positions[pidx].stop_loss_price);
+
+        // simulate RANGING → TRENDING regime switch
+        Regime_AdjustPositions(&ctrl.portfolio, &ctrl.rolling,
+                                REGIME_RANGING, REGIME_TRENDING,
+                                ctrl.entry_strategy, &ctrl.config);
+
+        double tp_after = FPN_ToDouble(ctrl.portfolio.positions[pidx].take_profit_price);
+        double sl_after = FPN_ToDouble(ctrl.portfolio.positions[pidx].stop_loss_price);
+
+        // TP should widen (increase) or stay same
+        check("regime switch: TP widened or unchanged", tp_after >= tp_before - 0.01);
+        // SL should tighten (increase toward entry) or stay same
+        check("regime switch: SL tightened or unchanged", sl_after >= sl_before - 0.01);
+        // TP should still be reasonable (not 110k)
+        check("regime switch: TP not absurd", tp_after < 75000.0);
+        check("regime switch: SL not absurd", sl_after > 65000.0);
+    }
+
     printf("\n======================================\n");
     printf("  RESULTS: %d passed, %d failed\n", tests_passed, tests_failed);
     printf("======================================\n");

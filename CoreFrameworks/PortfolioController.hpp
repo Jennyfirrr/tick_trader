@@ -135,6 +135,7 @@ inline void PortfolioController_Init(PortfolioController<F> *ctrl,
   // regime detector
   Regime_Init(&ctrl->regime, config.regime_hysteresis);
   ctrl->regime_ror = RORRegressor_Init<F>();
+  ctrl->volume_spike_ratio = FPN_Zero<F>();
 
   ExitBuffer_Init(&ctrl->exit_buf);
   TradeLogBuffer_Init(&ctrl->trade_buf);
@@ -231,7 +232,12 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
 
     // volume spike: reduce spacing requirement for high-conviction entries
     // a 5x+ volume spike on a dip is a stronger signal — allow tighter clustering
-    int is_spike = FPN_GreaterThanOrEqual(ctrl->volume_spike_ratio,
+    // compute fresh ratio from current tick volume (not stale slow-path value)
+    FPN<F> live_spike_ratio = (!FPN_IsZero(ctrl->rolling.volume_max))
+        ? FPN_DivNoAssert(current_volume, ctrl->rolling.volume_max)
+        : FPN_Zero<F>();
+    ctrl->volume_spike_ratio = live_spike_ratio;  // update for TUI display
+    int is_spike = FPN_GreaterThanOrEqual(live_spike_ratio,
                                            ctrl->config.spike_threshold);
     FPN<F> spike_spacing = FPN_Mul(min_spacing, ctrl->config.spike_spacing_reduction);
     uint64_t spike_mask = -(uint64_t)is_spike;
@@ -557,12 +563,6 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
   // adjustment
   RollingStats_Push(&ctrl->rolling, current_price, current_volume);
   RollingStats_Push(ctrl->rolling_long, current_price, current_volume);
-
-  // volume spike detection: ratio of current tick volume to rolling max
-  if (!FPN_IsZero(ctrl->rolling.volume_max))
-      ctrl->volume_spike_ratio = FPN_DivNoAssert(current_volume, ctrl->rolling.volume_max);
-  else
-      ctrl->volume_spike_ratio = FPN_Zero<F>();
 
   // compute unrealized P&L and estimate exit fees on open positions
   // gross P&L is what Portfolio_ComputePnL returns (price delta * qty)
