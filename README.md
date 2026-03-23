@@ -110,7 +110,7 @@ Features:
 ```bash
 make              # ANSI TUI (default, no library deps)
 make run          # build + run
-make test         # run 128 tests
+make test         # run 134 tests
 make ftxui        # FTXUI TUI (auto-fetched)
 make notcurses    # notcurses TUI (requires system lib)
 make profile      # with RDTSCP latency profiling
@@ -133,6 +133,7 @@ Key parameters:
 - `take_profit_pct` / `stop_loss_pct` — base TP/SL as percentage
 - `momentum_tp_mult` / `momentum_sl_mult` — stddev multipliers for momentum strategy
 - `spike_threshold` — volume spike ratio to trigger spacing relaxation
+- `slippage_pct` — simulated execution slippage (%, 0 = disabled)
 - `sl_cooldown_cycles` — slow-path cycles to pause after stop loss
 - `min_warmup_samples` — slow-path samples required before trading starts
 - `regime_r2_threshold` — R² required for TRENDING classification
@@ -148,7 +149,7 @@ DataStream/              BinanceCrypto (websocket), TUI renderers, TradeLog
 FixedPoint/              Arbitrary-width fixed-point arithmetic library
 ML_Headers/              RollingStats, LinearRegression, ROR regressor
 MemHeaders/              PoolAllocator, BuddyAllocator
-tests/                   128 assertions across 24 test functions
+tests/                   134 assertions across 25 test functions
 DOCS/                    Architecture, configuration, performance, changelogs
 ```
 

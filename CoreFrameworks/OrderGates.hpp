@@ -24,6 +24,8 @@
 template <unsigned F> struct DataStream {
     FPN<F> price;
     FPN<F> volume;
+    double price_d;    // stashed from parse for TUI display (no FPN_ToDouble on hot path)
+    double volume_d;
 };
 
 template <unsigned F> struct ProfitTarget {

@@ -4,6 +4,8 @@
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 3.0.14 | 2026-03-23 | Slippage simulation, zero-pollution TUI (slow-path snapshot + live price), warmup trim, live trading plan |
+| 3.0.13 | 2026-03-23 | Latency profiling overhaul: busy-poll, core isolation, native 128-bit, warmup visibility fix |
 | 3.0.12 | 2026-03-22 | Always warmup after snapshot load, exit drain during warmup, revert TUI to 9-section layout |
 | 3.0.11 | 2026-03-22 | TUI consolidation (9→6 sections), fox art fix, BUYING PAUSED wording, W/L in top bar |
 | 3.0.10 | 2026-03-22 | Warmup waits for full short window (128 samples), version strings synced, dynamic warmup display |

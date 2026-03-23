@@ -73,6 +73,8 @@ template <unsigned F> struct ControllerConfig {
   // volume spike detection
   FPN<F> spike_threshold;         // volume spike ratio (current/max) to trigger (e.g. 5.0 = 5x)
   FPN<F> spike_spacing_reduction; // spacing multiplier during spike (e.g. 0.5 = half normal)
+  // slippage simulation
+  FPN<F> slippage_pct;           // simulated slippage on entry/exit (e.g. 0.0005 = 0.05%)
 };
 //======================================================================================================
 template <unsigned F> inline ControllerConfig<F> ControllerConfig_Default() {
@@ -123,6 +125,7 @@ template <unsigned F> inline ControllerConfig<F> ControllerConfig_Default() {
   // volume spike detection
   cfg.spike_threshold         = FPN_FromDouble<F>(5.0);    // 5x rolling max triggers spike
   cfg.spike_spacing_reduction = FPN_FromDouble<F>(0.5);    // half spacing on spike
+  cfg.slippage_pct = FPN_Zero<F>();                        // 0 = disabled (backward compat)
   return cfg;
 }
 //======================================================================================================
@@ -265,6 +268,8 @@ inline ControllerConfig<F> ControllerConfig_Load(const char *filepath) {
       cfg.spike_threshold = FPN_FromDouble<F>(atof(val));
     else if (strcmp(key, "spike_spacing_reduction") == 0)
       cfg.spike_spacing_reduction = FPN_FromDouble<F>(atof(val));
+    else if (strcmp(key, "slippage_pct") == 0)
+      cfg.slippage_pct = FPN_FromDouble<F>(atof(val) / 100.0);
   }
 
   fclose(f);

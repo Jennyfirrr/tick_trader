@@ -49,8 +49,11 @@ When rolling stats are populated, TP/SL are computed as `entry +/- (stddev * pct
 | `starting_balance` | `10000.00` | Starting paper trading balance ($) |
 | `fee_rate` | `0.10` | Per-trade fee as % (0.10 = 0.1% for Binance) |
 | `risk_pct` | `2.00` | Fraction of balance to risk per position (%) |
+| `slippage_pct` | `0.00` | Simulated execution slippage (%, 0 = disabled) |
 
 Position quantity is computed as `(balance * risk_pct) / price`. At $10k balance and 2% risk, each position is ~$200.
+
+Slippage adjusts fill prices to simulate real execution: buys fill higher (`price + price * slippage_pct`), sells fill lower (`price - price * slippage_pct`). Applied to all exit paths (TP/SL, time-based). Typical: `0.05` (0.05%).
 
 ## Risk Management
 
@@ -174,6 +177,7 @@ stop_loss_pct=1.50
 starting_balance=10000.00
 fee_rate=0.10
 risk_pct=2.00
+slippage_pct=0.05
 
 # risk management
 max_drawdown_pct=10.00
