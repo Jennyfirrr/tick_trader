@@ -15,6 +15,7 @@
 // reconnect procedure is airtight - verifies bitmap is zero before proceeding
 //======================================================================================================
 #include "DataStream/BinanceCrypto.hpp"
+#include "DataStream/BinanceOrderAPI.hpp"
 #include "DataStream/EngineTUI.hpp"
 #include "CoreFrameworks/PortfolioController.hpp"
 #include "MemHeaders/PoolAllocator.hpp"
@@ -124,6 +125,49 @@ int main(int argc, char *argv[]) {
     char metrics_path[128];
     snprintf(metrics_path, sizeof(metrics_path), "%s_metrics.csv", bcfg.symbol);
     MetricsLog_Init(&metrics, metrics_path);
+
+    //==================================================================================================
+    // init live trading (REST API)
+    //==================================================================================================
+    BinanceOrderAPI order_api = {};
+    struct PendingBuy {
+        char order_id[32];
+        int position_slot;
+        int active;
+    };
+    struct PendingSell {
+        char order_id[32];
+        uint32_t position_index;
+        int active;
+    };
+    PendingBuy pending_buys[4] = {};
+    int pending_buy_count = 0;
+    PendingSell pending_sells[4] = {};
+    int pending_sell_count = 0;
+
+    if (ccfg.use_real_money) {
+        char api_key[128] = {}, api_secret[128] = {};
+        if (!LoadSecrets("secrets.cfg", api_key, api_secret)) {
+            fprintf(stderr, "[ENGINE] ERROR: use_real_money=1 but secrets.cfg missing or incomplete\n");
+            return 1;
+        }
+        const char *rest_host = bcfg.use_testnet ? "testnet.binance.vision"
+            : bcfg.use_binance_us ? "api.binance.us" : "api.binance.com";
+        if (!BinanceOrderAPI_Init(&order_api, rest_host, api_key, api_secret, bcfg.symbol)) {
+            fprintf(stderr, "[ENGINE] ERROR: failed to connect to REST API at %s\n", rest_host);
+            return 1;
+        }
+        fprintf(stderr, "╔════════════════════════════════════════╗\n");
+        fprintf(stderr, "║   LIVE TRADING MODE ENABLED            ║\n");
+        fprintf(stderr, "║   Real orders will be placed on %s  ║\n",
+                bcfg.use_testnet ? "TESTNET" : "PRODUCTION");
+        fprintf(stderr, "╚════════════════════════════════════════╝\n");
+        if (!bcfg.use_testnet) {
+            fprintf(stderr, "[SAFETY] WARNING: Trading with REAL MONEY\n");
+            fprintf(stderr, "[SAFETY] Starting in 10 seconds... (Ctrl+C to abort)\n");
+            sleep(10);
+        }
+    }
 
     //==================================================================================================
     // init TUI
@@ -363,6 +407,39 @@ int main(int argc, char *argv[]) {
                 snprintf(detail, sizeof(detail), "positions:%d strategy:%s",
                          __builtin_popcount(ctrl.portfolio.active_bitmap), _strategy_str(ctrl.strategy_id));
                 MetricsLog_Event(&metrics, &ctrl, last_stream.price_d, "FILL", detail);
+
+                // LIVE: submit real buy order to match the paper position
+                if (ccfg.use_real_money && order_api.connected) {
+                    // find the newly added position (highest set bit not in buys_before)
+                    uint16_t new_bits = ctrl.portfolio.active_bitmap;
+                    // the newest position is at the slot PCTick just filled
+                    // walk bitmap to find a slot that has entry_tick == total_ticks
+                    uint16_t active = ctrl.portfolio.active_bitmap;
+                    while (active) {
+                        int slot = __builtin_ctz(active);
+                        if (ctrl.entry_ticks[slot] == ctrl.total_ticks) {
+                            double qty_d = FPN_ToDouble(ctrl.portfolio.positions[slot].quantity);
+                            char oid[32];
+                            if (BinanceOrderAPI_MarketBuy(&order_api, qty_d, oid)) {
+                                if (pending_buy_count < 4) {
+                                    PendingBuy *pb = &pending_buys[pending_buy_count++];
+                                    strncpy(pb->order_id, oid, 31);
+                                    pb->position_slot = slot;
+                                    pb->active = 1;
+                                }
+                            } else {
+                                // REST failed — roll back paper position
+                                fprintf(stderr, "[LIVE] buy order failed — rolling back position slot %d\n", slot);
+                                FPN<FP> cost = FPN_Mul(ctrl.portfolio.positions[slot].entry_price,
+                                                        ctrl.portfolio.positions[slot].quantity);
+                                ctrl.balance = FPN_AddSat(ctrl.balance, cost);
+                                Portfolio_RemovePosition(&ctrl.portfolio, slot);
+                            }
+                            break;
+                        }
+                        active &= active - 1;
+                    }
+                }
             }
 
 #ifdef LATENCY_PROFILING
@@ -403,6 +480,59 @@ int main(int argc, char *argv[]) {
 
             // save portfolio snapshot every slow-path cycle (crash recovery)
             if (ctrl.tick_count == 0) {
+                // LIVE: submit sell orders for TP/SL exits before DrainExits books paper P&L
+                if (ccfg.use_real_money && order_api.connected && ctrl.exit_buf.count > 0) {
+                    for (uint32_t ei = 0; ei < ctrl.exit_buf.count; ei++) {
+                        uint32_t pidx = ctrl.exit_buf.records[ei].position_index;
+                        double qty_d = FPN_ToDouble(ctrl.portfolio.positions[pidx].quantity);
+                        char oid[32];
+                        if (BinanceOrderAPI_MarketSell(&order_api, qty_d, oid)) {
+                            if (pending_sell_count < 4) {
+                                PendingSell *ps = &pending_sells[pending_sell_count++];
+                                strncpy(ps->order_id, oid, 31);
+                                ps->position_index = pidx;
+                                ps->active = 1;
+                            }
+                        } else {
+                            fprintf(stderr, "[LIVE] sell order failed for position %d\n", pidx);
+                        }
+                    }
+                }
+
+                // LIVE: poll pending orders for fill confirmations
+                if (ccfg.use_real_money && order_api.connected) {
+                    for (int i = 0; i < pending_buy_count; i++) {
+                        if (!pending_buys[i].active) continue;
+                        double filled_qty, avg_price;
+                        int ostatus = BinanceOrderAPI_GetStatus(&order_api,
+                                        pending_buys[i].order_id, &filled_qty, &avg_price);
+                        if (ostatus == ORDER_STATUS_FILLED) {
+                            fprintf(stderr, "[LIVE] buy confirmed: qty=%.8f avg_price=%.2f\n",
+                                    filled_qty, avg_price);
+                            pending_buys[i].active = 0;
+                        } else if (ostatus == ORDER_STATUS_REJECTED || ostatus == ORDER_STATUS_EXPIRED) {
+                            fprintf(stderr, "[LIVE] buy order %s rejected/expired\n",
+                                    pending_buys[i].order_id);
+                            pending_buys[i].active = 0;
+                        }
+                    }
+                    for (int i = 0; i < pending_sell_count; i++) {
+                        if (!pending_sells[i].active) continue;
+                        double filled_qty, avg_price;
+                        int ostatus = BinanceOrderAPI_GetStatus(&order_api,
+                                        pending_sells[i].order_id, &filled_qty, &avg_price);
+                        if (ostatus == ORDER_STATUS_FILLED) {
+                            fprintf(stderr, "[LIVE] sell confirmed: qty=%.8f avg_price=%.2f\n",
+                                    filled_qty, avg_price);
+                            pending_sells[i].active = 0;
+                        } else if (ostatus == ORDER_STATUS_REJECTED || ostatus == ORDER_STATUS_EXPIRED) {
+                            fprintf(stderr, "[LIVE] sell order %s rejected/expired\n",
+                                    pending_sells[i].order_id);
+                            pending_sells[i].active = 0;
+                        }
+                    }
+                }
+
                 PortfolioController_SaveSnapshot(&ctrl, snapshot_path);
                 MetricsLog_SlowPath(&metrics, &ctrl, last_stream.price_d);
 #ifdef MULTICORE_TUI
@@ -500,6 +630,12 @@ int main(int argc, char *argv[]) {
 #endif
 #endif // !MULTICORE_TUI
     }
+
+    //==================================================================================================
+    // cleanup live trading
+    //==================================================================================================
+    if (ccfg.use_real_money)
+        BinanceOrderAPI_Cleanup(&order_api);
 
     //==================================================================================================
     // session summary

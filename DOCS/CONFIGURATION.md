@@ -55,6 +55,21 @@ Position quantity is computed as `(balance * risk_pct) / price`. At $10k balance
 
 Slippage adjusts fill prices to simulate real execution: buys fill higher (`price + price * slippage_pct`), sells fill lower (`price - price * slippage_pct`). Applied to all exit paths (TP/SL, time-based). Typical: `0.05` (0.05%).
 
+## Live Trading
+
+| Key | Default | Description |
+|---|---|---|
+| `use_real_money` | `0` | 0 = paper trading (default), 1 = real orders via Binance REST API |
+
+When enabled, the engine places real market orders on Binance. Requires `secrets.cfg` with API credentials. Defaults to testnet (`use_testnet=1`). Set `use_binance_us=1` for Binance US endpoint.
+
+**Setup:**
+1. Get API keys from Binance (testnet or live)
+2. Create `secrets.cfg` (gitignored): `api_key=xxx` and `api_secret=xxx`
+3. Set `use_real_money=1` in engine.cfg
+
+**Safety:** Engine runs paper logic first (all validation gates), then submits matching real order. If REST fails, paper position is rolled back. 10-second countdown before production trading.
+
 ## Risk Management
 
 | Key | Default | Description |

@@ -75,6 +75,8 @@ template <unsigned F> struct ControllerConfig {
   FPN<F> spike_spacing_reduction; // spacing multiplier during spike (e.g. 0.5 = half normal)
   // slippage simulation
   FPN<F> slippage_pct;           // simulated slippage on entry/exit (e.g. 0.0005 = 0.05%)
+  // live trading
+  int use_real_money;            // 0=paper (default), 1=real orders via REST API
 };
 //======================================================================================================
 template <unsigned F> inline ControllerConfig<F> ControllerConfig_Default() {
@@ -126,6 +128,7 @@ template <unsigned F> inline ControllerConfig<F> ControllerConfig_Default() {
   cfg.spike_threshold         = FPN_FromDouble<F>(5.0);    // 5x rolling max triggers spike
   cfg.spike_spacing_reduction = FPN_FromDouble<F>(0.5);    // half spacing on spike
   cfg.slippage_pct = FPN_Zero<F>();                        // 0 = disabled (backward compat)
+  cfg.use_real_money = 0;                                  // 0 = paper trading (default safe)
   return cfg;
 }
 //======================================================================================================
@@ -270,6 +273,8 @@ inline ControllerConfig<F> ControllerConfig_Load(const char *filepath) {
       cfg.spike_spacing_reduction = FPN_FromDouble<F>(atof(val));
     else if (strcmp(key, "slippage_pct") == 0)
       cfg.slippage_pct = FPN_FromDouble<F>(atof(val) / 100.0);
+    else if (strcmp(key, "use_real_money") == 0)
+      cfg.use_real_money = atoi(val);
   }
 
   fclose(f);

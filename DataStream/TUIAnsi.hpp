@@ -549,12 +549,16 @@ static inline int ANSI_Section_Config(AnsiBuf *ab, const TUISnapshot *s, int y, 
     ab_printf(ab, A_SAND "TP: " A_FG "%.1f%%" A_SAND "  SL: " A_FG "%.1f%%"
               A_SAND "  fee: " A_FG "%.1f%%" A_RESET,
               s->cfg_tp, s->cfg_sl, s->cfg_fee);
+    if (s->cfg_slippage > 0.0)
+        ab_printf(ab, A_SAND "  slip: " A_FG "%.2f%%" A_RESET, s->cfg_slippage);
     if (s->trailing_enabled)
         ab_printf(ab, A_DIM "  " A_SAND "trail: " A_FG "%.1f" A_DIM "σ"
                   A_SAND " score: " A_FG "%.2f" A_RESET,
                   s->cfg_trail_mult, s->cfg_hold_score);
     else
         ab_printf(ab, A_DIM "  trailing: off" A_RESET);
+    if (s->live_trading)
+        ab_printf(ab, A_BOLD "  \033[31m LIVE\033[0m" A_RESET);
     y++;
 
     return y;

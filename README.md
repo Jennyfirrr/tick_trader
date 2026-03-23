@@ -2,7 +2,7 @@
 
 Tick-level crypto trading engine in C++17. Branchless fixed-point arithmetic, bitmap-based portfolio management, regime-adaptive strategy switching with score-based market classification. Sub-microsecond hot path, multicore TUI dashboard, zero external dependencies.
 
-> **Paper trading only.** This engine connects to the public Binance websocket for market data. No API key required for data — order execution is not yet implemented.
+> **Paper trading by default.** Live trading via Binance REST API is supported (testnet or production). Set `use_real_money=1` in engine.cfg and add API keys to `secrets.cfg`. No API key needed for market data — the public websocket is always used for price feeds.
 
 [![Donate](https://img.shields.io/badge/Donate-PayPal-blue.svg)](https://www.paypal.com/ncp/payment/8M6XLK7M8569C)
 
@@ -18,7 +18,7 @@ Tick-level crypto trading engine in C++17. Branchless fixed-point arithmetic, bi
 cp engine.cfg.example engine.cfg   # create your config from template
 make                               # build (ANSI TUI, zero deps beyond OpenSSL)
 make run                           # build + connect to Binance, paper trade BTC
-make test                          # run 128 tests
+make test                          # run 134 tests
 ```
 
 Requires: g++ (C++17), OpenSSL, CMake 3.14+. No other dependencies.
