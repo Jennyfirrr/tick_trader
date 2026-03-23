@@ -141,12 +141,14 @@ int main(int argc, char *argv[]) {
     pthread_create(&tui_tid, NULL, tui_thread_fn, &shared);
 
 #ifdef __linux__
-    // pin engine to core 0, TUI to core 1
+    // pin engine to Core 3 (usually quieter), TUI to Core 2
     cpu_set_t cpuset;
-    CPU_ZERO(&cpuset); CPU_SET(0, &cpuset);
-    pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
-    CPU_ZERO(&cpuset); CPU_SET(1, &cpuset);
-    pthread_setaffinity_np(tui_tid, sizeof(cpuset), &cpuset);
+    CPU_ZERO(&cpuset); CPU_SET(3, &cpuset);
+    if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) != 0)
+        fprintf(stderr, "[ENGINE] warning: failed to pin engine to core 3\n");
+    CPU_ZERO(&cpuset); CPU_SET(2, &cpuset);
+    if (pthread_setaffinity_np(tui_tid, sizeof(cpuset), &cpuset) != 0)
+        fprintf(stderr, "[ENGINE] warning: failed to pin TUI to core 2\n");
 #endif
 
     // latency stats live on engine thread (not shared TUI struct)
@@ -195,7 +197,9 @@ int main(int argc, char *argv[]) {
         // spin-poll: never sleep, keeps L1/L2/icache permanently warm
         // trades CPU power for minimum latency (~100-200ns vs ~1000ns)
         int ready;
-        while (!(ready = BinanceStream_Poll(&bs, 0))) {}
+        while (!(ready = BinanceStream_Poll(&bs, 0))) {
+            __builtin_ia32_pause(); // hardware hint to CPU for better spin-wait
+        }
 #else
         int ready = BinanceStream_Poll(&bs, bcfg.poll_timeout_ms);
 #endif
@@ -222,8 +226,20 @@ int main(int argc, char *argv[]) {
                 last_stream = tick;
                 has_data = 1;
 
-                // exit gate on EVERY tick in the burst
+            // exit gate on EVERY tick in the burst
+            if (ctrl.portfolio.active_bitmap) {
+#if defined(LATENCY_PROFILING) && !defined(LATENCY_LITE)
+                unsigned int tsc_aux;
+                uint64_t t1 = __rdtscp(&tsc_aux);
                 PositionExitGate(&ctrl.portfolio, last_stream.price, &ctrl.exit_buf, ctrl.total_ticks);
+                uint64_t t2 = __rdtscp(&tsc_aux);
+                tui.eg_sum += (t2 - t1);
+                if ((t2-t1) > tui.eg_max) tui.eg_max = (t2-t1);
+                tui.eg_pos_sum += __builtin_popcount(ctrl.portfolio.active_bitmap);
+#else
+                PositionExitGate(&ctrl.portfolio, last_stream.price, &ctrl.exit_buf, ctrl.total_ticks);
+#endif
+            }
 
                 // drain until SSL has no more buffered data
                 if (!BinanceStream_HasPending(&bs)) break;
