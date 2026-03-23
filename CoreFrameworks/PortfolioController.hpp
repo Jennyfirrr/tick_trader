@@ -246,17 +246,17 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
                                      TradeLog *trade_log) {
   // always increment tick counter (branchless, single add)
   ctrl->total_ticks++;
-
-  // session high/low tracking
-  double pd = FPN_ToDouble(current_price);
-  if (ctrl->session_high == 0.0) { ctrl->session_high = pd; ctrl->session_low = pd; }
-  if (pd > ctrl->session_high) ctrl->session_high = pd;
-  if (pd < ctrl->session_low) ctrl->session_low = pd;
+  ctrl->tick_count++;
 
   //==================================================================================================
   // WARMUP PHASE
   //==================================================================================================
   if (ctrl->state == CONTROLLER_WARMUP) {
+    // track session high/low only in warmup or slow-path (reduce hot-path overhead)
+    double pd = FPN_ToDouble(current_price);
+    if (ctrl->session_high == 0.0) { ctrl->session_high = pd; ctrl->session_low = pd; }
+    if (pd > ctrl->session_high) ctrl->session_high = pd;
+    if (pd < ctrl->session_low) ctrl->session_low = pd;
     ctrl->price_sum = FPN_AddSat(ctrl->price_sum, current_price);
     ctrl->volume_sum = FPN_AddSat(ctrl->volume_sum, current_volume);
     ctrl->warmup_count++;
@@ -268,6 +268,7 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
     if (ctrl->warmup_count % ctrl->config.poll_interval == 0) {
       RollingStats_Push(&ctrl->rolling, current_price, current_volume);
       RollingStats_Push(ctrl->rolling_long, current_price, current_volume);
+      ctrl->tick_count = 0; // Reset for main.cpp slow-path detection
     }
 
     // gate on rolling stats having real data, not just raw tick count
@@ -538,7 +539,6 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
   //==================================================================================================
   // ACTIVE PHASE - EVERY N TICKS: slow-path operations
   //==================================================================================================
-  ctrl->tick_count++;
   if (ctrl->tick_count < ctrl->config.poll_interval)
     return;
   ctrl->tick_count = 0;

@@ -307,15 +307,18 @@ int main(int argc, char *argv[]) {
 #endif
             if (ctrl.portfolio.active_bitmap)
                 PositionExitGate(&ctrl.portfolio, last_stream.price, &ctrl.exit_buf, ctrl.total_ticks);
-#if defined(LATENCY_PROFILING) && !defined(LATENCY_LITE)
-            uint64_t t2 = __rdtscp(&tsc_aux);
-            uint32_t buys_before = ctrl.total_buys;
-#endif
             int regime_before = ctrl.regime.current_regime;
             int strategy_before = ctrl.strategy_id;
             uint32_t buys_before_metrics = ctrl.total_buys;
+#if defined(LATENCY_PROFILING) && !defined(LATENCY_LITE)
+            uint64_t t2 = __rdtscp(&tsc_aux);
+#endif
             PortfolioController_Tick(&ctrl, &pool, last_stream.price, last_stream.volume, &log);
-            // log regime/strategy changes and fills
+#ifdef LATENCY_PROFILING
+            uint64_t t3 = __rdtscp(&tsc_aux);
+#endif
+
+            // log regime/strategy changes and fills (OUTSIDE high-precision window)
             if (ctrl.regime.current_regime != regime_before) {
                 char detail[128];
                 snprintf(detail, sizeof(detail), "%s->%s",
@@ -334,8 +337,8 @@ int main(int argc, char *argv[]) {
                          __builtin_popcount(ctrl.portfolio.active_bitmap), _strategy_str(ctrl.strategy_id));
                 MetricsLog_Event(&metrics, &ctrl, FPN_ToDouble(last_stream.price), "FILL", detail);
             }
+
 #ifdef LATENCY_PROFILING
-            uint64_t t3 = __rdtscp(&tsc_aux);
             uint64_t cycles = t3 - t0;
             // tick_count == 0 means slow path just ran, > 0 means hot path only
             if (ctrl.tick_count == 0) {
@@ -360,7 +363,7 @@ int main(int argc, char *argv[]) {
                 tui.pc_sum += pc; if (pc > tui.pc_max) tui.pc_max = pc;
                 // fill vs no-fill PCTick + per-position ExitGate cost
                 tui.eg_pos_sum += __builtin_popcount(ctrl.portfolio.active_bitmap);
-                if (ctrl.total_buys > buys_before) {
+                if (ctrl.total_buys > buys_before_metrics) {
                     tui.pc_fill_sum += pc; if (pc > tui.pc_fill_max) tui.pc_fill_max = pc;
                     tui.pc_fill_count++;
                 } else {

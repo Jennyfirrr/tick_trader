@@ -20,6 +20,9 @@ notcurses:
 profile:
 	cmake -B $(BUILD_DIR) -DLATENCY_PROFILING=ON && cmake --build $(BUILD_DIR) -j$$(nproc)
 
+profile-fast:
+	cmake -B $(BUILD_DIR) -DLATENCY_PROFILING=ON -DUSE_NATIVE_128=ON && cmake --build $(BUILD_DIR) -j$$(nproc)
+
 profile-lite:
 	cmake -B $(BUILD_DIR) -DLATENCY_LITE=ON && cmake --build $(BUILD_DIR) -j$$(nproc)
 
