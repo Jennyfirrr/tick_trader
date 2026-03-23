@@ -722,8 +722,8 @@ template <unsigned F>
 static inline void TUI_CopySnapshot(TUISnapshot *snap,
                                       const PortfolioController<F> *ctrl,
                                       const DataStream<F> *stream) {
-    snap->price  = FPN_ToDouble(stream->price);
-    snap->volume = FPN_ToDouble(stream->volume);
+    snap->price  = stream->price_d;   // use stashed double (no FPN_ToDouble)
+    snap->volume = stream->volume_d;
     snap->state_warmup = (ctrl->state == CONTROLLER_WARMUP);
     snap->is_paused = FPN_IsZero(ctrl->buy_conds.price) && !snap->state_warmup;
     snap->start_time = 0; // TUI thread computes uptime from its own start_time

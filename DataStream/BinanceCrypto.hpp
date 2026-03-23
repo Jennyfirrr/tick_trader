@@ -664,6 +664,8 @@ static inline int BinanceStream_ReadTick(BinanceStream *bs, DataStream<F> *out) 
 
             out->price  = FPN_FromString<F>(price_str);
             out->volume = FPN_FromString<F>(qty_str);
+            out->price_d  = atof(price_str);   // stash double for TUI (hidden in I/O path)
+            out->volume_d = atof(qty_str);
             bs->tick_count++;
             return 1;
         }

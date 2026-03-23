@@ -178,14 +178,21 @@ inline void PortfolioController_DrainExits(PortfolioController<F> *ctrl) {
     ExitRecord<F> *rec = &ctrl->exit_buf.records[i];
     Position<F> *pos = &ctrl->portfolio.positions[rec->position_index];
 
+    // slippage: simulate worse fill on exit (sell at lower price than market)
+    FPN<F> exit_price = rec->exit_price;
+    if (!FPN_IsZero(ctrl->config.slippage_pct)) {
+        FPN<F> slip = FPN_Mul(exit_price, ctrl->config.slippage_pct);
+        exit_price = FPN_SubSat(exit_price, slip);
+    }
+
     double entry_d = FPN_ToDouble(pos->entry_price);
-    double exit_d = FPN_ToDouble(rec->exit_price);
+    double exit_d = FPN_ToDouble(exit_price);
     double qty_d = FPN_ToDouble(pos->quantity);
     double delta_pct = 0.0;
     if (entry_d != 0.0)
       delta_pct = ((exit_d - entry_d) / entry_d) * 100.0;
 
-    FPN<F> gross_proceeds = FPN_Mul(rec->exit_price, pos->quantity);
+    FPN<F> gross_proceeds = FPN_Mul(exit_price, pos->quantity);
     FPN<F> exit_fee = FPN_Mul(gross_proceeds, ctrl->config.fee_rate);
     FPN<F> net_proceeds = FPN_SubSat(gross_proceeds, exit_fee);
 
@@ -251,21 +258,21 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
   //==================================================================================================
   // WARMUP PHASE
   //==================================================================================================
-  if (ctrl->state == CONTROLLER_WARMUP) {
-    // track session high/low only in warmup or slow-path (reduce hot-path overhead)
-    double pd = FPN_ToDouble(current_price);
-    if (ctrl->session_high == 0.0) { ctrl->session_high = pd; ctrl->session_low = pd; }
-    if (pd > ctrl->session_high) ctrl->session_high = pd;
-    if (pd < ctrl->session_low) ctrl->session_low = pd;
-    ctrl->price_sum = FPN_AddSat(ctrl->price_sum, current_price);
-    ctrl->volume_sum = FPN_AddSat(ctrl->volume_sum, current_volume);
-    ctrl->warmup_count++;
+  if (__builtin_expect(ctrl->state == CONTROLLER_WARMUP, 0)) {
+    ctrl->warmup_count++; // every tick — needed for warmup completion gate below
 
-    // feed rolling stats at slow-path rate during warmup
+    // feed rolling stats + session tracking at slow-path rate during warmup
     // each push is one slow-path sample — spacing them out ensures each sample
     // represents a different point in time (real price diversity, not 128 copies
     // of the same second). tests use poll_interval=1 so every tick IS a sample.
     if (ctrl->warmup_count % ctrl->config.poll_interval == 0) {
+      // session high/low tracking (display-only, slow-path granularity is sufficient)
+      double pd = FPN_ToDouble(current_price);
+      if (ctrl->session_high == 0.0) { ctrl->session_high = pd; ctrl->session_low = pd; }
+      if (pd > ctrl->session_high) ctrl->session_high = pd;
+      if (pd < ctrl->session_low) ctrl->session_low = pd;
+      ctrl->price_sum = FPN_AddSat(ctrl->price_sum, current_price);
+      ctrl->volume_sum = FPN_AddSat(ctrl->volume_sum, current_volume);
       RollingStats_Push(&ctrl->rolling, current_price, current_volume);
       RollingStats_Push(ctrl->rolling_long, current_price, current_volume);
       ctrl->tick_count = 0; // Reset for main.cpp slow-path detection
@@ -310,6 +317,11 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
     uint32_t idx = __builtin_ctzll(fills);
 
     FPN<F> fill_price = pool->slots[idx].price;
+    // slippage: simulate worse fill on entry (buy at higher price than market)
+    if (!FPN_IsZero(ctrl->config.slippage_pct)) {
+        FPN<F> slip = FPN_Mul(fill_price, ctrl->config.slippage_pct);
+        fill_price = FPN_AddSat(fill_price, slip);
+    }
     // ignore stream quantity - we use position sizing based on balance
     // fill_price is the signal, not fill_qty
 
@@ -564,14 +576,20 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
         int low_gain = FPN_LessThan(gain_pct, ctrl->config.min_hold_gain_pct);
 
         if (low_gain) {
+          // slippage: simulate worse fill on time-based exit (sell at lower price)
+          FPN<F> sell_price = current_price;
+          if (!FPN_IsZero(ctrl->config.slippage_pct)) {
+              FPN<F> slip = FPN_Mul(sell_price, ctrl->config.slippage_pct);
+              sell_price = FPN_SubSat(sell_price, slip);
+          }
           double entry_d = FPN_ToDouble(pos->entry_price);
-          double exit_d  = FPN_ToDouble(current_price);
+          double exit_d  = FPN_ToDouble(sell_price);
           double qty_d   = FPN_ToDouble(pos->quantity);
           double delta_pct = 0.0;
           if (entry_d != 0.0) delta_pct = ((exit_d - entry_d) / entry_d) * 100.0;
 
           // compute realized P&L with fees (same as exit buffer drain)
-          FPN<F> gross_proceeds = FPN_Mul(current_price, pos->quantity);
+          FPN<F> gross_proceeds = FPN_Mul(sell_price, pos->quantity);
           FPN<F> exit_fee = FPN_Mul(gross_proceeds, ctrl->config.fee_rate);
           FPN<F> net_proceeds = FPN_SubSat(gross_proceeds, exit_fee);
           FPN<F> entry_cost = FPN_Mul(pos->entry_price, pos->quantity);

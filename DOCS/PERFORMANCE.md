@@ -1,15 +1,16 @@
 # Performance Guide
 
-## Current measurements (2026-03-21, BTC $70k, laptop)
+## Current measurements (2026-03-23, BTC $70k, laptop)
 
 | Mode | Hot-path avg | Hot-path min | Slow-path avg |
 |------|-------------|-------------|---------------|
-| TUI on (profiling) | ~1200ns | 82ns | ~14μs |
+| TUI on (profiling) | ~100-200ns | 82ns | ~14μs |
 | TUI off (bench) | ~90ns | 82ns | ~3-5μs |
 
-The min (82ns) is the true hot-path cost with warm cache. The avg with TUI on
-is inflated by L1 cache pollution — the TUI reads 36KB of controller state every
-10 ticks, evicting hot-path data from the 32KB L1 D-cache.
+The min (82ns) is the true hot-path cost with warm cache. TUI-on avg is now close to
+bench mode thanks to zero-pollution snapshot: full `TUI_CopySnapshot` runs on the slow
+path (L1 already warm), while the hot path only writes price+volume+active_count to the
+active snapshot (1 cache line, ~7ns).
 
 ## Hot-path breakdown (82ns, 2 positions, TUI off)
 
@@ -29,10 +30,12 @@ PositionExitGate dominates — cost scales linearly with position count:
 
 ### High impact
 
-**TUI off** — single biggest improvement. TUI reads the entire 36KB controller struct
-every 10 ticks. This exceeds L1 D-cache (32KB), evicting hot-path data via LRU. Next
-tick reloads from L2 (~5ns per cache line × ~50 lines = ~250ns reload). Run headless
-for production: `tui_enabled=0` in engine.cfg or use bench mode.
+**TUI snapshot architecture** — full `TUI_CopySnapshot` now runs on the slow path
+(every `poll_interval` ticks), piggybacking on L1 data already loaded by rolling stats,
+regime detection, and strategy dispatch. Between slow paths, only price/volume/active_count
+are written to the active snapshot (1 cache line, ~7ns). This eliminates TUI-induced L1
+cache pollution on the hot path. TUI-on latency is now near bench-mode levels.
+To further increase TUI refresh rate, lower `poll_interval` in engine.cfg (e.g. 30).
 
 **Fewer positions per core** — PositionExitGate is O(positions). Each position adds
 ~30ns (two 128-bit FPN comparisons + bitmap ops). For colocation: one position per core

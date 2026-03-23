@@ -1189,6 +1189,108 @@ static void test_original_tp_sl() {
 }
 
 //======================================================================================================
+// [TEST: SLIPPAGE SIMULATION]
+//======================================================================================================
+static void test_slippage() {
+    printf("\n--- Slippage Simulation ---\n");
+
+    // TEST 1: buy slippage — entry price should be higher than market
+    {
+        ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+        cfg.warmup_ticks = 0;
+        cfg.poll_interval = 1000;
+        cfg.slippage_pct = FPN_FromDouble<FP>(0.01); // 1% slippage
+
+        PortfolioController<FP> ctrl = {};
+        PortfolioController_Init(&ctrl, cfg);
+        ctrl.state = CONTROLLER_ACTIVE;
+        ctrl.buy_conds.price  = FPN_FromDouble<FP>(105.0);
+        ctrl.buy_conds.volume = FPN_FromDouble<FP>(1.0);
+        ctrl.mean_rev.buy_conds_initial = ctrl.buy_conds;
+
+        OrderPool<FP> pool;
+        OrderPool_init(&pool, 64);
+        TradeLog log; log.file = 0; log.trade_count = 0;
+
+        pool.slots[0].price    = FPN_FromDouble<FP>(100.0);
+        pool.slots[0].quantity = FPN_FromDouble<FP>(1.0);
+        pool.bitmap = 1;
+
+        PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(100.0),
+                                  FPN_FromDouble<FP>(1.0), &log);
+
+        check("slippage buy: position created", Portfolio_CountActive(&ctrl.portfolio) == 1);
+        double entry = FPN_ToDouble(ctrl.portfolio.positions[0].entry_price);
+        // 100 + 100*0.01 = 101
+        check("slippage buy: entry price adjusted", fabs(entry - 101.0) < 0.1);
+        free(pool.slots);
+    }
+
+    // TEST 2: sell slippage — realized P&L should reflect worse exit
+    {
+        ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+        cfg.warmup_ticks = 0;
+        cfg.poll_interval = 1000;
+        cfg.slippage_pct = FPN_FromDouble<FP>(0.01); // 1% slippage
+        cfg.fee_rate = FPN_Zero<FP>(); // zero fees to isolate slippage effect
+
+        PortfolioController<FP> ctrl = {};
+        PortfolioController_Init(&ctrl, cfg);
+        ctrl.state = CONTROLLER_ACTIVE;
+
+        // manually add a position at $101 (simulating buy slippage already applied)
+        FPN<FP> entry_p = FPN_FromDouble<FP>(101.0);
+        FPN<FP> qty = FPN_FromDouble<FP>(1.0);
+        Portfolio_AddPositionWithExits(&ctrl.portfolio, qty, entry_p,
+            FPN_FromDouble<FP>(110.0), FPN_FromDouble<FP>(90.0));
+
+        // trigger TP exit at $110
+        PositionExitGate(&ctrl.portfolio, FPN_FromDouble<FP>(110.0),
+                          &ctrl.exit_buf, 100);
+        check("slippage sell: exit detected", ctrl.exit_buf.count == 1);
+
+        FPN<FP> pnl_before = ctrl.realized_pnl;
+        PortfolioController_DrainExits(&ctrl);
+
+        // exit at 110 with 1% slippage → effective exit = 110 - 110*0.01 = 108.90
+        // P&L = 108.90 - 101.0 = 7.90 (with zero fees)
+        double pnl = FPN_ToDouble(FPN_Sub(ctrl.realized_pnl, pnl_before));
+        check("slippage sell: P&L reflects slippage", fabs(pnl - 7.90) < 0.2);
+    }
+
+    // TEST 3: slippage disabled — no price adjustment
+    {
+        ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+        cfg.warmup_ticks = 0;
+        cfg.poll_interval = 1000;
+        cfg.slippage_pct = FPN_Zero<FP>(); // disabled
+
+        PortfolioController<FP> ctrl = {};
+        PortfolioController_Init(&ctrl, cfg);
+        ctrl.state = CONTROLLER_ACTIVE;
+        ctrl.buy_conds.price  = FPN_FromDouble<FP>(105.0);
+        ctrl.buy_conds.volume = FPN_FromDouble<FP>(1.0);
+        ctrl.mean_rev.buy_conds_initial = ctrl.buy_conds;
+
+        OrderPool<FP> pool;
+        OrderPool_init(&pool, 64);
+        TradeLog log; log.file = 0; log.trade_count = 0;
+
+        pool.slots[0].price    = FPN_FromDouble<FP>(100.0);
+        pool.slots[0].quantity = FPN_FromDouble<FP>(1.0);
+        pool.bitmap = 1;
+
+        PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(100.0),
+                                  FPN_FromDouble<FP>(1.0), &log);
+
+        check("slippage disabled: position created", Portfolio_CountActive(&ctrl.portfolio) == 1);
+        double entry = FPN_ToDouble(ctrl.portfolio.positions[0].entry_price);
+        check("slippage disabled: entry price exact", fabs(entry - 100.0) < 0.01);
+        free(pool.slots);
+    }
+}
+
+//======================================================================================================
 // [MAIN]
 //======================================================================================================
 int main() {
@@ -1220,6 +1322,7 @@ int main() {
     test_trailing_activates();
     test_trailing_ratchet();
     test_original_tp_sl();
+    test_slippage();
 
     //==================================================================================================
     // [TEST: VOLUME SPIKE DETECTION]

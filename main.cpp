@@ -313,6 +313,17 @@ int main(int argc, char *argv[]) {
         // ENGINE TICK - runs on timeout with last known price, but only after first real tick
         //==============================================================================================
         if (has_data) {
+#ifdef MULTICORE_TUI
+            // live update to active snapshot — 3 stores, 1 cache line, no FPN_ToDouble
+            // price/volume from stashed doubles (atof during websocket parse)
+            // active_count from hot-path bitmap (already in L1 from ExitGate)
+            {
+                int tui_idx = __atomic_load_n(&shared.active_idx, __ATOMIC_ACQUIRE);
+                shared.snapshots[tui_idx].price = last_stream.price_d;
+                shared.snapshots[tui_idx].volume = last_stream.volume_d;
+                shared.snapshots[tui_idx].active_count = __builtin_popcount(ctrl.portfolio.active_bitmap);
+            }
+#endif
 #ifdef LATENCY_PROFILING
             unsigned int tsc_aux;
             uint64_t t0 = __rdtscp(&tsc_aux);
@@ -339,19 +350,19 @@ int main(int argc, char *argv[]) {
                 char detail[128];
                 snprintf(detail, sizeof(detail), "%s->%s",
                          _regime_str(regime_before), _regime_str(ctrl.regime.current_regime));
-                MetricsLog_Event(&metrics, &ctrl, FPN_ToDouble(last_stream.price), "REGIME_CHANGE", detail);
+                MetricsLog_Event(&metrics, &ctrl, last_stream.price_d, "REGIME_CHANGE", detail);
             }
             if (ctrl.strategy_id != strategy_before) {
                 char detail[128];
                 snprintf(detail, sizeof(detail), "%s->%s",
                          _strategy_str(strategy_before), _strategy_str(ctrl.strategy_id));
-                MetricsLog_Event(&metrics, &ctrl, FPN_ToDouble(last_stream.price), "STRATEGY_SWITCH", detail);
+                MetricsLog_Event(&metrics, &ctrl, last_stream.price_d, "STRATEGY_SWITCH", detail);
             }
             if (ctrl.total_buys > buys_before_metrics) {
                 char detail[64];
                 snprintf(detail, sizeof(detail), "positions:%d strategy:%s",
                          __builtin_popcount(ctrl.portfolio.active_bitmap), _strategy_str(ctrl.strategy_id));
-                MetricsLog_Event(&metrics, &ctrl, FPN_ToDouble(last_stream.price), "FILL", detail);
+                MetricsLog_Event(&metrics, &ctrl, last_stream.price_d, "FILL", detail);
             }
 
 #ifdef LATENCY_PROFILING
@@ -393,80 +404,80 @@ int main(int argc, char *argv[]) {
             // save portfolio snapshot every slow-path cycle (crash recovery)
             if (ctrl.tick_count == 0) {
                 PortfolioController_SaveSnapshot(&ctrl, snapshot_path);
-                MetricsLog_SlowPath(&metrics, &ctrl, FPN_ToDouble(last_stream.price));
-            }
+                MetricsLog_SlowPath(&metrics, &ctrl, last_stream.price_d);
 #ifdef MULTICORE_TUI
-            // copy TUI snapshot every 10 ticks (~3 updates/sec at BTC trade rate)
-            // decoupled from slow path so the display stays responsive
-            if (ctrl.total_ticks % 10 == 0) {
-                int back = !__atomic_load_n(&shared.active_idx, __ATOMIC_ACQUIRE);
-                int front = !back;
-                // carry graph history from front buffer before overwriting
-                TUISnapshot *bs = &shared.snapshots[back];
-                const TUISnapshot *fs = &shared.snapshots[front];
-                memcpy(bs->price_history, fs->price_history, sizeof(bs->price_history));
-                memcpy(bs->volume_history, fs->volume_history, sizeof(bs->volume_history));
-                memcpy(bs->pnl_history, fs->pnl_history, sizeof(bs->pnl_history));
-                bs->graph_head = fs->graph_head;
-                bs->graph_count = fs->graph_count;
-                TUI_CopySnapshot(bs, &ctrl, &last_stream);
-                // append current data point to graph ring buffers
-                bs->price_history[bs->graph_head] = bs->price;
-                bs->volume_history[bs->graph_head] = bs->volume;
-                bs->pnl_history[bs->graph_head] = bs->total_pnl;
-                bs->graph_head = (bs->graph_head + 1) % TUISnapshot::GRAPH_LEN;
-                if (bs->graph_count < TUISnapshot::GRAPH_LEN) bs->graph_count++;
+                // full TUI snapshot — piggybacking on slow-path cache state
+                // L1 already warm from rolling stats, regime, balance, strategy dispatch
+                // so this copy reads from L1 hits, not L2 misses (zero additional pollution)
+                {
+                    int back = !__atomic_load_n(&shared.active_idx, __ATOMIC_ACQUIRE);
+                    int front = !back;
+                    // carry graph history from front buffer before overwriting
+                    TUISnapshot *bs = &shared.snapshots[back];
+                    const TUISnapshot *fs = &shared.snapshots[front];
+                    memcpy(bs->price_history, fs->price_history, sizeof(bs->price_history));
+                    memcpy(bs->volume_history, fs->volume_history, sizeof(bs->volume_history));
+                    memcpy(bs->pnl_history, fs->pnl_history, sizeof(bs->pnl_history));
+                    bs->graph_head = fs->graph_head;
+                    bs->graph_count = fs->graph_count;
+                    TUI_CopySnapshot(bs, &ctrl, &last_stream);
+                    // append current data point to graph ring buffers
+                    bs->price_history[bs->graph_head] = bs->price;
+                    bs->volume_history[bs->graph_head] = bs->volume;
+                    bs->pnl_history[bs->graph_head] = bs->total_pnl;
+                    bs->graph_head = (bs->graph_head + 1) % TUISnapshot::GRAPH_LEN;
+                    if (bs->graph_count < TUISnapshot::GRAPH_LEN) bs->graph_count++;
 #ifdef LATENCY_PROFILING
-                if (tui.hot_count > 0) {
-                    shared.snapshots[back].hot_avg_ns = (double)tui.hot_sum / tui.hot_count / tui.tsc_per_ns;
-                    shared.snapshots[back].hot_min_ns = (double)tui.hot_min / tui.tsc_per_ns;
-                    shared.snapshots[back].hot_max_ns = (double)tui.hot_max / tui.tsc_per_ns;
-                    shared.snapshots[back].hot_count  = tui.hot_count;
-                    // percentiles from log2 histogram
-                    {
-                        uint64_t p50t = tui.hot_count / 2, p95t = tui.hot_count * 95 / 100;
-                        uint64_t cum = 0;
-                        shared.snapshots[back].hot_p50_ns = 0;
-                        shared.snapshots[back].hot_p95_ns = 0;
-                        for (int i = 0; i <= 20; i++) {
-                            cum += tui.hot_hist[i];
-                            // report midpoint of bucket: 1.5 * 2^i cycles
-                            if (!shared.snapshots[back].hot_p50_ns && cum >= p50t)
-                                shared.snapshots[back].hot_p50_ns = (1.5 * (1ULL << i)) / tui.tsc_per_ns;
-                            if (!shared.snapshots[back].hot_p95_ns && cum >= p95t)
-                                shared.snapshots[back].hot_p95_ns = (1.5 * (1ULL << i)) / tui.tsc_per_ns;
+                    if (tui.hot_count > 0) {
+                        bs->hot_avg_ns = (double)tui.hot_sum / tui.hot_count / tui.tsc_per_ns;
+                        bs->hot_min_ns = (double)tui.hot_min / tui.tsc_per_ns;
+                        bs->hot_max_ns = (double)tui.hot_max / tui.tsc_per_ns;
+                        bs->hot_count  = tui.hot_count;
+                        // percentiles from log2 histogram
+                        {
+                            uint64_t p50t = tui.hot_count / 2, p95t = tui.hot_count * 95 / 100;
+                            uint64_t cum = 0;
+                            bs->hot_p50_ns = 0;
+                            bs->hot_p95_ns = 0;
+                            for (int i = 0; i <= 20; i++) {
+                                cum += tui.hot_hist[i];
+                                if (!bs->hot_p50_ns && cum >= p50t)
+                                    bs->hot_p50_ns = (1.5 * (1ULL << i)) / tui.tsc_per_ns;
+                                if (!bs->hot_p95_ns && cum >= p95t)
+                                    bs->hot_p95_ns = (1.5 * (1ULL << i)) / tui.tsc_per_ns;
+                            }
+                        }
+                        // per-component breakdown
+                        bs->bg_avg_ns = (double)tui.bg_sum / tui.hot_count / tui.tsc_per_ns;
+                        bs->bg_max_ns = (double)tui.bg_max / tui.tsc_per_ns;
+                        bs->eg_avg_ns = (double)tui.eg_sum / tui.hot_count / tui.tsc_per_ns;
+                        bs->eg_max_ns = (double)tui.eg_max / tui.tsc_per_ns;
+                        bs->eg_per_pos_ns = (tui.eg_pos_sum > 0)
+                            ? (double)tui.eg_sum / tui.eg_pos_sum / tui.tsc_per_ns : 0;
+                        bs->pc_avg_ns = (double)tui.pc_sum / tui.hot_count / tui.tsc_per_ns;
+                        bs->pc_max_ns = (double)tui.pc_max / tui.tsc_per_ns;
+                        if (tui.pc_fill_count > 0) {
+                            bs->pc_fill_avg_ns = (double)tui.pc_fill_sum / tui.pc_fill_count / tui.tsc_per_ns;
+                            bs->pc_fill_max_ns = (double)tui.pc_fill_max / tui.tsc_per_ns;
+                            bs->pc_fill_count = tui.pc_fill_count;
+                        }
+                        if (tui.pc_nofill_count > 0) {
+                            bs->pc_nofill_avg_ns = (double)tui.pc_nofill_sum / tui.pc_nofill_count / tui.tsc_per_ns;
+                            bs->pc_nofill_max_ns = (double)tui.pc_nofill_max / tui.tsc_per_ns;
+                            bs->pc_nofill_count = tui.pc_nofill_count;
                         }
                     }
-                    // per-component breakdown
-                    shared.snapshots[back].bg_avg_ns = (double)tui.bg_sum / tui.hot_count / tui.tsc_per_ns;
-                    shared.snapshots[back].bg_max_ns = (double)tui.bg_max / tui.tsc_per_ns;
-                    shared.snapshots[back].eg_avg_ns = (double)tui.eg_sum / tui.hot_count / tui.tsc_per_ns;
-                    shared.snapshots[back].eg_max_ns = (double)tui.eg_max / tui.tsc_per_ns;
-                    shared.snapshots[back].eg_per_pos_ns = (tui.eg_pos_sum > 0)
-                        ? (double)tui.eg_sum / tui.eg_pos_sum / tui.tsc_per_ns : 0;
-                    shared.snapshots[back].pc_avg_ns = (double)tui.pc_sum / tui.hot_count / tui.tsc_per_ns;
-                    shared.snapshots[back].pc_max_ns = (double)tui.pc_max / tui.tsc_per_ns;
-                    if (tui.pc_fill_count > 0) {
-                        shared.snapshots[back].pc_fill_avg_ns = (double)tui.pc_fill_sum / tui.pc_fill_count / tui.tsc_per_ns;
-                        shared.snapshots[back].pc_fill_max_ns = (double)tui.pc_fill_max / tui.tsc_per_ns;
-                        shared.snapshots[back].pc_fill_count = tui.pc_fill_count;
+                    if (tui.slow_count > 0) {
+                        bs->slow_avg_ns = (double)tui.slow_sum / tui.slow_count / tui.tsc_per_ns;
+                        bs->slow_min_ns = (double)tui.slow_min / tui.tsc_per_ns;
+                        bs->slow_max_ns = (double)tui.slow_max / tui.tsc_per_ns;
+                        bs->slow_count  = tui.slow_count;
                     }
-                    if (tui.pc_nofill_count > 0) {
-                        shared.snapshots[back].pc_nofill_avg_ns = (double)tui.pc_nofill_sum / tui.pc_nofill_count / tui.tsc_per_ns;
-                        shared.snapshots[back].pc_nofill_max_ns = (double)tui.pc_nofill_max / tui.tsc_per_ns;
-                        shared.snapshots[back].pc_nofill_count = tui.pc_nofill_count;
-                    }
-                }
-                if (tui.slow_count > 0) {
-                    shared.snapshots[back].slow_avg_ns = (double)tui.slow_sum / tui.slow_count / tui.tsc_per_ns;
-                    shared.snapshots[back].slow_min_ns = (double)tui.slow_min / tui.tsc_per_ns;
-                    shared.snapshots[back].slow_max_ns = (double)tui.slow_max / tui.tsc_per_ns;
-                    shared.snapshots[back].slow_count  = tui.slow_count;
+#endif
+                    __atomic_store_n(&shared.active_idx, back, __ATOMIC_RELEASE);
                 }
 #endif
-                __atomic_store_n(&shared.active_idx, back, __ATOMIC_RELEASE);
             }
-#endif
         }
 
         //==============================================================================================
