@@ -165,7 +165,7 @@ DataStream/         I/O (websocket, TUI, trade log, metrics log)
 FixedPoint/         Fixed-point arithmetic library
 ML_Headers/         Rolling stats, regression, ROR
 MemHeaders/         Memory allocators
-tests/              Test suite (101 assertions)
+tests/              Test suite (134 assertions)
 DOCS/               Documentation
 claude-skills/      AI assistant context (for Claude Code)
 ```

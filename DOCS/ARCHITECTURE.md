@@ -137,6 +137,7 @@ Strategies/
 
 DataStream/
   BinanceCrypto.hpp        WebSocket stream (TCP/TLS/WS/JSON)
+  BinanceOrderAPI.hpp      REST order execution (HMAC-SHA256, market orders)
   EngineTUI.hpp            Terminal dashboard, multicore snapshot
   TradeLog.hpp             CSV logger + ring buffer
   MetricsLog.hpp           Slow-path diagnostics CSV
@@ -152,7 +153,7 @@ ML_Headers/
   ROR_regressor.hpp        Slope-of-slopes (second derivative)
 
 tests/
-  controller_test.cpp      101 assertions
+  controller_test.cpp      134 assertions
   integration_test.cpp     Full pipeline test
   binance_test.cpp         Live data integration test
 

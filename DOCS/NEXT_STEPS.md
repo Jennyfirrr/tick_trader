@@ -88,17 +88,17 @@ exits in choppy markets and widen in consistent ranging.
 
 Only after paper trading proves profitable over multiple days.
 
-### 4.1 Slippage simulation
-Add configurable slippage (e.g. 0.01% worse on both buy and sell) to make paper trading
-more realistic. Currently fills at exact market price which overstates performance.
+### ~~4.1 Slippage simulation~~ DONE (v3.0.14)
+`slippage_pct` in engine.cfg adjusts entry (higher) and exit (lower) prices. Applied to
+all three exit paths (TP/SL, time-based). Default 0 (disabled).
 
-### 4.2 Binance REST API order execution
-HTTPS POST with HMAC-SHA256 signing. API key + secret in `secrets.cfg` (gitignored).
-Testnet first. Convert paper fills to real limit/market orders.
+### ~~4.2 Binance REST API order execution~~ DONE (v3.0.15)
+`BinanceOrderAPI.hpp` — HMAC-SHA256 signed market orders via REST. Testnet, Binance US,
+and production endpoints. `use_real_money=1` + `secrets.cfg`.
 
-### 4.3 Order status tracking
-Handle partial fills, rejections, timeouts. Current instant-fill model is a simplification.
-Need order state machine: PENDING → FILLED / PARTIAL / REJECTED / EXPIRED.
+### ~~4.3 Order status tracking~~ DONE (v3.0.15)
+Pending order polling on slow path. Market orders fill almost instantly; status checked
+each slow-path cycle. Rejected/expired orders logged and cleaned up.
 
 ### 4.4 Notifications
 Webhook/email on: position opened, TP/SL hit, circuit breaker tripped, disconnect,

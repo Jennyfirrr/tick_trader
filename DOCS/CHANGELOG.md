@@ -4,6 +4,7 @@
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 3.0.15 | 2026-03-23 | Live order execution via Binance REST API, testnet + US support, safety interlocks |
 | 3.0.14 | 2026-03-23 | Slippage simulation, zero-pollution TUI (slow-path snapshot + live price), warmup trim, live trading plan |
 | 3.0.13 | 2026-03-23 | Latency profiling overhaul: busy-poll, core isolation, native 128-bit, warmup visibility fix |
 | 3.0.12 | 2026-03-22 | Always warmup after snapshot load, exit drain during warmup, revert TUI to 9-section layout |
