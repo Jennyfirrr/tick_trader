@@ -670,6 +670,26 @@ int main(int argc, char *argv[]) {
                         }
                     }
 
+                    // reverse orphan: paper position exists but BTC was sold externally
+                    // (e.g. user sold on Binance app) — undo the paper position
+                    if (ctrl.portfolio.active_bitmap && btc_bal < 0.000001) {
+                        uint16_t ghost = ctrl.portfolio.active_bitmap;
+                        fprintf(stderr, "[LIVE] BTC balance is zero but %d paper position(s) — undoing (external sell?)\n",
+                                __builtin_popcount(ghost));
+                        while (ghost) {
+                            int idx = __builtin_ctz(ghost);
+                            FPN<FP> cost = FPN_Mul(ctrl.portfolio.positions[idx].quantity,
+                                                   ctrl.portfolio.positions[idx].entry_price);
+                            FPN<FP> fee = FPN_Mul(cost, ctrl.config.fee_rate);
+                            ctrl.balance = FPN_AddSat(ctrl.balance, FPN_AddSat(cost, fee));
+                            ctrl.portfolio.active_bitmap &= ~(1 << idx);
+                            ghost &= ghost - 1;
+                        }
+                        live_position_bitmap = 0;
+                        // sync paper balance to actual USDT on exchange
+                        ctrl.balance = FPN_FromDouble<FP>(usdt_bal);
+                    }
+
                     // periodic clock re-sync (~every 30 min at default poll_interval)
                     static int clock_sync_counter = 0;
                     if (++clock_sync_counter >= 100) {
