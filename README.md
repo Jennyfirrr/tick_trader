@@ -16,7 +16,7 @@ Tick-level crypto trading engine in C++17. Branchless fixed-point arithmetic, bi
 
 > **Known issue:** Small BTC dust accumulates from quantity rounding on each trade. Periodically convert dust to USDT on the Binance dashboard (Trade → Convert Small Assets).
 
-[![Donate](https://img.shields.io/badge/Donate-PayPal-blue.svg)](https://www.paypal.com/ncp/payment/8M6XLK7M8569C)
+[![Donate](https://img.shields.io/badge/Donate-PayPal-blue.svg)](https://www.paypal.com/ncp/payment/8M6XLK7M8569C) [![Discord](https://img.shields.io/badge/Discord-Community-5865F2.svg)](https://discord.gg/asSDcYwPz)
 
 ### Standard Layout
 ![Standard Layout](assets/tui-standard.png)
