@@ -4,6 +4,8 @@
 
 This software is dual-licensed: [AGPL-3.0-or-later](LICENSE) or Commercial. If you use this software without complying with the AGPL (including the requirement to publish your source code for any network-accessible deployment) and without a commercial license, you are infringing copyright.
 
+**Personal use, learning, and paper trading are welcome and encouraged.** Commercial use or deployment for profit requires a commercial license — contact [jenn.lewis5789@gmail.com](mailto:jenn.lewis5789@gmail.com).
+
 **Unauthorized Use — Settlement Terms:** 10% of gross revenue from date of first unauthorized use + flat fee TBD. Full statutory damages under 17 U.S.C. § 504 (up to $150,000 per work for willful infringement). **Bounty:** 33% of net recovery for reports leading to successful settlement. Contact: [jenn.lewis5789@gmail.com](mailto:jenn.lewis5789@gmail.com)
 
 ---
