@@ -1657,6 +1657,128 @@ int main() {
         check("cooldown: buy gate re-enabled", !FPN_IsZero(ctrl.buy_conds.price));
     }
 
+    //==================================================================================================
+    // [TEST: BOUNDS CHECKS AND SAFETY GUARDS]
+    //==================================================================================================
+    // regression tests for bugs found in live trading — prevent reintroduction
+    //==================================================================================================
+    {
+        printf("\n--- Exit Buffer Bounds ---\n");
+
+        // exit buffer must not overflow past 16 slots
+        Portfolio<FP> port = {};
+        ExitBuffer<FP> ebuf = {};
+        ebuf.count = 0;
+
+        // fill all 16 positions
+        for (int i = 0; i < 16; i++) {
+            port.positions[i].quantity = FPN_FromDouble<FP>(1.0);
+            port.positions[i].entry_price = FPN_FromDouble<FP>(100.0);
+            port.positions[i].take_profit_price = FPN_FromDouble<FP>(101.0);
+            port.positions[i].stop_loss_price = FPN_FromDouble<FP>(90.0);
+            port.active_bitmap |= (1 << i);
+        }
+
+        // trigger all 16 exits at once (price below all SLs)
+        FPN<FP> crash_price = FPN_FromDouble<FP>(50.0);
+        PositionExitGate(&port, crash_price, &ebuf, 1);
+        check("exit_buf: count capped at 16", ebuf.count <= 16);
+        check("exit_buf: all positions exited", port.active_bitmap == 0);
+    }
+
+    {
+        printf("\n--- DrainExits Bounds Guard ---\n");
+
+        // position_index >= 16 must not crash
+        ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+        PortfolioController<FP> ctrl = {};
+        PortfolioController_Init(&ctrl, cfg);
+
+        // manually inject a bad exit record with out-of-bounds index
+        ctrl.exit_buf.records[0].position_index = 99; // way out of bounds
+        ctrl.exit_buf.records[0].exit_price = FPN_FromDouble<FP>(100.0);
+        ctrl.exit_buf.records[0].tick = 1;
+        ctrl.exit_buf.records[0].reason = 0;
+        ctrl.exit_buf.count = 1;
+
+        // this should skip the bad record, not crash
+        PortfolioController_DrainExits(&ctrl);
+        check("drain_exits: survived OOB position_index", ctrl.exit_buf.count == 0); // cleared by drain
+        check("drain_exits: no wins or losses from bad record", ctrl.wins == 0 && ctrl.losses == 0);
+    }
+
+    {
+        printf("\n--- Sell+Buy Same Tick ---\n");
+
+        // after an exit, a new fill in the same tick should succeed on paper
+        // (the same-tick guard is in main.cpp for live orders, but the paper
+        // engine should still accept fills — the guard only defers the REST call)
+        ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+        cfg.warmup_ticks = 0;
+        cfg.poll_interval = 5;
+        cfg.starting_balance = FPN_FromDouble<FP>(10000.0);
+        cfg.max_positions = 1;
+        cfg.spacing_multiplier = FPN_Zero<FP>();
+
+        PortfolioController<FP> ctrl = {};
+        PortfolioController_Init(&ctrl, cfg);
+        ctrl.state = CONTROLLER_ACTIVE;
+        ctrl.buy_conds.price = FPN_FromDouble<FP>(100.0);
+        ctrl.buy_conds.volume = FPN_FromDouble<FP>(400.0);
+        ctrl.mean_rev.buy_conds_initial = ctrl.buy_conds;
+
+        OrderPool<FP> pool;
+        OrderPool_init(&pool, 64);
+        TradeLog log; log.file = 0; log.trade_count = 0;
+
+        // warmup
+        for (uint64_t t = 0; t < 10; t++)
+            PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(100.0),
+                                      FPN_FromDouble<FP>(1.0), &log);
+
+        // create position
+        pool.slots[0].price = FPN_FromDouble<FP>(98.0);
+        pool.slots[0].quantity = FPN_FromDouble<FP>(500.0);
+        pool.bitmap = 1;
+        PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(98.0),
+                                  FPN_FromDouble<FP>(500.0), &log);
+        check("same_tick: position created", Portfolio_CountActive(&ctrl.portfolio) == 1);
+
+        // exit via SL
+        PositionExitGate(&ctrl.portfolio, FPN_FromDouble<FP>(50.0), &ctrl.exit_buf, 100);
+        check("same_tick: exit buffered", ctrl.exit_buf.count > 0);
+
+        // new fill available in pool
+        pool.slots[1].price = FPN_FromDouble<FP>(98.0);
+        pool.slots[1].quantity = FPN_FromDouble<FP>(500.0);
+        pool.bitmap |= (1ULL << 1);
+
+        // tick processes both exit drain and new fill
+        PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(98.0),
+                                  FPN_FromDouble<FP>(500.0), &log);
+        // exit was drained, new fill may or may not be accepted depending on
+        // timing within the tick — but it must not crash
+        check("same_tick: no crash on exit+fill same tick", 1);
+        // drain exits until loss is counted (may need a slow-path tick)
+        for (int t = 0; t < 10; t++)
+            PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(98.0),
+                                      FPN_FromDouble<FP>(500.0), &log);
+        check("same_tick: losses counted", ctrl.losses > 0);
+
+        free(pool.slots);
+    }
+
+    {
+        printf("\n--- Malloc Guard ---\n");
+        // rolling_long allocation check — just verify init doesn't crash
+        ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+        PortfolioController<FP> ctrl = {};
+        PortfolioController_Init(&ctrl, cfg);
+        check("malloc: rolling_long allocated", ctrl.rolling_long != NULL);
+        free(ctrl.rolling_long);
+        ctrl.rolling_long = NULL;
+    }
+
     printf("\n======================================\n");
     printf("  RESULTS: %d passed, %d failed\n", tests_passed, tests_failed);
     printf("======================================\n");

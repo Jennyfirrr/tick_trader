@@ -138,7 +138,7 @@ Features:
 ```bash
 make              # ANSI TUI (default, no library deps)
 make run          # build + run
-make test         # run 101 tests
+make test         # run 149 tests
 make ftxui        # FTXUI TUI (auto-fetched)
 make notcurses    # notcurses TUI (requires system lib)
 make profile      # with RDTSCP latency profiling
@@ -177,7 +177,7 @@ DataStream/              BinanceCrypto (websocket), TUI renderers, TradeLog
 FixedPoint/              Arbitrary-width fixed-point arithmetic library
 ML_Headers/              RollingStats, LinearRegression, ROR regressor
 MemHeaders/              PoolAllocator, BuddyAllocator
-tests/                   101 assertions across 27 test functions
+tests/                   149 assertions across 31 test functions
 DOCS/                    Architecture, configuration, performance, changelogs
 ```
 
