@@ -46,6 +46,18 @@
 #define ORDER_STATUS_EXPIRED         6
 
 //======================================================================================================
+// [SYMBOL FILTERS] — queried from /api/v3/exchangeInfo at init
+//======================================================================================================
+struct SymbolFilters {
+    double lot_step_size;    // BTC: 0.00000100 — quantity must be multiple of this
+    double lot_min_qty;      // minimum order quantity
+    double lot_max_qty;      // maximum order quantity
+    double min_notional;     // minimum order value in quote asset (e.g. $10 USDT)
+    int qty_decimals;        // decimal places for quantity formatting (derived from step_size)
+    int loaded;              // 1 = filters fetched successfully
+};
+
+//======================================================================================================
 // [API STATE]
 //======================================================================================================
 struct BinanceOrderAPI {
@@ -58,6 +70,8 @@ struct BinanceOrderAPI {
     char symbol[16];       // uppercase, e.g. "BTCUSDT"
     int connected;
     int64_t time_offset_ms; // local - server time difference
+    SymbolFilters filters;
+    int64_t last_reconnect_ms; // rate-limit reconnects to once per 5s
 };
 
 //======================================================================================================
@@ -130,6 +144,20 @@ static inline double binance_json_extract_double(const char *json, const char *k
     return atof(buf);
 }
 
+// truncate quantity to exchange step size (always rounds down, no math.h needed)
+// positive quantities only (always true for order sizing)
+static inline double binance_round_qty(double qty, double step_size) {
+    if (step_size <= 0) return qty;
+    return (double)((int64_t)(qty / step_size)) * step_size;
+}
+
+// count decimal places in step size for quantity formatting
+static inline int binance_step_decimals(double step_size) {
+    int d = 0;
+    while (step_size < 0.999999 && d < 10) { step_size *= 10.0; d++; }
+    return d;
+}
+
 //======================================================================================================
 // [TCP + TLS] — same pattern as BinanceCrypto.hpp
 //======================================================================================================
@@ -200,6 +228,14 @@ static inline int binance_rest_request(BinanceOrderAPI *api,
                                         char *response_buf, int buf_size) {
     // reconnect if needed (REST connections may be closed between requests)
     if (!api->connected || !api->ssl) {
+        // rate-limit reconnects to once per 5 seconds
+        int64_t now = binance_current_ms();
+        if (now - api->last_reconnect_ms < 5000) {
+            fprintf(stderr, "[REST] reconnect rate-limited (wait 5s)\n");
+            return -1;
+        }
+        api->last_reconnect_ms = now;
+
         if (api->ssl) { SSL_free(api->ssl); api->ssl = NULL; }
         if (api->ssl_ctx) { SSL_CTX_free(api->ssl_ctx); api->ssl_ctx = NULL; }
         if (api->sockfd >= 0) { close(api->sockfd); api->sockfd = -1; }
@@ -208,6 +244,18 @@ static inline int binance_rest_request(BinanceOrderAPI *api,
         if (api->sockfd < 0) return -1;
         if (!binance_rest_tls_setup(api)) return -1;
         api->connected = 1;
+        fprintf(stderr, "[REST] reconnected to %s\n", api->host);
+
+        // re-sync clock inline (SyncClock not yet declared at this point)
+        {
+            char time_body[256];
+            int ts = binance_rest_request(api, "GET", "/api/v3/time", "",
+                                           time_body, sizeof(time_body));
+            if (ts == 200) {
+                double st = binance_json_extract_double(time_body, "serverTime");
+                api->time_offset_ms = (int64_t)st - binance_current_ms();
+            }
+        }
     }
 
     // build request
@@ -243,18 +291,35 @@ static inline int binance_rest_request(BinanceOrderAPI *api,
         return -1;
     }
 
-    // read response
+    // read response — accumulate until headers + body complete
     char raw[8192];
     int total = 0;
-    // read headers + body (simple: assume response fits in one SSL_read for REST)
-    // Binance REST responses are typically < 2KB
-    int n = SSL_read(api->ssl, raw, sizeof(raw) - 1);
-    if (n <= 0) {
-        fprintf(stderr, "[REST] SSL_read failed\n");
-        api->connected = 0;
-        return -1;
+    while (total < (int)sizeof(raw) - 1) {
+        int n = SSL_read(api->ssl, raw + total, (int)sizeof(raw) - 1 - total);
+        if (n <= 0) {
+            if (total == 0) {
+                fprintf(stderr, "[REST] SSL_read failed\n");
+                api->connected = 0;
+                return -1;
+            }
+            break; // got some data, server closed — use what we have
+        }
+        total += n;
+        raw[total] = '\0';
+        // check if response is complete (headers + body received)
+        const char *hdr_end = strstr(raw, "\r\n\r\n");
+        if (hdr_end) {
+            // look for Content-Length to know when body is complete
+            const char *cl = strstr(raw, "Content-Length: ");
+            if (cl && cl < hdr_end) {
+                int content_len = atoi(cl + 16);
+                int body_start = (int)(hdr_end + 4 - raw);
+                if (total - body_start >= content_len) break; // got full body
+            } else {
+                break; // no Content-Length, assume complete after first read with headers
+            }
+        }
     }
-    total = n;
     raw[total] = '\0';
 
     // parse HTTP status
@@ -284,10 +349,10 @@ static inline int binance_signed_request(BinanceOrderAPI *api,
                                           const char *method, const char *path,
                                           const char *params,
                                           char *response_buf, int buf_size) {
-    // add timestamp and signature
+    // add recvWindow, timestamp, and signature
     char query[2048];
     int64_t ts = binance_current_ms() + api->time_offset_ms;
-    snprintf(query, sizeof(query), "%s&timestamp=%lld", params, (long long)ts);
+    snprintf(query, sizeof(query), "%s&recvWindow=5000&timestamp=%lld", params, (long long)ts);
 
     char signature[128];
     binance_hmac_sha256(api->api_secret, query, signature);
@@ -298,46 +363,41 @@ static inline int binance_signed_request(BinanceOrderAPI *api,
     return binance_rest_request(api, method, path, signed_query, response_buf, buf_size);
 }
 
+// retry wrapper — retries on 5xx/418/429, gives up on 4xx client errors
+static inline int binance_retry_request(BinanceOrderAPI *api,
+                                         const char *method, const char *path,
+                                         const char *params,
+                                         char *response_buf, int buf_size) {
+    int delays[] = {0, 1, 2, 4};
+    for (int attempt = 0; attempt < 4; attempt++) {
+        if (attempt > 0) {
+            fprintf(stderr, "[REST] retry %d/3 after %ds...\n", attempt, delays[attempt]);
+            sleep(delays[attempt]);
+        }
+        int status = binance_signed_request(api, method, path, params,
+                                             response_buf, buf_size);
+        if (status == 200) return status;
+        if (status >= 400 && status < 500 && status != 418 && status != 429) {
+            // client error (bad qty, bad signature, etc.) — don't retry
+            // try to parse Binance error code
+            char msg[128];
+            binance_json_extract_str(response_buf, "msg", msg, sizeof(msg));
+            int code = (int)binance_json_extract_double(response_buf, "code");
+            if (code != 0)
+                fprintf(stderr, "[REST] Binance error %d: %s\n", code, msg);
+            return status;
+        }
+        // 418/429 (rate limit) or 5xx (server error): retry
+        if (status == 418 || status == 429)
+            fprintf(stderr, "[REST] rate limited (HTTP %d)\n", status);
+    }
+    fprintf(stderr, "[REST] all retries failed\n");
+    return -1;
+}
+
 //======================================================================================================
 // [PUBLIC API]
 //======================================================================================================
-
-// init: connect to REST endpoint, calibrate clock
-static inline int BinanceOrderAPI_Init(BinanceOrderAPI *api, const char *host,
-                                        const char *api_key, const char *api_secret,
-                                        const char *symbol) {
-    memset(api, 0, sizeof(*api));
-    api->sockfd = -1;
-    strncpy(api->host, host, sizeof(api->host) - 1);
-    strncpy(api->api_key, api_key, sizeof(api->api_key) - 1);
-    strncpy(api->api_secret, api_secret, sizeof(api->api_secret) - 1);
-
-    // uppercase symbol for REST API
-    for (int i = 0; symbol[i] && i < (int)sizeof(api->symbol) - 1; i++)
-        api->symbol[i] = (symbol[i] >= 'a' && symbol[i] <= 'z')
-            ? symbol[i] - 32 : symbol[i];
-
-    // connect
-    api->sockfd = binance_rest_tcp_connect(host, "443");
-    if (api->sockfd < 0) return 0;
-    if (!binance_rest_tls_setup(api)) return 0;
-    api->connected = 1;
-
-    // calibrate clock offset
-    char body[512];
-    int status = binance_rest_request(api, "GET", "/api/v3/time", "", body, sizeof(body));
-    if (status == 200) {
-        double server_time = binance_json_extract_double(body, "serverTime");
-        int64_t local_time = binance_current_ms();
-        api->time_offset_ms = (int64_t)server_time - local_time;
-        fprintf(stderr, "[REST] clock offset: %lldms\n", (long long)api->time_offset_ms);
-    } else {
-        fprintf(stderr, "[REST] warning: failed to get server time (status %d)\n", status);
-        api->time_offset_ms = 0;
-    }
-
-    return 1;
-}
 
 static inline void BinanceOrderAPI_Cleanup(BinanceOrderAPI *api) {
     if (api->ssl) { SSL_shutdown(api->ssl); SSL_free(api->ssl); api->ssl = NULL; }
@@ -348,22 +408,37 @@ static inline void BinanceOrderAPI_Cleanup(BinanceOrderAPI *api) {
 
 // place a market buy order — returns 1 on success, 0 on failure
 // order_id_out receives the Binance order ID as a string
+// fill_price_out/fill_qty_out receive actual execution values (NULL = don't care)
 static inline int BinanceOrderAPI_MarketBuy(BinanceOrderAPI *api,
                                              double quantity,
-                                             char *order_id_out) {
+                                             char *order_id_out,
+                                             double *fill_price_out = NULL,
+                                             double *fill_qty_out = NULL) {
+    // round quantity to exchange step size
+    if (api->filters.loaded)
+        quantity = binance_round_qty(quantity, api->filters.lot_step_size);
+
+    char qty_str[32];
+    snprintf(qty_str, sizeof(qty_str), "%.*f", api->filters.qty_decimals, quantity);
+
     char params[256];
     snprintf(params, sizeof(params),
-             "symbol=%s&side=BUY&type=MARKET&quantity=%.8f",
-             api->symbol, quantity);
+             "symbol=%s&side=BUY&type=MARKET&quantity=%s",
+             api->symbol, qty_str);
 
     char body[2048];
-    int status = binance_signed_request(api, "POST", "/api/v3/order", params,
-                                         body, sizeof(body));
+    int status = binance_retry_request(api, "POST", "/api/v3/order", params,
+                                        body, sizeof(body));
 
     if (status == 200) {
         binance_json_extract_str(body, "orderId", order_id_out, 32);
-        fprintf(stderr, "[REST] BUY order placed: id=%s qty=%.8f\n",
-                order_id_out, quantity);
+        double exec_qty = binance_json_extract_double(body, "executedQty");
+        double cum_quote = binance_json_extract_double(body, "cummulativeQuoteQty");
+        double avg_price = (exec_qty > 0) ? cum_quote / exec_qty : 0.0;
+        if (fill_price_out) *fill_price_out = avg_price;
+        if (fill_qty_out) *fill_qty_out = exec_qty;
+        fprintf(stderr, "[REST] BUY filled: id=%s qty=%.8f price=%.2f\n",
+                order_id_out, exec_qty, avg_price);
         return 1;
     } else {
         fprintf(stderr, "[REST] BUY failed (status %d): %s\n", status, body);
@@ -375,20 +450,33 @@ static inline int BinanceOrderAPI_MarketBuy(BinanceOrderAPI *api,
 // place a market sell order
 static inline int BinanceOrderAPI_MarketSell(BinanceOrderAPI *api,
                                               double quantity,
-                                              char *order_id_out) {
+                                              char *order_id_out,
+                                              double *fill_price_out = NULL,
+                                              double *fill_qty_out = NULL) {
+    if (api->filters.loaded)
+        quantity = binance_round_qty(quantity, api->filters.lot_step_size);
+
+    char qty_str[32];
+    snprintf(qty_str, sizeof(qty_str), "%.*f", api->filters.qty_decimals, quantity);
+
     char params[256];
     snprintf(params, sizeof(params),
-             "symbol=%s&side=SELL&type=MARKET&quantity=%.8f",
-             api->symbol, quantity);
+             "symbol=%s&side=SELL&type=MARKET&quantity=%s",
+             api->symbol, qty_str);
 
     char body[2048];
-    int status = binance_signed_request(api, "POST", "/api/v3/order", params,
-                                         body, sizeof(body));
+    int status = binance_retry_request(api, "POST", "/api/v3/order", params,
+                                        body, sizeof(body));
 
     if (status == 200) {
         binance_json_extract_str(body, "orderId", order_id_out, 32);
-        fprintf(stderr, "[REST] SELL order placed: id=%s qty=%.8f\n",
-                order_id_out, quantity);
+        double exec_qty = binance_json_extract_double(body, "executedQty");
+        double cum_quote = binance_json_extract_double(body, "cummulativeQuoteQty");
+        double avg_price = (exec_qty > 0) ? cum_quote / exec_qty : 0.0;
+        if (fill_price_out) *fill_price_out = avg_price;
+        if (fill_qty_out) *fill_qty_out = exec_qty;
+        fprintf(stderr, "[REST] SELL filled: id=%s qty=%.8f price=%.2f\n",
+                order_id_out, exec_qty, avg_price);
         return 1;
     } else {
         fprintf(stderr, "[REST] SELL failed (status %d): %s\n", status, body);
@@ -444,6 +532,117 @@ static inline int64_t BinanceOrderAPI_ServerTime(BinanceOrderAPI *api) {
     if (status == 200)
         return (int64_t)binance_json_extract_double(body, "serverTime");
     return 0;
+}
+
+// load exchange filters for the configured symbol (LOT_SIZE, NOTIONAL)
+// returns 1 on success, 0 on failure (caller should treat as fatal)
+static inline int BinanceOrderAPI_LoadFilters(BinanceOrderAPI *api) {
+    char query[64];
+    snprintf(query, sizeof(query), "symbol=%s", api->symbol);
+
+    char body[4096]; // exchangeInfo for one symbol is ~2KB
+    int status = binance_rest_request(api, "GET", "/api/v3/exchangeInfo", query,
+                                       body, sizeof(body));
+    if (status != 200) {
+        fprintf(stderr, "[REST] exchangeInfo failed (HTTP %d)\n", status);
+        return 0;
+    }
+
+    // parse LOT_SIZE filter
+    const char *lot = strstr(body, "LOT_SIZE");
+    if (lot) {
+        api->filters.lot_min_qty  = binance_json_extract_double(lot, "minQty");
+        api->filters.lot_max_qty  = binance_json_extract_double(lot, "maxQty");
+        api->filters.lot_step_size = binance_json_extract_double(lot, "stepSize");
+        api->filters.qty_decimals = binance_step_decimals(api->filters.lot_step_size);
+    }
+
+    // parse NOTIONAL filter (or MIN_NOTIONAL for older API)
+    const char *notional = strstr(body, "NOTIONAL");
+    if (notional)
+        api->filters.min_notional = binance_json_extract_double(notional, "minNotional");
+
+    api->filters.loaded = 1;
+    fprintf(stderr, "[REST] filters: step=%.8f minQty=%.8f minNotional=%.2f decimals=%d\n",
+            api->filters.lot_step_size, api->filters.lot_min_qty,
+            api->filters.min_notional, api->filters.qty_decimals);
+    return 1;
+}
+
+// query account balance for a specific asset (e.g. "USDT", "BTC")
+// returns 1 on success, 0 on failure
+static inline int BinanceOrderAPI_GetBalance(BinanceOrderAPI *api,
+                                              const char *asset,
+                                              double *free_balance) {
+    char body[8192]; // account response can be large (many assets)
+    int status = binance_retry_request(api, "GET", "/api/v3/account", "",
+                                        body, sizeof(body));
+    if (status != 200) {
+        fprintf(stderr, "[REST] account query failed (HTTP %d)\n", status);
+        return 0;
+    }
+
+    // find the asset in the balances array
+    // format: "asset":"USDT","free":"1000000.00","locked":"0.00"
+    char search[32];
+    snprintf(search, sizeof(search), "\"asset\":\"%s\"", asset);
+    const char *pos = strstr(body, search);
+    if (!pos) {
+        fprintf(stderr, "[REST] asset %s not found in account\n", asset);
+        *free_balance = 0.0;
+        return 0;
+    }
+
+    *free_balance = binance_json_extract_double(pos, "free");
+    return 1;
+}
+
+// re-sync clock offset (call periodically or after reconnect)
+static inline void BinanceOrderAPI_SyncClock(BinanceOrderAPI *api) {
+    int64_t server_time = BinanceOrderAPI_ServerTime(api);
+    if (server_time > 0) {
+        int64_t local_time = binance_current_ms();
+        int64_t old_offset = api->time_offset_ms;
+        api->time_offset_ms = server_time - local_time;
+        if (api->time_offset_ms != old_offset)
+            fprintf(stderr, "[REST] clock re-synced: %lldms → %lldms\n",
+                    (long long)old_offset, (long long)api->time_offset_ms);
+    }
+}
+
+// init: connect to REST endpoint, calibrate clock, load exchange filters
+// must be called after Cleanup, ServerTime, SyncClock, LoadFilters are defined
+static inline int BinanceOrderAPI_Init(BinanceOrderAPI *api, const char *host,
+                                        const char *api_key, const char *api_secret,
+                                        const char *symbol) {
+    memset(api, 0, sizeof(*api));
+    api->sockfd = -1;
+    strncpy(api->host, host, sizeof(api->host) - 1);
+    strncpy(api->api_key, api_key, sizeof(api->api_key) - 1);
+    strncpy(api->api_secret, api_secret, sizeof(api->api_secret) - 1);
+
+    // uppercase symbol for REST API
+    for (int i = 0; symbol[i] && i < (int)sizeof(api->symbol) - 1; i++)
+        api->symbol[i] = (symbol[i] >= 'a' && symbol[i] <= 'z')
+            ? symbol[i] - 32 : symbol[i];
+
+    // connect
+    api->sockfd = binance_rest_tcp_connect(host, "443");
+    if (api->sockfd < 0) return 0;
+    if (!binance_rest_tls_setup(api)) return 0;
+    api->connected = 1;
+
+    // calibrate clock offset
+    BinanceOrderAPI_SyncClock(api);
+
+    // load exchange filters (LOT_SIZE, NOTIONAL) — fatal if fails
+    if (!BinanceOrderAPI_LoadFilters(api)) {
+        fprintf(stderr, "[REST] FATAL: could not load exchange filters for %s\n", api->symbol);
+        BinanceOrderAPI_Cleanup(api);
+        return 0;
+    }
+
+    return 1;
 }
 
 //======================================================================================================
