@@ -171,6 +171,8 @@ Copyright (c) 2026 Jennifer Lewis. All rights reserved.
 
 Licensed under the [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE).
 
+For commercial licensing inquiries, contact: jenn.lewis5789@gmail.com
+
 ---
 
 <a href="https://www.paypal.com/ncp/payment/8M6XLK7M8569C">
