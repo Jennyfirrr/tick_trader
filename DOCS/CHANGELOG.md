@@ -4,6 +4,7 @@
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 3.0.18 | 2026-03-24 | Single-slot position management, sell-all-BTC, paper/live sync, startup BTC recovery |
 | 3.0.17 | 2026-03-23 | Fix: connected gate blocked all live orders, REST close-after-request, signed query fix |
 | 3.0.16 | 2026-03-23 | AGPL-3.0 copyright headers, REST reconnect fix, live TUI status improvements |
 | 3.0.15 | 2026-03-23 | Live trading: fire-and-forget REST, live bitmap, balance sync, orphan detection, qty validation, 24h sell |
@@ -44,6 +45,7 @@
 
 ## Detailed Changelogs
 
+- [2026-03-24](changelogs/2026-03-24.md) — v3.0.18 (single-slot position management, paper/live sync, BTC dust elimination)
 - [2026-03-22](changelogs/2026-03-22.md) — v3.0.7 through v3.0.12 (warmup fix, fill diagnostics, snapshot warmup, public release)
 - [2026-03-21](changelogs/2026-03-21.md) — v0.7.1 through v3.0.6 (regime switching, latency profiling, ANSI TUI, volume spikes, SL cooldown)
 - [2026-03-20](changelogs/2026-03-20.md) — v0.2.0 through v0.7.0 (live trading, strategies, risk management)
