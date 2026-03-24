@@ -20,6 +20,8 @@ Tick-level crypto trading engine in C++17. Branchless fixed-point arithmetic, bi
 
 [![Donate](https://img.shields.io/badge/Donate-PayPal-blue.svg)](https://www.paypal.com/ncp/payment/8M6XLK7M8569C) [![Discord](https://img.shields.io/badge/Discord-Community-5865F2.svg)](https://discord.gg/asSDcYwPz)
 
+> **Next goal:** If donations cover tick-level options data, we're going there next — BTC spot is too safe for my liking.
+
 ### Standard Layout
 ![Standard Layout](assets/tui-standard.png)
 
