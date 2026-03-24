@@ -154,6 +154,18 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "[SAFETY] Starting in 10 seconds... (Ctrl+C to abort)\n");
             sleep(10);
         }
+
+        // startup reconciliation: sync balance + reconstruct bitmap from snapshot
+        double real_balance = 0;
+        if (BinanceOrderAPI_GetBalance(&order_api, "USDT", &real_balance)) {
+            fprintf(stderr, "[LIVE] exchange USDT balance: $%.2f\n", real_balance);
+            ctrl.balance = FPN_FromDouble<FP>(real_balance);
+        }
+        // assume all snapshot positions are real (conservative — avoids orphans)
+        live_position_bitmap = ctrl.portfolio.active_bitmap;
+        int pos_count = Portfolio_CountActive(&ctrl.portfolio);
+        if (pos_count > 0)
+            fprintf(stderr, "[LIVE] %d positions from snapshot marked as live\n", pos_count);
     }
 
     //==================================================================================================
@@ -326,6 +338,22 @@ int main(int argc, char *argv[]) {
             // 2. force-close all remaining positions
             // 3. verify bitmap is zero (halts if not)
             // 4. clear pool, reconnect, restart warmup
+            // LIVE: sell all real positions before 24h force-close
+            if (ccfg.use_real_money && live_position_bitmap) {
+                fprintf(stderr, "[LIVE] 24h reconnect — selling %d live positions\n",
+                        __builtin_popcount(live_position_bitmap));
+                uint16_t to_sell = live_position_bitmap;
+                while (to_sell) {
+                    int idx = __builtin_ctz(to_sell);
+                    double qty_d = FPN_ToDouble(ctrl.portfolio.positions[idx].quantity);
+                    if (qty_d >= order_api.filters.lot_min_qty) {
+                        char oid[32]; double fp, fq;
+                        BinanceOrderAPI_MarketSell(&order_api, qty_d, oid, &fp, &fq);
+                    }
+                    to_sell &= to_sell - 1;
+                }
+                live_position_bitmap = 0;
+            }
             engine_force_close_all(&ctrl, &log, last_stream.price);
 
             // clear pool
@@ -494,6 +522,47 @@ int main(int argc, char *argv[]) {
 
             // save portfolio snapshot every slow-path cycle (crash recovery)
             if (ctrl.tick_count == 0) {
+                // LIVE: balance sync + orphan detection + status line
+                if (ccfg.use_real_money && order_api.connected) {
+                    // sync paper balance from Binance (source of truth)
+                    double real_bal = 0;
+                    if (BinanceOrderAPI_GetBalance(&order_api, "USDT", &real_bal))
+                        ctrl.balance = FPN_FromDouble<FP>(real_bal);
+
+                    // orphan detection: real positions without paper backing
+                    uint16_t orphans = live_position_bitmap & ~ctrl.portfolio.active_bitmap;
+                    if (orphans) {
+                        fprintf(stderr, "[LIVE] WARNING: %d orphaned real positions — selling\n",
+                                __builtin_popcount(orphans));
+                        while (orphans) {
+                            int idx = __builtin_ctz(orphans);
+                            double qty_d = FPN_ToDouble(ctrl.portfolio.positions[idx].quantity);
+                            if (qty_d >= order_api.filters.lot_min_qty) {
+                                char oid[32]; double fp, fq;
+                                BinanceOrderAPI_MarketSell(&order_api, qty_d, oid, &fp, &fq);
+                            }
+                            live_position_bitmap &= ~(1 << idx);
+                            orphans &= orphans - 1;
+                        }
+                    }
+
+                    // periodic clock re-sync (~every 30 min at default poll_interval)
+                    static int clock_sync_counter = 0;
+                    if (++clock_sync_counter >= 100) {
+                        BinanceOrderAPI_SyncClock(&order_api);
+                        clock_sync_counter = 0;
+                    }
+
+                    // lightweight status line
+                    fprintf(stderr, "[LIVE] $%.2f %s pos:%d/%d live:%d bal:$%.2f W:%d L:%d\n",
+                            last_stream.price_d,
+                            ctrl.regime.current_regime == 1 ? "TREND" :
+                            ctrl.regime.current_regime == 2 ? "VOLAT" : "RANGE",
+                            __builtin_popcount(ctrl.portfolio.active_bitmap), 16,
+                            __builtin_popcount(live_position_bitmap),
+                            FPN_ToDouble(ctrl.balance), ctrl.wins, ctrl.losses);
+                }
+
                 PortfolioController_SaveSnapshot(&ctrl, snapshot_path);
                 MetricsLog_SlowPath(&metrics, &ctrl, last_stream.price_d);
 #ifdef MULTICORE_TUI
