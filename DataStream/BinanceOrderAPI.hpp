@@ -5,9 +5,9 @@
 // uses HMAC-SHA256 signing for authentication
 // separate SSL connection from the websocket data stream
 //
-// STATUS: UNTESTED — implemented 2026-03-23, needs testnet validation before real money
-// the HTTP request/response handling is minimal (assumes responses fit in one SSL_read)
-// and may need hardening for production use (chunked transfer, connection reuse, retries)
+// STATUS: HARDENED but not yet validated on a live exchange (2026-03-23)
+// SSL response accumulation loop, retry with exponential backoff, exchange filter
+// validation (LOT_SIZE, minNotional), fill price parsing, balance query, clock sync
 //
 // testnet: testnet.binance.vision (free test API keys, no real money, may need VPN from US)
 // production: api.binance.com (real money, be careful)

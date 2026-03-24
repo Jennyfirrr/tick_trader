@@ -2,9 +2,9 @@
 
 Tick-level crypto trading engine in C++17. Branchless fixed-point arithmetic, bitmap-based portfolio management, regime-adaptive strategy switching with score-based market classification. Sub-microsecond hot path, multicore TUI dashboard, zero external dependencies.
 
-> **Paper trading by default.** Live trading via Binance REST API is supported (testnet or production). Set `use_real_money=1` in engine.cfg and add API keys to `secrets.cfg`. No API key needed for market data — the public websocket is always used for price feeds.
+> **Paper trading by default.** Live trading via Binance REST API is supported (Binance US or global). Set `use_real_money=1` + `use_binance_us=1` in engine.cfg and add API keys to `secrets.cfg`. No API key needed for market data — the public websocket is always used for price feeds.
 
-> **WARNING: Live trading is experimental and untested.** The REST order execution has not been validated on testnet or production. Use at your own risk. This software is provided as-is with no warranty. The authors are not responsible for any financial losses. Always start with testnet, use micro position sizes, and never risk money you can't afford to lose.
+> **WARNING: Live trading is experimental and has not been validated on a real exchange.** Use at your own risk. This software is provided as-is with no warranty. The authors are not responsible for any financial losses. Start with micro position sizes and never risk money you can't afford to lose.
 
 [![Donate](https://img.shields.io/badge/Donate-PayPal-blue.svg)](https://www.paypal.com/ncp/payment/8M6XLK7M8569C)
 

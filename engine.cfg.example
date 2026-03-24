@@ -143,8 +143,9 @@ tui_render_interval=10          # render every N ticks (higher = less terminal t
 # LIVE TRADING (experimental, untested)
 #==============================================================================
 # requires secrets.cfg with api_key and api_secret (gitignored, never commit)
-# get testnet keys: https://testnet.binance.vision (may need VPN from US)
-# get binance US keys: binance.us account settings > API management
-# WARNING: use at your own risk — not validated on testnet or production
+# US users: get keys from binance.us (Account Settings > API Management) and set use_binance_us=1
+# global users: get keys from binance.com, or testnet from testnet.binance.vision
+# WARNING: use at your own risk — not validated on a live exchange
 
 use_real_money=0                # 0 = paper trading (default safe), 1 = real orders via REST API
+# use_binance_us=1              # uncomment for Binance US (required for US-based users)
