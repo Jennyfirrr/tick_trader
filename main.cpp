@@ -130,20 +130,7 @@ int main(int argc, char *argv[]) {
     // init live trading (REST API)
     //==================================================================================================
     BinanceOrderAPI order_api = {};
-    struct PendingBuy {
-        char order_id[32];
-        int position_slot;
-        int active;
-    };
-    struct PendingSell {
-        char order_id[32];
-        uint32_t position_index;
-        int active;
-    };
-    PendingBuy pending_buys[4] = {};
-    int pending_buy_count = 0;
-    PendingSell pending_sells[4] = {};
-    int pending_sell_count = 0;
+    uint16_t live_position_bitmap = 0; // which paper slots have real Binance orders
 
     if (ccfg.use_real_money) {
         char api_key[128] = {}, api_secret[128] = {};
@@ -408,34 +395,30 @@ int main(int argc, char *argv[]) {
                          __builtin_popcount(ctrl.portfolio.active_bitmap), _strategy_str(ctrl.strategy_id));
                 MetricsLog_Event(&metrics, &ctrl, last_stream.price_d, "FILL", detail);
 
-                // LIVE: submit real buy order to match the paper position
+                // LIVE: fire-and-forget buy order + set bitmap (Phase 3 wires this)
                 if (ccfg.use_real_money && order_api.connected) {
-                    // find the newly added position (highest set bit not in buys_before)
-                    uint16_t new_bits = ctrl.portfolio.active_bitmap;
-                    // the newest position is at the slot PCTick just filled
-                    // walk bitmap to find a slot that has entry_tick == total_ticks
                     uint16_t active = ctrl.portfolio.active_bitmap;
                     while (active) {
                         int slot = __builtin_ctz(active);
                         if (ctrl.entry_ticks[slot] == ctrl.total_ticks) {
                             double qty_d = FPN_ToDouble(ctrl.portfolio.positions[slot].quantity);
-                            char oid[32];
-                            if (BinanceOrderAPI_MarketBuy(&order_api, qty_d, oid)) {
-                                if (pending_buy_count < 4) {
-                                    PendingBuy *pb = &pending_buys[pending_buy_count++];
-                                    strncpy(pb->order_id, oid, 31);
-                                    pb->position_slot = slot;
-                                    pb->active = 1;
+                            if (qty_d >= order_api.filters.lot_min_qty
+                                && qty_d * last_stream.price_d >= order_api.filters.min_notional) {
+                                char oid[32];
+                                double fp = 0, fq = 0;
+                                if (BinanceOrderAPI_MarketBuy(&order_api, qty_d, oid, &fp, &fq)) {
+                                    live_position_bitmap |= (1 << slot);
+                                    // sync paper position to actual fill
+                                    if (fq > 0 && fabs(fq - qty_d) > 1e-10)
+                                        ctrl.portfolio.positions[slot].quantity = FPN_FromDouble<FP>(fq);
+                                    if (fp > 0)
+                                        ctrl.portfolio.positions[slot].entry_price = FPN_FromDouble<FP>(fp);
+                                } else {
+                                    fprintf(stderr, "[LIVE] BUY failed — paper position kept, no real backing\n");
                                 }
                             } else {
-                                // REST failed — roll back paper position
-                                fprintf(stderr, "[LIVE] buy order failed — rolling back position slot %d\n", slot);
-                                FPN<FP> cost = FPN_Mul(ctrl.portfolio.positions[slot].entry_price,
-                                                        ctrl.portfolio.positions[slot].quantity);
-                                ctrl.balance = FPN_AddSat(ctrl.balance, cost);
-                                Portfolio_RemovePosition(&ctrl.portfolio, slot);
+                                fprintf(stderr, "[LIVE] qty too small (%.8f) or below minNotional — skipped\n", qty_d);
                             }
-                            break;
                         }
                         active &= active - 1;
                     }
@@ -480,59 +463,6 @@ int main(int argc, char *argv[]) {
 
             // save portfolio snapshot every slow-path cycle (crash recovery)
             if (ctrl.tick_count == 0) {
-                // LIVE: submit sell orders for TP/SL exits before DrainExits books paper P&L
-                if (ccfg.use_real_money && order_api.connected && ctrl.exit_buf.count > 0) {
-                    for (uint32_t ei = 0; ei < ctrl.exit_buf.count; ei++) {
-                        uint32_t pidx = ctrl.exit_buf.records[ei].position_index;
-                        double qty_d = FPN_ToDouble(ctrl.portfolio.positions[pidx].quantity);
-                        char oid[32];
-                        if (BinanceOrderAPI_MarketSell(&order_api, qty_d, oid)) {
-                            if (pending_sell_count < 4) {
-                                PendingSell *ps = &pending_sells[pending_sell_count++];
-                                strncpy(ps->order_id, oid, 31);
-                                ps->position_index = pidx;
-                                ps->active = 1;
-                            }
-                        } else {
-                            fprintf(stderr, "[LIVE] sell order failed for position %d\n", pidx);
-                        }
-                    }
-                }
-
-                // LIVE: poll pending orders for fill confirmations
-                if (ccfg.use_real_money && order_api.connected) {
-                    for (int i = 0; i < pending_buy_count; i++) {
-                        if (!pending_buys[i].active) continue;
-                        double filled_qty, avg_price;
-                        int ostatus = BinanceOrderAPI_GetStatus(&order_api,
-                                        pending_buys[i].order_id, &filled_qty, &avg_price);
-                        if (ostatus == ORDER_STATUS_FILLED) {
-                            fprintf(stderr, "[LIVE] buy confirmed: qty=%.8f avg_price=%.2f\n",
-                                    filled_qty, avg_price);
-                            pending_buys[i].active = 0;
-                        } else if (ostatus == ORDER_STATUS_REJECTED || ostatus == ORDER_STATUS_EXPIRED) {
-                            fprintf(stderr, "[LIVE] buy order %s rejected/expired\n",
-                                    pending_buys[i].order_id);
-                            pending_buys[i].active = 0;
-                        }
-                    }
-                    for (int i = 0; i < pending_sell_count; i++) {
-                        if (!pending_sells[i].active) continue;
-                        double filled_qty, avg_price;
-                        int ostatus = BinanceOrderAPI_GetStatus(&order_api,
-                                        pending_sells[i].order_id, &filled_qty, &avg_price);
-                        if (ostatus == ORDER_STATUS_FILLED) {
-                            fprintf(stderr, "[LIVE] sell confirmed: qty=%.8f avg_price=%.2f\n",
-                                    filled_qty, avg_price);
-                            pending_sells[i].active = 0;
-                        } else if (ostatus == ORDER_STATUS_REJECTED || ostatus == ORDER_STATUS_EXPIRED) {
-                            fprintf(stderr, "[LIVE] sell order %s rejected/expired\n",
-                                    pending_sells[i].order_id);
-                            pending_sells[i].active = 0;
-                        }
-                    }
-                }
-
                 PortfolioController_SaveSnapshot(&ctrl, snapshot_path);
                 MetricsLog_SlowPath(&metrics, &ctrl, last_stream.price_d);
 #ifdef MULTICORE_TUI
