@@ -242,7 +242,7 @@ inline int Regime_Classify(RegimeState<F> *state,
     // direction: more down signals = TRENDING_DOWN, otherwise TRENDING (up)
     int has_slope = short_slope_strong | long_slope_strong;
     int detected;
-    if (trending_score >= 2 && has_slope && trending_score > volatile_score) {
+    if (trending_score >= 2 && has_slope && consistent && trending_score > volatile_score) {
         detected = (down_signals > up_signals) ? REGIME_TRENDING_DOWN : REGIME_TRENDING;
     } else if (volatile_score >= 2 && volatile_score > trending_score)
         detected = REGIME_VOLATILE;
