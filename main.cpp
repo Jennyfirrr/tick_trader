@@ -186,11 +186,9 @@ int main(int argc, char *argv[]) {
             live_position_bitmap = 0;
         }
         ctrl.balance = FPN_FromDouble<FP>(usdt_start);
-        // in live mode, starting_balance comes from Binance, not engine.cfg
-        // this fixes exposure % calculations (deployed / starting_balance)
-        double total_equity = usdt_start + btc_start * 70000.0; // approx until first tick
-        ctrl.config.starting_balance = FPN_FromDouble<FP>(total_equity);
-        fprintf(stderr, "[LIVE] starting_balance set to $%.2f from exchange\n", total_equity);
+        // in live mode, starting_balance = actual exchange equity, not engine.cfg
+        ctrl.config.starting_balance = FPN_FromDouble<FP>(usdt_start);
+        fprintf(stderr, "[LIVE] starting_balance set to $%.2f from exchange\n", usdt_start);
     }
 
     //==================================================================================================
