@@ -223,18 +223,7 @@ static inline int binance_rest_request(BinanceOrderAPI *api,
                                         const char *path,
                                         const char *query,
                                         char *response_buf, int buf_size) {
-    // proactive staleness check: Binance closes idle connections at ~60s,
-    // reconnect early to avoid mid-request failures
-    if (api->connected && api->ssl && api->last_request_ms > 0) {
-        int64_t idle_ms = binance_current_ms() - api->last_request_ms;
-        if (idle_ms > 25000) {
-            SSL_free(api->ssl); api->ssl = NULL;
-            close(api->sockfd); api->sockfd = -1;
-            api->connected = 0;
-        }
-    }
-
-    // reconnect if needed (stale, closed by server, or first call)
+    // reconnect if needed (closed after previous request, or first call)
     if (!api->connected || !api->ssl) {
         if (api->ssl) { SSL_free(api->ssl); api->ssl = NULL; }
         // ssl_ctx is persistent — do NOT free here
@@ -343,9 +332,11 @@ static inline int binance_rest_request(BinanceOrderAPI *api,
         response_buf[0] = '\0';
     }
 
-    // keep connection alive — back-to-back calls (sell+buy) reuse same TLS session
-    // staleness check at top of function handles idle timeout reconnects
-    api->last_request_ms = binance_current_ms();
+    // close connection after each request — ssl_ctx persists (no heavy alloc churn)
+    // back-to-back calls (sell+buy) reconnect but only create a new SSL object, not CTX
+    if (api->ssl) { SSL_free(api->ssl); api->ssl = NULL; }
+    close(api->sockfd); api->sockfd = -1;
+    api->connected = 0;
 
     return status;
 }
