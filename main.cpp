@@ -633,61 +633,64 @@ int main(int argc, char *argv[]) {
                 if (ccfg.use_real_money) {
                     // query USDT + BTC balances in one API call (~150ms, not two)
                     double usdt_bal = 0, btc_bal = 0;
-                    BinanceOrderAPI_GetBalances(&order_api, &usdt_bal, &btc_bal);
+                    int bal_ok = BinanceOrderAPI_GetBalances(&order_api, &usdt_bal, &btc_bal);
                     double btc_value = btc_bal * last_stream.price_d;
 
-                    // external trade detection: if BTC balance is 0 but we think
-                    // positions are live, they were closed on the Binance dashboard
-                    if (btc_bal < 0.000001 && live_position_bitmap != 0) {
-                        fprintf(stderr, "[LIVE] BTC balance is 0 — positions closed externally, clearing bitmap\n");
-                        live_position_bitmap = 0;
-                    }
+                    // only sync if balance query succeeded — failed query returns 0/0
+                    // which would incorrectly zero out balance and trigger false orphan detection
+                    if (bal_ok) {
+                        // external trade detection: if BTC balance is 0 but we think
+                        // positions are live, they were closed on the Binance dashboard
+                        if (btc_bal < 0.000001 && live_position_bitmap != 0) {
+                            fprintf(stderr, "[LIVE] BTC balance is 0 — positions closed externally, clearing bitmap\n");
+                            live_position_bitmap = 0;
+                        }
 
-                    // sync paper balance when no live positions
-                    // (USDT balance is complete picture when not holding BTC)
-                    if (live_position_bitmap == 0) {
-                        ctrl.balance = FPN_FromDouble<FP>(usdt_bal);
-                    }
+                        // sync paper balance when no live positions
+                        // (USDT balance is complete picture when not holding BTC)
+                        if (live_position_bitmap == 0) {
+                            ctrl.balance = FPN_FromDouble<FP>(usdt_bal);
+                        }
 
-                    // orphan detection: real positions without paper backing
-                    uint16_t orphans = live_position_bitmap & ~ctrl.portfolio.active_bitmap;
-                    if (orphans) {
-                        fprintf(stderr, "[LIVE] WARNING: %d orphaned real positions — selling\n",
-                                __builtin_popcount(orphans));
-                        while (orphans) {
-                            int idx = __builtin_ctz(orphans);
-                            double qty_d = FPN_ToDouble(ctrl.portfolio.positions[idx].quantity);
-                            double notional = qty_d * last_stream.price_d;
-                            if (qty_d >= order_api.filters.lot_min_qty
-                                && notional >= order_api.filters.min_notional * 2.0) {
-                                char oid[32]; double fp, fq;
-                                BinanceOrderAPI_MarketSell(&order_api, qty_d, oid, &fp, &fq);
-                            } else {
-                                fprintf(stderr, "[LIVE] orphan slot %d too small to sell (notional $%.2f)\n", idx, notional);
+                        // orphan detection: real positions without paper backing
+                        uint16_t orphans = live_position_bitmap & ~ctrl.portfolio.active_bitmap;
+                        if (orphans) {
+                            fprintf(stderr, "[LIVE] WARNING: %d orphaned real positions — selling\n",
+                                    __builtin_popcount(orphans));
+                            while (orphans) {
+                                int idx = __builtin_ctz(orphans);
+                                double qty_d = FPN_ToDouble(ctrl.portfolio.positions[idx].quantity);
+                                double notional = qty_d * last_stream.price_d;
+                                if (qty_d >= order_api.filters.lot_min_qty
+                                    && notional >= order_api.filters.min_notional * 2.0) {
+                                    char oid[32]; double fp, fq;
+                                    BinanceOrderAPI_MarketSell(&order_api, qty_d, oid, &fp, &fq);
+                                } else {
+                                    fprintf(stderr, "[LIVE] orphan slot %d too small to sell (notional $%.2f)\n", idx, notional);
+                                }
+                                live_position_bitmap &= ~(1 << idx);
+                                orphans &= orphans - 1;
                             }
-                            live_position_bitmap &= ~(1 << idx);
-                            orphans &= orphans - 1;
                         }
-                    }
 
-                    // reverse orphan: paper position exists but BTC was sold externally
-                    // (e.g. user sold on Binance app) — undo the paper position
-                    if (ctrl.portfolio.active_bitmap && btc_bal < 0.000001) {
-                        uint16_t ghost = ctrl.portfolio.active_bitmap;
-                        fprintf(stderr, "[LIVE] BTC balance is zero but %d paper position(s) — undoing (external sell?)\n",
-                                __builtin_popcount(ghost));
-                        while (ghost) {
-                            int idx = __builtin_ctz(ghost);
-                            FPN<FP> cost = FPN_Mul(ctrl.portfolio.positions[idx].quantity,
-                                                   ctrl.portfolio.positions[idx].entry_price);
-                            FPN<FP> fee = FPN_Mul(cost, ctrl.config.fee_rate);
-                            ctrl.balance = FPN_AddSat(ctrl.balance, FPN_AddSat(cost, fee));
-                            ctrl.portfolio.active_bitmap &= ~(1 << idx);
-                            ghost &= ghost - 1;
+                        // reverse orphan: paper position exists but BTC was sold externally
+                        // (e.g. user sold on Binance app) — undo the paper position
+                        if (ctrl.portfolio.active_bitmap && btc_bal < 0.000001) {
+                            uint16_t ghost = ctrl.portfolio.active_bitmap;
+                            fprintf(stderr, "[LIVE] BTC balance is zero but %d paper position(s) — undoing (external sell?)\n",
+                                    __builtin_popcount(ghost));
+                            while (ghost) {
+                                int idx = __builtin_ctz(ghost);
+                                FPN<FP> cost = FPN_Mul(ctrl.portfolio.positions[idx].quantity,
+                                                       ctrl.portfolio.positions[idx].entry_price);
+                                FPN<FP> fee = FPN_Mul(cost, ctrl.config.fee_rate);
+                                ctrl.balance = FPN_AddSat(ctrl.balance, FPN_AddSat(cost, fee));
+                                ctrl.portfolio.active_bitmap &= ~(1 << idx);
+                                ghost &= ghost - 1;
+                            }
+                            live_position_bitmap = 0;
+                            ctrl.balance = FPN_FromDouble<FP>(usdt_bal);
                         }
-                        live_position_bitmap = 0;
-                        // sync paper balance to actual USDT on exchange
-                        ctrl.balance = FPN_FromDouble<FP>(usdt_bal);
                     }
 
                     // periodic clock re-sync (~every 30 min at default poll_interval)
