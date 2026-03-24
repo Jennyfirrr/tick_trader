@@ -450,7 +450,7 @@ int main(int argc, char *argv[]) {
                 MetricsLog_Event(&metrics, &ctrl, last_stream.price_d, "FILL", detail);
 
                 // LIVE: fire-and-forget buy order + set bitmap (Phase 3 wires this)
-                if (ccfg.use_real_money && order_api.connected) {
+                if (ccfg.use_real_money) {
                     uint16_t active = ctrl.portfolio.active_bitmap;
                     while (active) {
                         int slot = __builtin_ctz(active);
@@ -480,7 +480,7 @@ int main(int argc, char *argv[]) {
             }
 
             // LIVE: fire-and-forget sell for exited positions (bitmap-gated)
-            if (saved_exit_count > 0 && ccfg.use_real_money && order_api.connected) {
+            if (saved_exit_count > 0 && ccfg.use_real_money) {
                 for (int i = 0; i < saved_exit_count; i++) {
                     int slot = saved_exit_slots[i];
                     if (!(live_position_bitmap & (1 << slot))) continue; // paper-only
@@ -535,7 +535,7 @@ int main(int argc, char *argv[]) {
             // save portfolio snapshot every slow-path cycle (crash recovery)
             if (ctrl.tick_count == 0) {
                 // LIVE: balance sync + orphan detection + status line
-                if (ccfg.use_real_money && order_api.connected) {
+                if (ccfg.use_real_money) {
                     // sync paper balance from Binance (source of truth)
                     double real_bal = 0;
                     if (BinanceOrderAPI_GetBalance(&order_api, "USDT", &real_bal))
