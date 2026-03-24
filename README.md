@@ -22,6 +22,16 @@ Tick-level crypto trading engine in C++17. Branchless fixed-point arithmetic, bi
 ### Charts Layout
 ![Charts Layout](assets/tui-charts.png)
 
+## Requirements
+
+- **CPU:** x86-64 with L1 D-cache (any modern Intel/AMD — hot path fits in ~3KB)
+- **RAM:** 1GB minimum (engine uses ~50MB including rolling stats and TUI)
+- **OS:** Linux (kernel 4.x+, tested on Arch)
+- **Compiler:** g++ with C++17 support
+- **Libraries:** OpenSSL (libssl, libcrypto), pthreads
+- **Network:** internet connection for Binance websocket + REST API
+- **Optional:** `constant_tsc` CPU flag for accurate latency profiling (standard on all modern CPUs)
+
 ## Quick Start
 
 ```bash
