@@ -485,13 +485,21 @@ int main(int argc, char *argv[]) {
                     int slot = saved_exit_slots[i];
                     if (!(live_position_bitmap & (1 << slot))) continue; // paper-only
                     double qty_d = saved_exit_qtys[i];
-                    if (qty_d >= order_api.filters.lot_min_qty) {
+                    double notional = qty_d * last_stream.price_d;
+                    if (qty_d >= order_api.filters.lot_min_qty && notional >= order_api.filters.min_notional) {
                         char oid[32];
                         double fp = 0, fq = 0;
                         if (BinanceOrderAPI_MarketSell(&order_api, qty_d, oid, &fp, &fq))
                             live_position_bitmap &= ~(1 << slot);
-                        else
-                            fprintf(stderr, "[LIVE] SELL failed slot %d — check Binance dashboard\n", slot);
+                        else {
+                            // clear bitmap on permanent failure — don't spam retries
+                            fprintf(stderr, "[LIVE] SELL failed slot %d — clearing bitmap, check Binance dashboard\n", slot);
+                            live_position_bitmap &= ~(1 << slot);
+                        }
+                    } else {
+                        // below min notional — can't sell, clear bitmap
+                        fprintf(stderr, "[LIVE] SELL skipped slot %d — notional $%.2f below minimum, clearing bitmap\n", slot, notional);
+                        live_position_bitmap &= ~(1 << slot);
                     }
                 }
             }
