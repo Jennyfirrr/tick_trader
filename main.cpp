@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Jennifer Lewis. All rights reserved.
+// Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
+// See LICENSE file in the project root for full license text.
+
 //======================================================================================================
 // [TICK TRADER ENGINE]
 //======================================================================================================
@@ -138,8 +142,11 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "[ENGINE] ERROR: use_real_money=1 but secrets.cfg missing or incomplete\n");
             return 1;
         }
-        const char *rest_host = bcfg.use_testnet ? "testnet.binance.vision"
-            : bcfg.use_binance_us ? "api.binance.us" : "api.binance.com";
+        // REST host for orders — always use Binance US for US-based users
+        // websocket data source is separate (controlled by use_binance_us in BinanceConfig)
+        // for US users: set use_binance_us=0 for fast Global websocket data,
+        // the REST API always goes to api.binance.us when not testnet
+        const char *rest_host = bcfg.use_testnet ? "testnet.binance.vision" : "api.binance.us";
         if (!BinanceOrderAPI_Init(&order_api, rest_host, api_key, api_secret, bcfg.symbol)) {
             fprintf(stderr, "[ENGINE] ERROR: failed to connect to REST API at %s\n", rest_host);
             return 1;
@@ -381,6 +388,8 @@ int main(int argc, char *argv[]) {
                 shared.snapshots[tui_idx].price = last_stream.price_d;
                 shared.snapshots[tui_idx].volume = last_stream.volume_d;
                 shared.snapshots[tui_idx].active_count = __builtin_popcount(ctrl.portfolio.active_bitmap);
+                shared.snapshots[tui_idx].roll_count = ctrl.rolling.count;
+                shared.snapshots[tui_idx].state_warmup = (ctrl.state == CONTROLLER_WARMUP);
             }
 #endif
 #ifdef LATENCY_PROFILING

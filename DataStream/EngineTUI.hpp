@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Jennifer Lewis. All rights reserved.
+// Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
+// See LICENSE file in the project root for full license text.
+
 //======================================================================================================
 // [ENGINE TUI]
 //======================================================================================================
@@ -1246,7 +1250,7 @@ static inline void *tui_thread_fn(void *arg) {
 
     fcntl(STDIN_FILENO, F_SETFL, stdin_flags);
     tcsetattr(STDIN_FILENO, TCSANOW, &old_term);
-    printf("\033[?25h\033[2J");
+    printf("\033[?25h\033[H\033[J");  // show cursor, home, clear below (not full screen wipe)
     fflush(stdout);
 
 #elif defined(USE_FTXUI)

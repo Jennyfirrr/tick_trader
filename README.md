@@ -167,7 +167,9 @@ See `DOCS/CONTRIBUTING.md` for the full guide.
 
 ## License
 
-See `LICENSE` file.
+Copyright (c) 2026 Jennifer Lewis. All rights reserved.
+
+Licensed under the [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE).
 
 ---
 

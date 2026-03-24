@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Jennifer Lewis. All rights reserved.
+// Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
+// See LICENSE file in the project root for full license text.
+
 //======================================================================================================
 // [BINANCE REST ORDER API]
 //======================================================================================================
@@ -228,14 +232,6 @@ static inline int binance_rest_request(BinanceOrderAPI *api,
                                         char *response_buf, int buf_size) {
     // reconnect if needed (REST connections may be closed between requests)
     if (!api->connected || !api->ssl) {
-        // rate-limit reconnects to once per 5 seconds
-        int64_t now = binance_current_ms();
-        if (now - api->last_reconnect_ms < 5000) {
-            fprintf(stderr, "[REST] reconnect rate-limited (wait 5s)\n");
-            return -1;
-        }
-        api->last_reconnect_ms = now;
-
         if (api->ssl) { SSL_free(api->ssl); api->ssl = NULL; }
         if (api->ssl_ctx) { SSL_CTX_free(api->ssl_ctx); api->ssl_ctx = NULL; }
         if (api->sockfd >= 0) { close(api->sockfd); api->sockfd = -1; }
@@ -245,17 +241,6 @@ static inline int binance_rest_request(BinanceOrderAPI *api,
         if (!binance_rest_tls_setup(api)) return -1;
         api->connected = 1;
         fprintf(stderr, "[REST] reconnected to %s\n", api->host);
-
-        // re-sync clock inline (SyncClock not yet declared at this point)
-        {
-            char time_body[256];
-            int ts = binance_rest_request(api, "GET", "/api/v3/time", "",
-                                           time_body, sizeof(time_body));
-            if (ts == 200) {
-                double st = binance_json_extract_double(time_body, "serverTime");
-                api->time_offset_ms = (int64_t)st - binance_current_ms();
-            }
-        }
     }
 
     // build request
@@ -286,9 +271,24 @@ static inline int binance_rest_request(BinanceOrderAPI *api,
 
     int written = SSL_write(api->ssl, request, req_len);
     if (written <= 0) {
-        fprintf(stderr, "[REST] SSL_write failed\n");
+        int ssl_err = SSL_get_error(api->ssl, written);
+        fprintf(stderr, "[REST] SSL_write failed (err=%d)\n", ssl_err);
         api->connected = 0;
-        return -1;
+        // retry with fresh connection immediately (don't return -1 on first attempt)
+        if (api->ssl) { SSL_free(api->ssl); api->ssl = NULL; }
+        if (api->ssl_ctx) { SSL_CTX_free(api->ssl_ctx); api->ssl_ctx = NULL; }
+        if (api->sockfd >= 0) { close(api->sockfd); api->sockfd = -1; }
+        api->sockfd = binance_rest_tcp_connect(api->host, "443");
+        if (api->sockfd < 0) return -1;
+        if (!binance_rest_tls_setup(api)) return -1;
+        api->connected = 1;
+        // resend on the fresh connection
+        written = SSL_write(api->ssl, request, req_len);
+        if (written <= 0) {
+            fprintf(stderr, "[REST] SSL_write failed after reconnect\n");
+            api->connected = 0;
+            return -1;
+        }
     }
 
     // read response — accumulate until headers + body complete
@@ -339,6 +339,14 @@ static inline int binance_rest_request(BinanceOrderAPI *api,
         response_buf[0] = '\0';
     }
 
+    // close connection after every request — reconnect fresh next time
+    // REST calls only happen on slow path (~every 30s), 100ms reconnect is negligible
+    // this avoids all keep-alive timeout issues
+    SSL_shutdown(api->ssl); SSL_free(api->ssl); api->ssl = NULL;
+    SSL_CTX_free(api->ssl_ctx); api->ssl_ctx = NULL;
+    close(api->sockfd); api->sockfd = -1;
+    api->connected = 0;
+
     return status;
 }
 
@@ -352,7 +360,10 @@ static inline int binance_signed_request(BinanceOrderAPI *api,
     // add recvWindow, timestamp, and signature
     char query[2048];
     int64_t ts = binance_current_ms() + api->time_offset_ms;
-    snprintf(query, sizeof(query), "%s&recvWindow=5000&timestamp=%lld", params, (long long)ts);
+    if (params[0] != '\0')
+        snprintf(query, sizeof(query), "%s&recvWindow=5000&timestamp=%lld", params, (long long)ts);
+    else
+        snprintf(query, sizeof(query), "recvWindow=5000&timestamp=%lld", (long long)ts);
 
     char signature[128];
     binance_hmac_sha256(api->api_secret, query, signature);

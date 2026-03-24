@@ -4,6 +4,7 @@
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 3.0.16 | 2026-03-23 | AGPL-3.0 copyright headers, REST reconnect fix, live TUI status improvements |
 | 3.0.15 | 2026-03-23 | Live trading: fire-and-forget REST, live bitmap, balance sync, orphan detection, qty validation, 24h sell |
 | 3.0.14 | 2026-03-23 | Slippage simulation, zero-pollution TUI (slow-path snapshot + live price), warmup trim, live trading plan |
 | 3.0.13 | 2026-03-23 | Latency profiling overhaul: busy-poll, core isolation, native 128-bit, warmup visibility fix |
