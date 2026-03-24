@@ -165,17 +165,30 @@ int main(int argc, char *argv[]) {
             sleep(10);
         }
 
-        // startup reconciliation: sync balance + reconstruct bitmap from snapshot
-        double real_balance = 0;
-        if (BinanceOrderAPI_GetBalance(&order_api, "USDT", &real_balance)) {
-            fprintf(stderr, "[LIVE] exchange USDT balance: $%.2f\n", real_balance);
-            ctrl.balance = FPN_FromDouble<FP>(real_balance);
-        }
-        // assume all snapshot positions are real (conservative — avoids orphans)
-        live_position_bitmap = ctrl.portfolio.active_bitmap;
+        // startup reconciliation: query actual balances, reconcile with snapshot
+        double usdt_start = 0, btc_start = 0;
+        BinanceOrderAPI_GetBalances(&order_api, &usdt_start, &btc_start);
+        fprintf(stderr, "[LIVE] exchange USDT: $%.2f  BTC: %.8f ($%.2f)\n",
+                usdt_start, btc_start, btc_start * 70000.0); // approx, no price yet
+
         int pos_count = Portfolio_CountActive(&ctrl.portfolio);
-        if (pos_count > 0)
-            fprintf(stderr, "[LIVE] %d positions from snapshot marked as live\n", pos_count);
+        if (btc_start > 0.000001 && pos_count > 0) {
+            // have BTC and snapshot positions — mark as live
+            live_position_bitmap = ctrl.portfolio.active_bitmap;
+            fprintf(stderr, "[LIVE] %d snapshot positions matched with BTC holdings\n", pos_count);
+        } else if (btc_start < 0.000001 && pos_count > 0) {
+            // no BTC but snapshot has positions — they were closed externally
+            fprintf(stderr, "[LIVE] no BTC on exchange — clearing %d stale snapshot positions\n", pos_count);
+            ctrl.portfolio.active_bitmap = 0;
+            live_position_bitmap = 0;
+        } else {
+            // clean start or no positions
+            live_position_bitmap = 0;
+        }
+        ctrl.balance = FPN_FromDouble<FP>(usdt_start);
+        // in live mode, starting_balance = actual exchange equity, not engine.cfg
+        ctrl.config.starting_balance = FPN_FromDouble<FP>(usdt_start);
+        fprintf(stderr, "[LIVE] starting_balance set to $%.2f from exchange\n", usdt_start);
     }
 
     //==================================================================================================
@@ -456,8 +469,10 @@ int main(int argc, char *argv[]) {
                         int slot = __builtin_ctz(active);
                         if (ctrl.entry_ticks[slot] == ctrl.total_ticks) {
                             double qty_d = FPN_ToDouble(ctrl.portfolio.positions[slot].quantity);
+                            double notional = qty_d * last_stream.price_d;
+                            // 2x minNotional ensures sells also pass (Binance uses 5-min avg price)
                             if (qty_d >= order_api.filters.lot_min_qty
-                                && qty_d * last_stream.price_d >= order_api.filters.min_notional) {
+                                && notional >= order_api.filters.min_notional * 2.0) {
                                 char oid[32];
                                 double fp = 0, fq = 0;
                                 if (BinanceOrderAPI_MarketBuy(&order_api, qty_d, oid, &fp, &fq)) {
@@ -542,15 +557,24 @@ int main(int argc, char *argv[]) {
 
             // save portfolio snapshot every slow-path cycle (crash recovery)
             if (ctrl.tick_count == 0) {
-                // LIVE: balance sync + orphan detection + status line
+                // LIVE: balance sync + external trade detection + orphan detection
                 if (ccfg.use_real_money) {
-                    // sync paper balance from Binance (only when no live positions)
-                    // with open positions, USDT balance doesn't reflect BTC equity
-                    // paper balance already tracks correctly via fill consumption
+                    // query USDT + BTC balances in one API call (~150ms, not two)
+                    double usdt_bal = 0, btc_bal = 0;
+                    BinanceOrderAPI_GetBalances(&order_api, &usdt_bal, &btc_bal);
+                    double btc_value = btc_bal * last_stream.price_d;
+
+                    // external trade detection: if BTC balance is 0 but we think
+                    // positions are live, they were closed on the Binance dashboard
+                    if (btc_bal < 0.000001 && live_position_bitmap != 0) {
+                        fprintf(stderr, "[LIVE] BTC balance is 0 — positions closed externally, clearing bitmap\n");
+                        live_position_bitmap = 0;
+                    }
+
+                    // sync paper balance when no live positions
+                    // (USDT balance is complete picture when not holding BTC)
                     if (live_position_bitmap == 0) {
-                        double real_bal = 0;
-                        if (BinanceOrderAPI_GetBalance(&order_api, "USDT", &real_bal))
-                            ctrl.balance = FPN_FromDouble<FP>(real_bal);
+                        ctrl.balance = FPN_FromDouble<FP>(usdt_bal);
                     }
 
                     // orphan detection: real positions without paper backing
@@ -561,9 +585,13 @@ int main(int argc, char *argv[]) {
                         while (orphans) {
                             int idx = __builtin_ctz(orphans);
                             double qty_d = FPN_ToDouble(ctrl.portfolio.positions[idx].quantity);
-                            if (qty_d >= order_api.filters.lot_min_qty) {
+                            double notional = qty_d * last_stream.price_d;
+                            if (qty_d >= order_api.filters.lot_min_qty
+                                && notional >= order_api.filters.min_notional * 2.0) {
                                 char oid[32]; double fp, fq;
                                 BinanceOrderAPI_MarketSell(&order_api, qty_d, oid, &fp, &fq);
+                            } else {
+                                fprintf(stderr, "[LIVE] orphan slot %d too small to sell (notional $%.2f)\n", idx, notional);
                             }
                             live_position_bitmap &= ~(1 << idx);
                             orphans &= orphans - 1;
@@ -577,14 +605,15 @@ int main(int argc, char *argv[]) {
                         clock_sync_counter = 0;
                     }
 
-                    // lightweight status line
-                    fprintf(stderr, "[LIVE] $%.2f %s pos:%d/%d live:%d bal:$%.2f W:%d L:%d\n",
+                    // lightweight status line — shows real equity (USDT + BTC)
+                    fprintf(stderr, "[LIVE] $%.2f %s pos:%d/%d live:%d bal:$%.2f btc:%.8f equity:$%.2f W:%d L:%d\n",
                             last_stream.price_d,
                             ctrl.regime.current_regime == 1 ? "TREND" :
                             ctrl.regime.current_regime == 2 ? "VOLAT" : "RANGE",
                             __builtin_popcount(ctrl.portfolio.active_bitmap), 16,
                             __builtin_popcount(live_position_bitmap),
-                            FPN_ToDouble(ctrl.balance), ctrl.wins, ctrl.losses);
+                            usdt_bal, btc_bal, usdt_bal + btc_value,
+                            ctrl.wins, ctrl.losses);
                 }
 
                 PortfolioController_SaveSnapshot(&ctrl, snapshot_path);
