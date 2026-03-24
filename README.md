@@ -16,6 +16,8 @@ Tick-level crypto trading engine in C++17. Branchless fixed-point arithmetic, bi
 
 > **Note:** With `max_positions=1` (default), the engine sells your entire BTC balance on exit, eliminating dust from quantity rounding. Startup recovery also sweeps any orphaned BTC from prior sessions. With `max_positions > 1`, small dust may still accumulate — periodically convert via the Binance dashboard (Trade → Convert Small Assets).
 
+> **Note:** The engine only tracks positions it creates. If you manually buy or sell on the Binance app/website, the engine won't detect it — restart the engine to reconcile. Account sync is planned for a future release.
+
 [![Donate](https://img.shields.io/badge/Donate-PayPal-blue.svg)](https://www.paypal.com/ncp/payment/8M6XLK7M8569C) [![Discord](https://img.shields.io/badge/Discord-Community-5865F2.svg)](https://discord.gg/asSDcYwPz)
 
 ### Standard Layout
@@ -132,7 +134,7 @@ Features:
 ```bash
 make              # ANSI TUI (default, no library deps)
 make run          # build + run
-make test         # run 134 tests
+make test         # run 101 tests
 make ftxui        # FTXUI TUI (auto-fetched)
 make notcurses    # notcurses TUI (requires system lib)
 make profile      # with RDTSCP latency profiling
@@ -171,7 +173,7 @@ DataStream/              BinanceCrypto (websocket), TUI renderers, TradeLog
 FixedPoint/              Arbitrary-width fixed-point arithmetic library
 ML_Headers/              RollingStats, LinearRegression, ROR regressor
 MemHeaders/              PoolAllocator, BuddyAllocator
-tests/                   134 assertions across 25 test functions
+tests/                   101 assertions across 27 test functions
 DOCS/                    Architecture, configuration, performance, changelogs
 ```
 
