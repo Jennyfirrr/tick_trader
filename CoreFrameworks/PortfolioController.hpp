@@ -697,8 +697,11 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
     break;
   }
 
-  // volatile regime: pause buying entirely (existing positions keep running)
-  if (ctrl->regime.current_regime == REGIME_VOLATILE) {
+  // volatile / downtrend: pause buying entirely (existing positions keep running)
+  // TRENDING_DOWN: momentum only trades long, so no entries in downtrends
+  // future: replace with short strategy dispatch
+  if (ctrl->regime.current_regime == REGIME_VOLATILE ||
+      ctrl->regime.current_regime == REGIME_TRENDING_DOWN) {
     ctrl->buy_conds.price = FPN_Zero<F>();
     ctrl->buy_conds.volume = FPN_Zero<F>();
   }
@@ -733,11 +736,11 @@ inline void PortfolioController_Unpause(PortfolioController<F> *ctrl) {
     }
 }
 
-// manual regime cycle: RANGING → TRENDING → VOLATILE → RANGING
+// manual regime cycle: RANGING → TRENDING → TRENDING_DOWN → VOLATILE → RANGING
 template <unsigned F>
 inline void PortfolioController_CycleRegime(PortfolioController<F> *ctrl) {
     int old = ctrl->regime.current_regime;
-    int next = (old + 1) % 3;
+    int next = (old + 1) % 4;
     ctrl->regime.current_regime = next;
     ctrl->regime.proposed_regime = next;
     ctrl->regime.regime_start_tick = ctrl->total_ticks;
@@ -746,13 +749,13 @@ inline void PortfolioController_CycleRegime(PortfolioController<F> *ctrl) {
     if (ctrl->strategy_id != old_strategy)
         Regime_AdjustPositions(&ctrl->portfolio, &ctrl->rolling,
                                 old, next, ctrl->entry_strategy, &ctrl->config);
-    // volatile: pause buying
-    if (next == REGIME_VOLATILE) {
+    // volatile / downtrend: pause buying
+    if (next == REGIME_VOLATILE || next == REGIME_TRENDING_DOWN) {
         ctrl->buy_conds.price = FPN_Zero<F>();
         ctrl->buy_conds.volume = FPN_Zero<F>();
     }
-    fprintf(stderr, "[ENGINE] regime manually set to %s\n",
-            next == REGIME_TRENDING ? "TRENDING" : next == REGIME_VOLATILE ? "VOLATILE" : "RANGING");
+    const char *names[] = {"RANGING", "TRENDING", "VOLATILE", "TRENDING_DOWN"};
+    fprintf(stderr, "[ENGINE] regime manually set to %s\n", names[next]);
 }
 
 // config hot-reload: one function for all fields, called from both TUI paths

@@ -217,9 +217,10 @@ static inline Element Widget_PnL(const TUISnapshot *s) {
 static inline Element Widget_Risk(const TUISnapshot *s) {
     const char *strat = (s->strategy_id == 1) ? "MOMENTUM" : "MEAN REVERSION";
     const char *regime = (s->current_regime == 1) ? "TRENDING" :
-                         (s->current_regime == 2) ? "VOLATILE" : "RANGING";
+                         (s->current_regime == 2) ? "VOLATILE" :
+                         (s->current_regime == 3) ? "TRENDING_DOWN" : "RANGING";
     Color regime_color = (s->current_regime == 1) ? foxml::green :
-                         (s->current_regime == 2) ? foxml::red : foxml::dim;
+                         (s->current_regime == 2 || s->current_regime == 3) ? foxml::red : foxml::dim;
 
     return vbox({
         text("RISK") | bold | color(foxml::peach),

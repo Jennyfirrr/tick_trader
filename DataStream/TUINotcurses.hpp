@@ -141,9 +141,10 @@ static inline int NC_Section_TopBar(struct ncplane *n, const TUISnapshot *s, int
     nc_foxml::dim(n);
     nc_printf(n, y, 42, "|");
     const char *regime_str = (s->current_regime == 1) ? "TREND" :
-                             (s->current_regime == 2) ? "VOLAT" : "RANGE";
+                             (s->current_regime == 2) ? "VOLAT" :
+                             (s->current_regime == 3) ? "TR_DN" : "RANGE";
     if (s->current_regime == 1) nc_foxml::green(n);
-    else if (s->current_regime == 2) nc_foxml::red(n);
+    else if (s->current_regime == 2 || s->current_regime == 3) nc_foxml::red(n);
     else nc_foxml::dim(n);
     nc_foxml::bold_on(n);
     nc_printf(n, y, 44, "%s", regime_str);
@@ -299,7 +300,8 @@ static inline int NC_Section_Risk(struct ncplane *n, const TUISnapshot *s, int y
 
     const char *strat = (s->strategy_id == 1) ? "MOMENTUM" : "MEAN REVERSION";
     const char *regime = (s->current_regime == 1) ? "TRENDING" :
-                         (s->current_regime == 2) ? "VOLATILE" : "RANGING";
+                         (s->current_regime == 2) ? "VOLATILE" :
+                         (s->current_regime == 3) ? "TRENDING_DOWN" : "RANGING";
     nc_foxml::sand(n);
     nc_printf(n, y, 2, "strategy: ");
     nc_foxml::bold_on(n); nc_foxml::fg(n);
@@ -308,7 +310,7 @@ static inline int NC_Section_Risk(struct ncplane *n, const TUISnapshot *s, int y
     nc_foxml::dim(n);
     nc_printf(n, y, 28, "|");
     if (s->current_regime == 1) nc_foxml::green(n);
-    else if (s->current_regime == 2) nc_foxml::red(n);
+    else if (s->current_regime == 2 || s->current_regime == 3) nc_foxml::red(n);
     else nc_foxml::dim(n);
     nc_printf(n, y, 30, "%s", regime);
     nc_foxml::dim(n);
@@ -510,10 +512,11 @@ static inline void NC_Layout_Charts(struct ncplane *n, const TUISnapshot *s,
     nc_foxml::dim(n);
     nc_printf(n, y, 28, "|");
     if (s->current_regime == 1) nc_foxml::green(n);
-    else if (s->current_regime == 2) nc_foxml::red(n);
+    else if (s->current_regime == 2 || s->current_regime == 3) nc_foxml::red(n);
     else nc_foxml::dim(n);
     const char *regime = (s->current_regime == 1) ? "TREND" :
-                         (s->current_regime == 2) ? "VOLAT" : "RANGE";
+                         (s->current_regime == 2) ? "VOLAT" :
+                         (s->current_regime == 3) ? "TR_DN" : "RANGE";
     nc_printf(n, y, 30, "%s", regime);
     nc_foxml::dim(n);
     nc_printf(n, y, 36, "|");

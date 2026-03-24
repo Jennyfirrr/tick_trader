@@ -40,9 +40,10 @@
 #include "../ML_Headers/ROR_regressor.hpp"
 #include <time.h>
 
-#define REGIME_RANGING  0
-#define REGIME_TRENDING 1
-#define REGIME_VOLATILE 2
+#define REGIME_RANGING       0
+#define REGIME_TRENDING      1  // uptrend — momentum (buy breakouts above)
+#define REGIME_VOLATILE      2
+#define REGIME_TRENDING_DOWN 3  // downtrend — pause buying (future: short strategy)
 
 //======================================================================================================
 // [REGIME SIGNALS]
@@ -184,25 +185,41 @@ inline int Regime_Classify(RegimeState<F> *state,
     FPN<F> abs_short_slope = FPN_Abs(sig->short_slope);
     FPN<F> abs_long_slope  = FPN_Abs(sig->long_slope);
 
-    // --- trending score ---
+    // slope direction: 0 = positive (up), 1 = negative (down)
+    int short_up = !sig->short_slope.sign;
+    int short_down = sig->short_slope.sign;
+    int long_up = !sig->long_slope.sign;
+    int long_down = sig->long_slope.sign;
+
+    // --- trending score (direction-aware) ---
+    // magnitude checks use abs, direction splits into up/down scores
     int trending_score = 0;
+    int up_signals = 0;
+    int down_signals = 0;
 
     // short window slope strong enough
     int short_slope_strong = FPN_GreaterThan(abs_short_slope, cfg->regime_slope_threshold);
     trending_score += short_slope_strong;
+    up_signals += short_slope_strong & short_up;
+    down_signals += short_slope_strong & short_down;
 
     // long window confirms (multi-timeframe agreement)
     int long_has_data = (sig->long_count >= 64);
     int long_slope_strong = long_has_data & FPN_GreaterThan(abs_long_slope, cfg->regime_slope_threshold);
     trending_score += long_slope_strong;
+    up_signals += long_slope_strong & long_up;
+    down_signals += long_slope_strong & long_down;
 
     // price movement is consistent (high R²)
     int consistent = FPN_GreaterThan(sig->short_r2, cfg->regime_r2_threshold);
     trending_score += consistent;
 
-    // trend is accelerating (ROR positive — catches new trends before slope crosses threshold)
-    int accelerating = sig->ror_ready & FPN_GreaterThan(sig->ror_slope, FPN_Zero<F>());
-    trending_score += accelerating;
+    // trend is accelerating (ROR positive = upward acceleration, negative = downward)
+    int ror_positive = sig->ror_ready & FPN_GreaterThan(sig->ror_slope, FPN_Zero<F>());
+    int ror_negative = sig->ror_ready & FPN_LessThan(sig->ror_slope, FPN_Zero<F>());
+    trending_score += (ror_positive | ror_negative); // either direction counts for trending
+    up_signals += ror_positive;
+    down_signals += ror_negative;
 
     // volume rising in direction of trend (confirmation)
     int vol_confirms = FPN_GreaterThan(sig->volume_slope, FPN_Zero<F>()) & short_slope_strong;
@@ -220,12 +237,14 @@ inline int Regime_Classify(RegimeState<F> *state,
     volatile_score += vol_spike & inconsistent;
 
     // --- classify ---
-    // trending needs at least 2 signals agreeing (slope + one confirmation)
+    // trending needs at least 2 signals AND at least one slope signal (short or long)
     // volatile needs at least 2 signals (spike + no direction)
+    // direction: more down signals = TRENDING_DOWN, otherwise TRENDING (up)
+    int has_slope = short_slope_strong | long_slope_strong;
     int detected;
-    if (trending_score >= 2 && trending_score > volatile_score)
-        detected = REGIME_TRENDING;
-    else if (volatile_score >= 2 && volatile_score > trending_score)
+    if (trending_score >= 2 && has_slope && trending_score > volatile_score) {
+        detected = (down_signals > up_signals) ? REGIME_TRENDING_DOWN : REGIME_TRENDING;
+    } else if (volatile_score >= 2 && volatile_score > trending_score)
         detected = REGIME_VOLATILE;
     else
         detected = REGIME_RANGING;
@@ -251,10 +270,11 @@ inline int Regime_Classify(RegimeState<F> *state,
 //======================================================================================================
 static inline int Regime_ToStrategy(int regime) {
     switch (regime) {
-        case REGIME_TRENDING: return STRATEGY_MOMENTUM;
-        case REGIME_VOLATILE: return STRATEGY_MEAN_REVERSION;
+        case REGIME_TRENDING:      return STRATEGY_MOMENTUM;
+        case REGIME_TRENDING_DOWN: return STRATEGY_MEAN_REVERSION; // pause buying, future: short
+        case REGIME_VOLATILE:      return STRATEGY_MEAN_REVERSION;
         case REGIME_RANGING:
-        default:              return STRATEGY_MEAN_REVERSION;
+        default:                   return STRATEGY_MEAN_REVERSION;
     }
 }
 
@@ -297,7 +317,8 @@ inline void Regime_AdjustPositions(Portfolio<F> *portfolio,
                 FPN<F> tight_sl = FPN_SubSat(pos->entry_price, tight_sl_offset);
                 pos->stop_loss_price = FPN_Max(pos->stop_loss_price, tight_sl);
             }
-            else if (old_regime == REGIME_TRENDING && new_regime == REGIME_RANGING) {
+            else if ((old_regime == REGIME_TRENDING || old_regime == REGIME_TRENDING_DOWN)
+                     && new_regime == REGIME_RANGING) {
                 FPN<F> tight_tp_offset = FPN_Mul(stddev, FPN_Mul(cfg->take_profit_pct, hundred));
                 FPN<F> tight_tp = FPN_AddSat(pos->entry_price, tight_tp_offset);
                 pos->take_profit_price = FPN_Min(pos->take_profit_price, tight_tp);
@@ -305,6 +326,16 @@ inline void Regime_AdjustPositions(Portfolio<F> *portfolio,
                 FPN<F> wide_sl_offset = FPN_Mul(stddev, FPN_Mul(cfg->stop_loss_pct, hundred));
                 FPN<F> wide_sl = FPN_SubSat(pos->entry_price, wide_sl_offset);
                 pos->stop_loss_price = FPN_Min(pos->stop_loss_price, wide_sl);
+            }
+            // entering downtrend: tighten TP (take profits), tighten SL (cut losses)
+            else if (new_regime == REGIME_TRENDING_DOWN) {
+                FPN<F> tight_tp_offset = FPN_Mul(stddev, FPN_Mul(cfg->take_profit_pct, hundred));
+                FPN<F> tight_tp = FPN_AddSat(pos->entry_price, tight_tp_offset);
+                pos->take_profit_price = FPN_Min(pos->take_profit_price, tight_tp);
+
+                FPN<F> tight_sl_offset = FPN_Mul(stddev, cfg->momentum_sl_mult);
+                FPN<F> tight_sl = FPN_SubSat(pos->entry_price, tight_sl_offset);
+                pos->stop_loss_price = FPN_Max(pos->stop_loss_price, tight_sl);
             }
         }
 

@@ -4,6 +4,7 @@
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 3.0.20 | 2026-03-24 | Direction-aware regime detection — TRENDING_DOWN pauses buying in downtrends, prevents momentum dead cat bounce entries |
 | 3.0.19 | 2026-03-24 | **CRITICAL:** Heap corruption fix — zero-alloc SSL (SSL_clear reuse), same-tick guard, balance sync guard, external sell detection |
 | 3.0.18 | 2026-03-24 | Single-slot position management, sell-all-BTC, paper/live sync, startup BTC recovery |
 | 3.0.17 | 2026-03-23 | Fix: connected gate blocked all live orders, REST close-after-request, signed query fix |

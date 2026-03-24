@@ -19,7 +19,7 @@ static inline const char *_strategy_str(int sid) {
     return (sid == STRATEGY_MOMENTUM) ? "MOMENTUM" : "MEAN_REVERSION";
 }
 static inline const char *_regime_str(int rid) {
-    switch (rid) { case 1: return "TRENDING"; case 2: return "VOLATILE"; default: return "RANGING"; }
+    switch (rid) { case 1: return "TRENDING"; case 2: return "VOLATILE"; case 3: return "TRENDING_DOWN"; default: return "RANGING"; }
 }
 
 #include <stdio.h>

@@ -285,9 +285,10 @@ static inline int ANSI_Section_Header(AnsiBuf *ab, const TUISnapshot *s,
         ab_printf(ab, A_BOLD A_YELLOW " ▌ BUYING PAUSED" A_DIM "  post-SL cooldown (%d cycles remaining)" A_RESET,
                   s->sl_cooldown);
         y++;
-    } else if (s->current_regime == 2) {  // REGIME_VOLATILE
+    } else if (s->current_regime == 2 || s->current_regime == 3) {  // VOLATILE or TRENDING_DOWN
         ab_goto(ab, y, 2);
-        ab_printf(ab, A_BOLD A_YELLOW " ▌ BUYING PAUSED" A_DIM "  volatile regime — buying paused" A_RESET);
+        const char *pause_reason = (s->current_regime == 3) ? "downtrend — buying paused" : "volatile regime — buying paused";
+        ab_printf(ab, A_BOLD A_YELLOW " ▌ BUYING PAUSED" A_DIM "  %s" A_RESET, pause_reason);
         y++;
     } else if (s->breaker_tripped) {
         ab_goto(ab, y, 2);
@@ -310,9 +311,10 @@ static inline int ANSI_Section_TopBar(AnsiBuf *ab, const TUISnapshot *s, int y, 
               A_PNL(s->total_pnl), s->total_pnl);
 
     const char *regime_color = (s->current_regime == 1) ? A_GREEN :
-                               (s->current_regime == 2) ? A_RED : A_DIM;
+                               (s->current_regime == 2 || s->current_regime == 3) ? A_RED : A_DIM;
     const char *regime_str = (s->current_regime == 1) ? "TREND" :
-                             (s->current_regime == 2) ? "VOLAT" : "RANGE";
+                             (s->current_regime == 2) ? "VOLAT" :
+                             (s->current_regime == 3) ? "TR_DN" : "RANGE";
     ab_printf(ab, A_DIM "  │ " A_BOLD "%s%s" A_RESET, regime_color, regime_str);
     ab_printf(ab, A_DIM "  │ " A_SAND "POS " A_FG "%d/16" A_RESET, s->active_count);
     uint32_t total_exits = s->wins + s->losses;
@@ -382,9 +384,10 @@ static inline int ANSI_Section_Regime(AnsiBuf *ab, const TUISnapshot *s, int y, 
 
     // regime name + strategy
     const char *regime_name = (s->current_regime == 1) ? "TRENDING" :
-                              (s->current_regime == 2) ? "VOLATILE" : "RANGING";
+                              (s->current_regime == 2) ? "VOLATILE" :
+                              (s->current_regime == 3) ? "TRENDING_DOWN" : "RANGING";
     const char *regime_color = (s->current_regime == 1) ? A_GREEN :
-                               (s->current_regime == 2) ? A_RED : A_DIM;
+                               (s->current_regime == 2 || s->current_regime == 3) ? A_RED : A_DIM;
     const char *strat_name = (s->strategy_id == 1) ? "MOMENTUM" : "MEAN REVERSION";
 
     ab_goto(ab, y, 3);
@@ -890,9 +893,10 @@ static inline void ANSI_Layout_Charts(AnsiBuf *ab, const TUISnapshot *s, int h, 
     ab_printf(ab, A_BOLD A_WHEAT "$%.2f" A_RESET, s->price);
     ab_printf(ab, A_DIM " │ " A_BOLD "%s$%+.2f" A_RESET, A_PNL(s->total_pnl), s->total_pnl);
     const char *regime_color = (s->current_regime == 1) ? A_GREEN :
-                               (s->current_regime == 2) ? A_RED : A_DIM;
+                               (s->current_regime == 2 || s->current_regime == 3) ? A_RED : A_DIM;
     const char *regime = (s->current_regime == 1) ? "TREND" :
-                         (s->current_regime == 2) ? "VOLAT" : "RANGE";
+                         (s->current_regime == 2) ? "VOLAT" :
+                         (s->current_regime == 3) ? "TR_DN" : "RANGE";
     ab_printf(ab, A_DIM " │ " "%s%s" A_RESET, regime_color, regime);
     ab_printf(ab, A_DIM " │ " A_SAND "POS %d/16" A_RESET, s->active_count);
     y++;
