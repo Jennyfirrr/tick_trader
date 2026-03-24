@@ -167,11 +167,20 @@ See `DOCS/CONTRIBUTING.md` for the full guide.
 
 ## License
 
-Copyright (c) 2026 Jennifer Lewis. All rights reserved.
+**Copyright (c) 2026 Jennifer Lewis. All rights reserved.**
 
-Licensed under the [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE).
+This software is dual-licensed: [AGPL-3.0-or-later](LICENSE) or Commercial. If you use this software without complying with the AGPL (including the requirement to publish your source code for any network-accessible deployment) and without a commercial license, you are infringing copyright.
 
-For commercial licensing inquiries, contact: jenn.lewis5789@gmail.com
+### Unauthorized Use — Settlement Terms
+
+If you or your organization are found using Tick Trader without a valid license:
+
+- **10% of gross revenue** derived from use of the software, from date of first unauthorized use through settlement, plus a **flat fee TBD**
+- The Copyright Holder reserves the right to pursue **full statutory damages** under 17 U.S.C. Section 504 (up to **$150,000 per work** for willful infringement), **injunctive relief**, and **attorney's fees**
+
+**Report unauthorized use:** If your report leads to a successful settlement or judgment, you receive **33% of net recovery** (after legal fees). No recovery, no obligation.
+
+For commercial licensing inquiries or to report unauthorized use, contact: [jenn.lewis5789@gmail.com](mailto:jenn.lewis5789@gmail.com)
 
 ---
 
