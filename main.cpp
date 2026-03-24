@@ -476,7 +476,9 @@ int main(int argc, char *argv[]) {
                 MetricsLog_Event(&metrics, &ctrl, last_stream.price_d, "FILL", detail);
 
                 // LIVE: fire-and-forget buy order + set bitmap (Phase 3 wires this)
-                if (ccfg.use_real_money) {
+                // skip if a sell happened this same tick — avoid back-to-back REST calls
+                // the paper position will be undone below, BuyGate fires again next cycle
+                if (ccfg.use_real_money && saved_exit_count == 0) {
                     uint16_t active = ctrl.portfolio.active_bitmap;
                     while (active) {
                         int slot = __builtin_ctz(active);

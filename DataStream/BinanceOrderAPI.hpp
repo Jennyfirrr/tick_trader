@@ -76,6 +76,7 @@ struct BinanceOrderAPI {
     int64_t time_offset_ms; // local - server time difference
     SymbolFilters filters;
     int64_t last_reconnect_ms; // rate-limit reconnects to once per 5s
+    int64_t last_request_ms;   // timestamp of last successful REST request (staleness detection)
 };
 
 //======================================================================================================
@@ -193,15 +194,9 @@ static inline int binance_rest_tcp_connect(const char *host, const char *port) {
 }
 
 static inline int binance_rest_tls_setup(BinanceOrderAPI *api) {
-    api->ssl_ctx = SSL_CTX_new(TLS_client_method());
-    if (!api->ssl_ctx) return 0;
-
+    // ssl_ctx is persistent (created once at init, freed only in Cleanup)
     api->ssl = SSL_new(api->ssl_ctx);
-    if (!api->ssl) {
-        SSL_CTX_free(api->ssl_ctx);
-        api->ssl_ctx = NULL;
-        return 0;
-    }
+    if (!api->ssl) return 0;
 
     SSL_set_fd(api->ssl, api->sockfd);
     SSL_set_tlsext_host_name(api->ssl, api->host);
@@ -210,9 +205,7 @@ static inline int binance_rest_tls_setup(BinanceOrderAPI *api) {
     if (ret != 1) {
         fprintf(stderr, "[REST] SSL_connect failed: %d\n", SSL_get_error(api->ssl, ret));
         SSL_free(api->ssl);
-        SSL_CTX_free(api->ssl_ctx);
         api->ssl = NULL;
-        api->ssl_ctx = NULL;
         return 0;
     }
     return 1;
@@ -230,10 +223,21 @@ static inline int binance_rest_request(BinanceOrderAPI *api,
                                         const char *path,
                                         const char *query,
                                         char *response_buf, int buf_size) {
-    // reconnect if needed (REST connections may be closed between requests)
+    // proactive staleness check: Binance closes idle connections at ~60s,
+    // reconnect early to avoid mid-request failures
+    if (api->connected && api->ssl && api->last_request_ms > 0) {
+        int64_t idle_ms = binance_current_ms() - api->last_request_ms;
+        if (idle_ms > 25000) {
+            SSL_free(api->ssl); api->ssl = NULL;
+            close(api->sockfd); api->sockfd = -1;
+            api->connected = 0;
+        }
+    }
+
+    // reconnect if needed (stale, closed by server, or first call)
     if (!api->connected || !api->ssl) {
         if (api->ssl) { SSL_free(api->ssl); api->ssl = NULL; }
-        if (api->ssl_ctx) { SSL_CTX_free(api->ssl_ctx); api->ssl_ctx = NULL; }
+        // ssl_ctx is persistent — do NOT free here
         if (api->sockfd >= 0) { close(api->sockfd); api->sockfd = -1; }
 
         api->sockfd = binance_rest_tcp_connect(api->host, "443");
@@ -276,7 +280,7 @@ static inline int binance_rest_request(BinanceOrderAPI *api,
         api->connected = 0;
         // retry with fresh connection immediately (don't return -1 on first attempt)
         if (api->ssl) { SSL_free(api->ssl); api->ssl = NULL; }
-        if (api->ssl_ctx) { SSL_CTX_free(api->ssl_ctx); api->ssl_ctx = NULL; }
+        // ssl_ctx is persistent — do NOT free here
         if (api->sockfd >= 0) { close(api->sockfd); api->sockfd = -1; }
         api->sockfd = binance_rest_tcp_connect(api->host, "443");
         if (api->sockfd < 0) return -1;
@@ -339,13 +343,9 @@ static inline int binance_rest_request(BinanceOrderAPI *api,
         response_buf[0] = '\0';
     }
 
-    // close connection after every request — reconnect fresh next time
-    // REST calls only happen on slow path (~every 30s), 100ms reconnect is negligible
-    // this avoids all keep-alive timeout issues
-    SSL_shutdown(api->ssl); SSL_free(api->ssl); api->ssl = NULL;
-    SSL_CTX_free(api->ssl_ctx); api->ssl_ctx = NULL;
-    close(api->sockfd); api->sockfd = -1;
-    api->connected = 0;
+    // keep connection alive — back-to-back calls (sell+buy) reuse same TLS session
+    // staleness check at top of function handles idle timeout reconnects
+    api->last_request_ms = binance_current_ms();
 
     return status;
 }
@@ -661,11 +661,19 @@ static inline int BinanceOrderAPI_Init(BinanceOrderAPI *api, const char *host,
         api->symbol[i] = (symbol[i] >= 'a' && symbol[i] <= 'z')
             ? symbol[i] - 32 : symbol[i];
 
+    // create SSL context once — reused across all connections, freed only in Cleanup
+    api->ssl_ctx = SSL_CTX_new(TLS_client_method());
+    if (!api->ssl_ctx) {
+        fprintf(stderr, "[REST] SSL_CTX_new failed\n");
+        return 0;
+    }
+
     // connect
     api->sockfd = binance_rest_tcp_connect(host, "443");
     if (api->sockfd < 0) return 0;
     if (!binance_rest_tls_setup(api)) return 0;
     api->connected = 1;
+    api->last_request_ms = binance_current_ms();
 
     // calibrate clock offset
     BinanceOrderAPI_SyncClock(api);
