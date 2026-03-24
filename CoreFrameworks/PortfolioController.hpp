@@ -312,8 +312,8 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
   // but the outer gate is eliminated
   //==================================================================================================
   uint64_t new_fills = pool->bitmap & ~ctrl->prev_bitmap;
-  uint64_t can_fill = -(uint64_t)(!Portfolio_IsFull(
-      &ctrl->portfolio)); // all 1s if room, all 0s if full
+  uint64_t can_fill = -(uint64_t)(Portfolio_CountActive(
+      &ctrl->portfolio) < (int)ctrl->config.max_positions); // all 1s if room, all 0s if at cap
   uint64_t fills = new_fills & can_fill;
   uint64_t consumed = fills; // track what we actually process for pool clearing
 
@@ -416,7 +416,7 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
 
     // new position: room AND spacing AND balance AND not blown AND under
     // exposure limit
-    int is_new = !found & !Portfolio_IsFull(&ctrl->portfolio) & !too_close &
+    int is_new = !found & (Portfolio_CountActive(&ctrl->portfolio) < (int)ctrl->config.max_positions) & !too_close &
                  can_afford & not_blown & under_limit;
     if (is_new) {
       // volatility-based TP/SL with fee floor
@@ -772,6 +772,7 @@ inline void PortfolioController_HotReload(PortfolioController<F> *ctrl,
     ctrl->config.filter_scale        = new_cfg.filter_scale;
     ctrl->config.max_drawdown_pct    = new_cfg.max_drawdown_pct;
     ctrl->config.max_exposure_pct    = new_cfg.max_exposure_pct;
+    ctrl->config.max_positions       = new_cfg.max_positions;
     ctrl->config.offset_stddev_mult  = new_cfg.offset_stddev_mult;
     ctrl->config.offset_stddev_min   = new_cfg.offset_stddev_min;
     ctrl->config.offset_stddev_max   = new_cfg.offset_stddev_max;

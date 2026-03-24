@@ -184,6 +184,19 @@ int main(int argc, char *argv[]) {
         } else {
             // clean start or no positions
             live_position_bitmap = 0;
+            // if BTC on exchange but no snapshot positions, sell it all —
+            // recovers orphaned value from prior sessions into USDT
+            if (btc_start > 0.000001) {
+                double qty_d = binance_round_qty(btc_start, order_api.filters.lot_step_size);
+                if (qty_d >= order_api.filters.lot_min_qty) {
+                    fprintf(stderr, "[LIVE] orphaned BTC %.8f — selling to recover USDT\n", qty_d);
+                    char oid[32]; double fp = 0, fq = 0;
+                    BinanceOrderAPI_MarketSell(&order_api, qty_d, oid, &fp, &fq);
+                    // re-query USDT balance after sell
+                    BinanceOrderAPI_GetBalances(&order_api, &usdt_start, &btc_start);
+                    fprintf(stderr, "[LIVE] post-sweep USDT: $%.2f  BTC: %.8f\n", usdt_start, btc_start);
+                }
+            }
         }
         ctrl.balance = FPN_FromDouble<FP>(usdt_start);
         // in live mode, starting_balance = actual exchange equity, not engine.cfg
@@ -361,19 +374,19 @@ int main(int argc, char *argv[]) {
             // 2. force-close all remaining positions
             // 3. verify bitmap is zero (halts if not)
             // 4. clear pool, reconnect, restart warmup
-            // LIVE: sell all real positions before 24h force-close
-            if (ccfg.use_real_money && live_position_bitmap) {
-                fprintf(stderr, "[LIVE] 24h reconnect — selling %d live positions\n",
-                        __builtin_popcount(live_position_bitmap));
-                uint16_t to_sell = live_position_bitmap;
-                while (to_sell) {
-                    int idx = __builtin_ctz(to_sell);
-                    double qty_d = FPN_ToDouble(ctrl.portfolio.positions[idx].quantity);
-                    if (qty_d >= order_api.filters.lot_min_qty) {
-                        char oid[32]; double fp, fq;
+            // LIVE: sell entire BTC balance before 24h force-close
+            // sells everything in one order — catches tracked positions + any dust
+            if (ccfg.use_real_money) {
+                double usdt_tmp = 0, btc_bal = 0;
+                BinanceOrderAPI_GetBalances(&order_api, &usdt_tmp, &btc_bal);
+                double qty_d = binance_round_qty(btc_bal, order_api.filters.lot_step_size);
+                if (qty_d >= order_api.filters.lot_min_qty) {
+                    double notional = qty_d * last_stream.price_d;
+                    if (notional >= order_api.filters.min_notional) {
+                        char oid[32]; double fp = 0, fq = 0;
+                        fprintf(stderr, "[LIVE] 24h reconnect — selling entire BTC balance: %.8f ($%.2f)\n", qty_d, notional);
                         BinanceOrderAPI_MarketSell(&order_api, qty_d, oid, &fp, &fq);
                     }
-                    to_sell &= to_sell - 1;
                 }
                 live_position_bitmap = 0;
             }
@@ -492,30 +505,66 @@ int main(int argc, char *argv[]) {
                         active &= active - 1;
                     }
                 }
+
+                // undo paper positions that weren't backed by real orders
+                // with single-slot mode, if the buy was skipped or failed, the paper
+                // engine shouldn't track a phantom position
+                {
+                    uint16_t check = ctrl.portfolio.active_bitmap;
+                    while (check) {
+                        int slot = __builtin_ctz(check);
+                        if (ctrl.entry_ticks[slot] == ctrl.total_ticks
+                            && !(live_position_bitmap & (1 << slot))) {
+                            double qty_d = FPN_ToDouble(ctrl.portfolio.positions[slot].quantity);
+                            double cost = qty_d * last_stream.price_d;
+                            fprintf(stderr, "[LIVE] undoing paper position slot %d — no real backing (notional $%.2f)\n", slot, cost);
+                            ctrl.portfolio.active_bitmap &= ~(1 << slot);
+                            // restore balance: reverse the cost + fee deduction from position sizing
+                            FPN<FP> position_cost = FPN_Mul(ctrl.portfolio.positions[slot].quantity,
+                                                            ctrl.portfolio.positions[slot].entry_price);
+                            FPN<FP> fee = FPN_Mul(position_cost, ctrl.config.fee_rate);
+                            ctrl.balance = FPN_AddSat(ctrl.balance, FPN_AddSat(position_cost, fee));
+                        }
+                        check &= check - 1;
+                    }
+                }
             }
 
-            // LIVE: fire-and-forget sell for exited positions (bitmap-gated)
+            // LIVE: sell entire BTC balance on exit (bitmap-gated)
+            // with single-slot mode, the exchange BTC balance IS the position —
+            // selling it all eliminates dust accumulation from quantity rounding
             if (saved_exit_count > 0 && ccfg.use_real_money) {
+                // check if any exited positions were live
+                int has_live_exit = 0;
                 for (int i = 0; i < saved_exit_count; i++) {
-                    int slot = saved_exit_slots[i];
-                    if (!(live_position_bitmap & (1 << slot))) continue; // paper-only
-                    double qty_d = saved_exit_qtys[i];
+                    if (live_position_bitmap & (1 << saved_exit_slots[i])) {
+                        has_live_exit = 1;
+                        break;
+                    }
+                }
+                if (has_live_exit) {
+                    double usdt_tmp = 0, btc_bal = 0;
+                    BinanceOrderAPI_GetBalances(&order_api, &usdt_tmp, &btc_bal);
+                    double qty_d = binance_round_qty(btc_bal, order_api.filters.lot_step_size);
                     double notional = qty_d * last_stream.price_d;
                     if (qty_d >= order_api.filters.lot_min_qty && notional >= order_api.filters.min_notional) {
                         char oid[32];
                         double fp = 0, fq = 0;
+                        fprintf(stderr, "[LIVE] SELL entire BTC balance: %.8f BTC ($%.2f)\n", qty_d, notional);
                         if (BinanceOrderAPI_MarketSell(&order_api, qty_d, oid, &fp, &fq))
-                            live_position_bitmap &= ~(1 << slot);
+                            live_position_bitmap = 0; // all positions cleared
                         else {
-                            // clear bitmap on permanent failure — don't spam retries
-                            fprintf(stderr, "[LIVE] SELL failed slot %d — clearing bitmap, check Binance dashboard\n", slot);
-                            live_position_bitmap &= ~(1 << slot);
+                            fprintf(stderr, "[LIVE] SELL failed — clearing bitmap, check Binance dashboard\n");
+                            live_position_bitmap = 0;
                         }
                     } else {
-                        // below min notional — can't sell, clear bitmap
-                        fprintf(stderr, "[LIVE] SELL skipped slot %d — notional $%.2f below minimum, clearing bitmap\n", slot, notional);
-                        live_position_bitmap &= ~(1 << slot);
+                        fprintf(stderr, "[LIVE] SELL skipped — BTC balance %.8f ($%.2f) below minimum\n", qty_d, notional);
+                        live_position_bitmap = 0;
                     }
+                } else {
+                    // paper-only exits — just clear bits
+                    for (int i = 0; i < saved_exit_count; i++)
+                        live_position_bitmap &= ~(1 << saved_exit_slots[i]);
                 }
             }
 

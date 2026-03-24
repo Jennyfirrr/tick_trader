@@ -343,6 +343,7 @@ static void test_backpressure() {
     ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
     cfg.warmup_ticks = 0;
     cfg.poll_interval = 1000;
+    cfg.max_positions = 16; // test bitmap capacity, not position cap
 
     PortfolioController<FP> ctrl = {};
     PortfolioController_Init(&ctrl, cfg);
@@ -1295,6 +1296,101 @@ static void test_slippage() {
 }
 
 //======================================================================================================
+// [TEST: MAX POSITIONS]
+//======================================================================================================
+static void test_max_positions() {
+    printf("\n--- Max Positions ---\n");
+
+    // TEST 1: max_positions=1 rejects second fill
+    {
+        ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+        cfg.warmup_ticks = 0;
+        cfg.poll_interval = 1000;
+        cfg.max_positions = 1;
+        cfg.spacing_multiplier = FPN_Zero<FP>(); // disable spacing check
+
+        PortfolioController<FP> ctrl = {};
+        PortfolioController_Init(&ctrl, cfg);
+        ctrl.state = CONTROLLER_ACTIVE;
+        ctrl.buy_conds.price  = FPN_FromDouble<FP>(100.0);
+        ctrl.buy_conds.volume = FPN_FromDouble<FP>(400.0);
+        ctrl.mean_rev.buy_conds_initial = ctrl.buy_conds;
+
+        OrderPool<FP> pool;
+        OrderPool_init(&pool, 64);
+        TradeLog log; log.file = 0; log.trade_count = 0;
+
+        // first fill should succeed
+        pool.slots[0].price = FPN_FromDouble<FP>(98.0);
+        pool.slots[0].quantity = FPN_FromDouble<FP>(500.0);
+        pool.bitmap = 1;
+
+        PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(98.0),
+                                  FPN_FromDouble<FP>(500.0), &log);
+        check("max_pos=1: first fill accepted", Portfolio_CountActive(&ctrl.portfolio) == 1);
+
+        // second fill at different price should be rejected
+        pool.slots[1].price = FPN_FromDouble<FP>(110.0);
+        pool.slots[1].quantity = FPN_FromDouble<FP>(500.0);
+        pool.bitmap |= (1ULL << 1);
+
+        PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(98.0),
+                                  FPN_FromDouble<FP>(500.0), &log);
+        check("max_pos=1: second fill rejected", Portfolio_CountActive(&ctrl.portfolio) == 1);
+        check("max_pos=1: pool slot 1 remains", (pool.bitmap & (1ULL << 1)) != 0);
+
+        free(pool.slots);
+    }
+
+    // TEST 2: max_positions=2 accepts two, rejects third
+    {
+        ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+        cfg.warmup_ticks = 0;
+        cfg.poll_interval = 1000;
+        cfg.max_positions = 2;
+        cfg.spacing_multiplier = FPN_Zero<FP>(); // disable spacing check
+
+        PortfolioController<FP> ctrl = {};
+        PortfolioController_Init(&ctrl, cfg);
+        ctrl.state = CONTROLLER_ACTIVE;
+        ctrl.buy_conds.price  = FPN_FromDouble<FP>(100.0);
+        ctrl.buy_conds.volume = FPN_FromDouble<FP>(400.0);
+        ctrl.mean_rev.buy_conds_initial = ctrl.buy_conds;
+
+        OrderPool<FP> pool;
+        OrderPool_init(&pool, 64);
+        TradeLog log; log.file = 0; log.trade_count = 0;
+
+        // two fills at different prices
+        pool.slots[0].price = FPN_FromDouble<FP>(98.0);
+        pool.slots[0].quantity = FPN_FromDouble<FP>(500.0);
+        pool.slots[1].price = FPN_FromDouble<FP>(80.0);
+        pool.slots[1].quantity = FPN_FromDouble<FP>(500.0);
+        pool.bitmap = 3; // bits 0 and 1
+
+        PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(98.0),
+                                  FPN_FromDouble<FP>(500.0), &log);
+        check("max_pos=2: two fills accepted", Portfolio_CountActive(&ctrl.portfolio) == 2);
+
+        // third fill should be rejected
+        pool.slots[2].price = FPN_FromDouble<FP>(60.0);
+        pool.slots[2].quantity = FPN_FromDouble<FP>(500.0);
+        pool.bitmap |= (1ULL << 2);
+
+        PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(98.0),
+                                  FPN_FromDouble<FP>(500.0), &log);
+        check("max_pos=2: third fill rejected", Portfolio_CountActive(&ctrl.portfolio) == 2);
+
+        free(pool.slots);
+    }
+
+    // TEST 3: config parser clamps values
+    {
+        check("max_pos default is 1", ControllerConfig_Default<FP>().max_positions == 1);
+    }
+}
+
+//======================================================================================================
 // [MAIN]
 //======================================================================================================
 int main() {
@@ -1327,6 +1423,7 @@ int main() {
     test_trailing_ratchet();
     test_original_tp_sl();
     test_slippage();
+    test_max_positions();
 
     //==================================================================================================
     // [TEST: VOLUME SPIKE DETECTION]

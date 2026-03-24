@@ -71,6 +71,7 @@ filter_scale=0.50               # how fast filters adapt (higher = faster respon
 #==============================================================================
 max_drawdown_pct=10.00          # halt ALL buying if total P&L drops below this % of starting balance
 max_exposure_pct=50.00          # max % of balance deployed in open positions
+max_positions=1                 # max simultaneous open positions (1-16)
 
 #==============================================================================
 # ENHANCED BUY SIGNAL
