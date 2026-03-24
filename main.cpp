@@ -371,6 +371,20 @@ int main(int argc, char *argv[]) {
 #if defined(LATENCY_PROFILING) && !defined(LATENCY_LITE)
             uint64_t t2 = __rdtscp(&tsc_aux);
 #endif
+            // LIVE: save exit buffer before PCTick drains it (DrainExits clears inside)
+            // config-constant branch: predicted 100% in paper mode, ~0ns cost
+            int saved_exit_count = 0;
+            uint32_t saved_exit_slots[16];
+            double saved_exit_qtys[16];
+            if (ccfg.use_real_money && ctrl.exit_buf.count > 0) {
+                for (uint32_t i = 0; i < ctrl.exit_buf.count; i++) {
+                    uint32_t pidx = ctrl.exit_buf.records[i].position_index;
+                    saved_exit_slots[saved_exit_count] = pidx;
+                    saved_exit_qtys[saved_exit_count] = FPN_ToDouble(
+                        ctrl.portfolio.positions[pidx].quantity);
+                    saved_exit_count++;
+                }
+            }
             PortfolioController_Tick(&ctrl, &pool, last_stream.price, last_stream.volume, &log);
 #ifdef LATENCY_PROFILING
             uint64_t t3 = __rdtscp(&tsc_aux);
@@ -421,6 +435,23 @@ int main(int argc, char *argv[]) {
                             }
                         }
                         active &= active - 1;
+                    }
+                }
+            }
+
+            // LIVE: fire-and-forget sell for exited positions (bitmap-gated)
+            if (saved_exit_count > 0 && ccfg.use_real_money && order_api.connected) {
+                for (int i = 0; i < saved_exit_count; i++) {
+                    int slot = saved_exit_slots[i];
+                    if (!(live_position_bitmap & (1 << slot))) continue; // paper-only
+                    double qty_d = saved_exit_qtys[i];
+                    if (qty_d >= order_api.filters.lot_min_qty) {
+                        char oid[32];
+                        double fp = 0, fq = 0;
+                        if (BinanceOrderAPI_MarketSell(&order_api, qty_d, oid, &fp, &fq))
+                            live_position_bitmap &= ~(1 << slot);
+                        else
+                            fprintf(stderr, "[LIVE] SELL failed slot %d — check Binance dashboard\n", slot);
                     }
                 }
             }
