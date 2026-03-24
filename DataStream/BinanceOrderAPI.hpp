@@ -202,11 +202,8 @@ static inline int binance_rest_tcp_connect(const char *host, const char *port) {
 
 static inline int binance_rest_tls_setup(BinanceOrderAPI *api) {
     // ssl_ctx is persistent (created once at init, freed only in Cleanup)
-    // reuse existing SSL object if available (SSL_clear resets without alloc/free)
-    if (!api->ssl) {
-        api->ssl = SSL_new(api->ssl_ctx);
-        if (!api->ssl) return 0;
-    }
+    api->ssl = SSL_new(api->ssl_ctx);
+    if (!api->ssl) return 0;
 
     SSL_set_fd(api->ssl, api->sockfd);
     SSL_set_tlsext_host_name(api->ssl, api->host);
@@ -214,8 +211,8 @@ static inline int binance_rest_tls_setup(BinanceOrderAPI *api) {
     int ret = SSL_connect(api->ssl);
     if (ret != 1) {
         fprintf(stderr, "[REST] SSL_connect failed: %d\n", SSL_get_error(api->ssl, ret));
-        // don't free — keep for reuse, just clear state
-        SSL_clear(api->ssl);
+        SSL_free(api->ssl);
+        api->ssl = NULL;
         return 0;
     }
     return 1;
@@ -234,18 +231,9 @@ static inline int binance_rest_request(BinanceOrderAPI *api,
                                         const char *query,
                                         char *response_buf, int buf_size) {
     // proactive staleness check: reconnect if idle too long
-    if (api->connected && api->ssl && api->last_request_ms > 0) {
-        int64_t idle_ms = binance_current_ms() - api->last_request_ms;
-        if (idle_ms > 50000) {
-            SSL_clear(api->ssl); // reset without free
-            close(api->sockfd); api->sockfd = -1;
-            api->connected = 0;
-        }
-    }
-
-    // reconnect if needed (stale, closed by server, or first call)
-    if (!api->connected) {
-        if (api->ssl) SSL_clear(api->ssl); // reset without free
+    // reconnect if needed
+    if (!api->connected || !api->ssl) {
+        if (api->ssl) { SSL_free(api->ssl); api->ssl = NULL; }
         if (api->sockfd >= 0) { close(api->sockfd); api->sockfd = -1; }
 
         api->sockfd = binance_rest_tcp_connect(api->host, "443");
@@ -287,7 +275,7 @@ static inline int binance_rest_request(BinanceOrderAPI *api,
         fprintf(stderr, "[REST] SSL_write failed (err=%d)\n", ssl_err);
         api->connected = 0;
         // retry with fresh connection immediately (don't return -1 on first attempt)
-        if (api->ssl) SSL_clear(api->ssl); // reset without free
+        if (api->ssl) { SSL_free(api->ssl); api->ssl = NULL; }
         if (api->sockfd >= 0) { close(api->sockfd); api->sockfd = -1; }
         api->sockfd = binance_rest_tcp_connect(api->host, "443");
         if (api->sockfd < 0) return -1;
@@ -350,11 +338,11 @@ static inline int binance_rest_request(BinanceOrderAPI *api,
         response_buf[0] = '\0';
     }
 
-    // close TCP + reset SSL for next request — but reuse the SSL object (no free/new)
-    // SSL_clear resets session state without heap alloc/free
+    // close connection after each request — ssl_ctx persists, only SSL object cycles
+    // the same-tick guard in main.cpp prevents back-to-back calls that caused heap corruption
+    SSL_shutdown(api->ssl); SSL_free(api->ssl); api->ssl = NULL;
     close(api->sockfd); api->sockfd = -1;
     api->connected = 0;
-    SSL_clear(api->ssl);
 
     return status;
 }
