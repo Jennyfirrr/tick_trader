@@ -12,7 +12,9 @@ Tick-level crypto trading engine in C++17. Branchless fixed-point arithmetic, bi
 
 > **Paper trading by default.** Live trading via Binance REST API is supported (Binance US or global). Set `use_real_money=1` + `use_binance_us=1` in engine.cfg and add API keys to `secrets.cfg`. No API key needed for market data — the public websocket is always used for price feeds.
 
-> **WARNING: Live trading is experimental and has not been validated on a real exchange.** Use at your own risk. This software is provided as-is with no warranty. The authors are not responsible for any financial losses. Start with micro position sizes and never risk money you can't afford to lose.
+> **WARNING: Live trading is experimental.** Use at your own risk. This software is provided as-is with no warranty. The authors are not responsible for any financial losses. Start with micro position sizes and never risk money you can't afford to lose.
+
+> **Known issue:** Small BTC dust accumulates from quantity rounding on each trade. Periodically convert dust to USDT on the Binance dashboard (Trade → Convert Small Assets).
 
 [![Donate](https://img.shields.io/badge/Donate-PayPal-blue.svg)](https://www.paypal.com/ncp/payment/8M6XLK7M8569C)
 
