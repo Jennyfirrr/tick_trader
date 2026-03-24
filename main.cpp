@@ -167,8 +167,7 @@ int main(int argc, char *argv[]) {
 
         // startup reconciliation: query actual balances, reconcile with snapshot
         double usdt_start = 0, btc_start = 0;
-        BinanceOrderAPI_GetBalance(&order_api, "USDT", &usdt_start);
-        BinanceOrderAPI_GetBalance(&order_api, "BTC", &btc_start);
+        BinanceOrderAPI_GetBalances(&order_api, &usdt_start, &btc_start);
         fprintf(stderr, "[LIVE] exchange USDT: $%.2f  BTC: %.8f ($%.2f)\n",
                 usdt_start, btc_start, btc_start * 70000.0); // approx, no price yet
 
@@ -557,10 +556,9 @@ int main(int argc, char *argv[]) {
             if (ctrl.tick_count == 0) {
                 // LIVE: balance sync + external trade detection + orphan detection
                 if (ccfg.use_real_money) {
-                    // query both USDT and BTC balances
+                    // query USDT + BTC balances in one API call (~150ms, not two)
                     double usdt_bal = 0, btc_bal = 0;
-                    BinanceOrderAPI_GetBalance(&order_api, "USDT", &usdt_bal);
-                    BinanceOrderAPI_GetBalance(&order_api, "BTC", &btc_bal);
+                    BinanceOrderAPI_GetBalances(&order_api, &usdt_bal, &btc_bal);
                     double btc_value = btc_bal * last_stream.price_d;
 
                     // external trade detection: if BTC balance is 0 but we think

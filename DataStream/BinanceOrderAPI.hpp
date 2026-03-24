@@ -599,12 +599,36 @@ static inline int BinanceOrderAPI_GetBalance(BinanceOrderAPI *api,
     snprintf(search, sizeof(search), "\"asset\":\"%s\"", asset);
     const char *pos = strstr(body, search);
     if (!pos) {
-        fprintf(stderr, "[REST] asset %s not found in account\n", asset);
         *free_balance = 0.0;
         return 0;
     }
 
     *free_balance = binance_json_extract_double(pos, "free");
+    return 1;
+}
+
+// query both USDT and BTC balances in a single API call
+// returns 1 on success, 0 on failure
+static inline int BinanceOrderAPI_GetBalances(BinanceOrderAPI *api,
+                                               double *usdt_out,
+                                               double *btc_out) {
+    char body[8192];
+    int status = binance_retry_request(api, "GET", "/api/v3/account", "",
+                                        body, sizeof(body));
+    if (status != 200) {
+        fprintf(stderr, "[REST] account query failed (HTTP %d)\n", status);
+        return 0;
+    }
+
+    *usdt_out = 0.0;
+    *btc_out = 0.0;
+
+    const char *pos = strstr(body, "\"asset\":\"USDT\"");
+    if (pos) *usdt_out = binance_json_extract_double(pos, "free");
+
+    pos = strstr(body, "\"asset\":\"BTC\"");
+    if (pos) *btc_out = binance_json_extract_double(pos, "free");
+
     return 1;
 }
 
