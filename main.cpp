@@ -167,7 +167,11 @@ int main(int argc, char *argv[]) {
 
         // startup reconciliation: query actual balances, reconcile with snapshot
         double usdt_start = 0, btc_start = 0;
-        BinanceOrderAPI_GetBalances(&order_api, &usdt_start, &btc_start);
+        if (!BinanceOrderAPI_GetBalances(&order_api, &usdt_start, &btc_start)) {
+            fprintf(stderr, "[LIVE] FATAL: could not query exchange balances at startup\n");
+            BinanceOrderAPI_Cleanup(&order_api);
+            return 1;
+        }
         fprintf(stderr, "[LIVE] exchange USDT: $%.2f  BTC: %.8f ($%.2f)\n",
                 usdt_start, btc_start, btc_start * 70000.0); // approx, no price yet
 

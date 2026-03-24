@@ -217,7 +217,7 @@ inline void PositionExitGate(Portfolio<F> *portfolio, FPN<F> current_price, Exit
 
         // conditional write: exits are rare (~1/1000 ticks), well-predicted branch
         // saves ~8ns/position vs unconditional 24-byte write every tick
-        if (should_exit) {
+        if (should_exit && exit_buf->count < 16) {
             exit_buf->records[exit_buf->count].position_index = idx;
             exit_buf->records[exit_buf->count].exit_price     = current_price;
             exit_buf->records[exit_buf->count].tick            = tick;

@@ -168,6 +168,10 @@ inline void PortfolioController_Init(PortfolioController<F> *ctrl,
   // heap-allocate rolling_long (24KB) — keeps it out of the hot struct
   if (ctrl->rolling_long) free(ctrl->rolling_long);  // safe on reinit (24h reconnect)
   ctrl->rolling_long = (RollingStats<F, 512>*)malloc(sizeof(RollingStats<F, 512>));
+  if (!ctrl->rolling_long) {
+    fprintf(stderr, "[FATAL] malloc failed for rolling_long (24KB)\n");
+    return;
+  }
   *ctrl->rolling_long = RollingStats_Init<F, 512>();
 }
 //======================================================================================================
@@ -180,6 +184,7 @@ template <unsigned F>
 inline void PortfolioController_DrainExits(PortfolioController<F> *ctrl) {
   for (uint32_t i = 0; i < ctrl->exit_buf.count; i++) {
     ExitRecord<F> *rec = &ctrl->exit_buf.records[i];
+    if (rec->position_index >= 16) continue; // bounds guard
     Position<F> *pos = &ctrl->portfolio.positions[rec->position_index];
 
     // slippage: simulate worse fill on exit (sell at lower price than market)

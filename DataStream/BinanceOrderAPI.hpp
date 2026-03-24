@@ -340,7 +340,7 @@ static inline int binance_rest_request(BinanceOrderAPI *api,
 
     // close connection after each request — ssl_ctx persists, only SSL object cycles
     // the same-tick guard in main.cpp prevents back-to-back calls that caused heap corruption
-    SSL_shutdown(api->ssl); SSL_free(api->ssl); api->ssl = NULL;
+    if (api->ssl) { SSL_shutdown(api->ssl); SSL_free(api->ssl); api->ssl = NULL; }
     close(api->sockfd); api->sockfd = -1;
     api->connected = 0;
 
