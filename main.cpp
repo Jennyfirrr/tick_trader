@@ -544,10 +544,14 @@ int main(int argc, char *argv[]) {
             if (ctrl.tick_count == 0) {
                 // LIVE: balance sync + orphan detection + status line
                 if (ccfg.use_real_money) {
-                    // sync paper balance from Binance (source of truth)
-                    double real_bal = 0;
-                    if (BinanceOrderAPI_GetBalance(&order_api, "USDT", &real_bal))
-                        ctrl.balance = FPN_FromDouble<FP>(real_bal);
+                    // sync paper balance from Binance (only when no live positions)
+                    // with open positions, USDT balance doesn't reflect BTC equity
+                    // paper balance already tracks correctly via fill consumption
+                    if (live_position_bitmap == 0) {
+                        double real_bal = 0;
+                        if (BinanceOrderAPI_GetBalance(&order_api, "USDT", &real_bal))
+                            ctrl.balance = FPN_FromDouble<FP>(real_bal);
+                    }
 
                     // orphan detection: real positions without paper backing
                     uint16_t orphans = live_position_bitmap & ~ctrl.portfolio.active_bitmap;
