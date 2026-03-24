@@ -80,6 +80,9 @@ static inline void engine_force_close_all(PortfolioController<FP> *ctrl, TradeLo
 // [MAIN]
 //======================================================================================================
 int main(int argc, char *argv[]) {
+    fprintf(stderr, "Tick Trader — Copyright (c) 2026 Jennifer Lewis. All rights reserved.\n");
+    fprintf(stderr, "Licensed under AGPL-3.0-or-later. Commercial license: jenn.lewis5789@gmail.com\n\n");
+
     const char *cfg_path = (argc > 1) ? argv[1] : "engine.cfg";
 
     //==================================================================================================
