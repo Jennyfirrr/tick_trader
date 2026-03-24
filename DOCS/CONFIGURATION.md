@@ -76,6 +76,7 @@ When enabled, the engine places real market orders on Binance. Requires `secrets
 |---|---|---|
 | `max_drawdown_pct` | `10.00` | Halt trading when total P&L drops below this % of starting balance |
 | `max_exposure_pct` | `50.00` | Max % of starting balance deployed in open positions |
+| `max_positions` | `1` | Max simultaneous open positions (1-16). At 1, the engine sells entire BTC balance on exit (no dust). |
 
 Circuit breaker trips when `realized_pnl + unrealized_pnl < -(starting_balance * max_drawdown_pct)`. Exit gates keep running. Resets on restart.
 
@@ -197,6 +198,7 @@ slippage_pct=0.05
 # risk management
 max_drawdown_pct=10.00
 max_exposure_pct=50.00
+max_positions=1
 
 # market microstructure filters
 volume_multiplier=3.00

@@ -794,6 +794,7 @@ inline void PortfolioController_HotReload(PortfolioController<F> *ctrl,
     ctrl->config.spike_threshold         = new_cfg.spike_threshold;
     ctrl->config.spike_spacing_reduction = new_cfg.spike_spacing_reduction;
     ctrl->config.sl_cooldown_cycles      = new_cfg.sl_cooldown_cycles;
+    ctrl->config.slippage_pct            = new_cfg.slippage_pct;
     // reset adaptive filters to new values
     ctrl->mean_rev.live_offset_pct    = new_cfg.entry_offset_pct;
     ctrl->mean_rev.live_vol_mult      = new_cfg.volume_multiplier;

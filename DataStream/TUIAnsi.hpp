@@ -461,7 +461,7 @@ static inline int ANSI_Section_BuyGate(AnsiBuf *ab, const TUISnapshot *s, int y,
     // fill rejection diagnostics
     if (s->fills_rejected > 0 && s->last_reject_reason > 0 && s->last_reject_reason <= 6) {
         static const char *reasons[] = {"", "spacing", "balance", "exposure",
-                                         "breaker", "full", "duplicate"};
+                                         "breaker", "max_pos", "duplicate"};
         ab_goto(ab, y, 3);
         ab_printf(ab, A_DIM "fills " A_FG "%u" A_DIM "/" A_FG "%u"
                   A_DIM "  last reject: " A_YELLOW "%s" A_RESET,
@@ -814,7 +814,7 @@ static inline void ANSI_Section_RightPanel(AnsiBuf *ab, const TUISnapshot *s,
     ab_printf(ab, A_SAND "rejected: " A_FG "%u" A_RESET, s->fills_rejected);
     if (s->last_reject_reason > 0 && s->last_reject_reason <= 6) {
         static const char *reasons[] = {"", "spacing", "balance", "exposure",
-                                         "breaker", "full", "duplicate"};
+                                         "breaker", "max_pos", "duplicate"};
         ab_goto_right(ab, 16, rc);
         ab_printf(ab, A_SAND "last: " A_YELLOW "%s" A_RESET,
                   reasons[s->last_reject_reason]);
