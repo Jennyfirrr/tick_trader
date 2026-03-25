@@ -350,6 +350,10 @@ static inline int ANSI_Section_Header(AnsiBuf *ab, const TUISnapshot *s,
                             (s->engine_state == 2) ? "CLOSING" : "ACTIVE";
 
     ab_goto(ab, y, 2);
+    if (s->live_trading)
+        ab_printf(ab, A_BOLD "\033[31m LIVE " A_RESET);
+    else
+        ab_printf(ab, A_DIM " PAPER" A_RESET);
     ab_printf(ab, A_SAND " STATE: " A_FG "%-8s" A_DIM "  │  "
               A_SAND "UPTIME: " A_FG "%02u:%02u:%02u",
               state_str, hours, mins, secs);
