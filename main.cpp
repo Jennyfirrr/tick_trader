@@ -124,7 +124,7 @@ int main(int argc, char *argv[]) {
     PortfolioController_Init(&ctrl, ccfg);
 
     // try to load snapshot from previous session
-    const char *snapshot_path = "portfolio.snapshot";
+    const char *snapshot_path = ccfg.use_real_money ? "portfolio.live.snapshot" : "portfolio.paper.snapshot";
     if (PortfolioController_LoadSnapshot(&ctrl, snapshot_path)) {
         int pos_count = Portfolio_CountActive(&ctrl.portfolio);
         fprintf(stderr, "[ENGINE] resumed %d positions from snapshot\n", pos_count);

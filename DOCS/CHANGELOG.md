@@ -4,6 +4,8 @@
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 3.0.23 | 2026-03-25 | Separate paper/live snapshots, POS display shows config max_positions, P&L chart colors by value sign, buy gate shows volume gate + live status indicator |
+| 3.0.22 | 2026-03-25 | Half-block area charts for all graphs (price/P&L/vol), P&L color-by-sign fix |
 | 3.0.21 | 2026-03-24 | **TP/SL audit fix** — correct 4:1 asymmetry in downtrend regime adjustment, SL floor enforcement, braille area charts, buy gate direction, auto-logging, wall-time slow-path floor |
 | 3.0.20 | 2026-03-24 | Direction-aware regime detection — TRENDING_DOWN pauses buying in downtrends, prevents momentum dead cat bounce entries |
 | 3.0.19 | 2026-03-24 | **CRITICAL:** Heap corruption fix — zero-alloc SSL (SSL_clear reuse), same-tick guard, balance sync guard, external sell detection |

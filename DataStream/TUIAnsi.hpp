@@ -202,10 +202,12 @@ static inline void ab_halfblock_chart(AnsiBuf *ab, const double *data, int head,
         if (color_by_sign) {
             col_signal[c] = v; // color by value sign: >= 0 = up_color, < 0 = dn_color
         } else {
+            // trend: compare to 5 columns back (smooths out tick-to-tick noise)
             col_signal[c] = 0.0;
-            if (c > 0) {
-                int prev_idx = (start_idx + start_offset + c - 1) % max_len;
-                col_signal[c] = v - data[prev_idx]; // color by trend direction
+            int lookback = (c >= 5) ? 5 : c;
+            if (lookback > 0) {
+                int prev_idx = (start_idx + start_offset + c - lookback) % max_len;
+                col_signal[c] = v - data[prev_idx];
             }
         }
     }
@@ -398,7 +400,7 @@ static inline int ANSI_Section_TopBar(AnsiBuf *ab, const TUISnapshot *s, int y, 
                              (s->current_regime == 2) ? "VOLAT" :
                              (s->current_regime == 3) ? "TR_DN" : "RANGE";
     ab_printf(ab, A_DIM "  │ " A_BOLD "%s%s" A_RESET, regime_color, regime_str);
-    ab_printf(ab, A_DIM "  │ " A_SAND "POS " A_FG "%d/16" A_RESET, s->active_count);
+    ab_printf(ab, A_DIM "  │ " A_SAND "POS " A_FG "%d/%d" A_RESET, s->active_count, s->max_positions);
     uint32_t total_exits = s->wins + s->losses;
     if (total_exits > 0) {
         ab_printf(ab, A_DIM "  │ " A_GREEN "W:%u " A_RED "L:%u "
@@ -528,6 +530,30 @@ static inline int ANSI_Section_BuyGate(AnsiBuf *ab, const TUISnapshot *s, int y,
                   s->gate_dist, s->gate_dist_pct);
     else
         ab_printf(ab, A_DIM "   (gate disabled)");
+    ab_append(ab, A_RESET);
+    y++;
+
+    // volume gate + live status
+    ab_goto(ab, y, 3);
+    ab_printf(ab, A_SAND "vol   %s " A_FG "%.8f" A_DIM "  (mult: %.2fx)",
+              gate_op, s->buy_v, s->live_vmult);
+    // show what's blocking the buy right now
+    if (s->buy_p < 0.01) {
+        ab_printf(ab, A_DIM "   " A_BOLD A_YELLOW "GATE OFF" A_RESET);
+    } else {
+        int price_ok = s->gate_direction
+            ? (s->price >= s->buy_p)   // momentum: price >= gate
+            : (s->price <= s->buy_p);  // MR: price <= gate
+        int vol_ok = (s->volume >= s->buy_v);
+        if (price_ok && vol_ok)
+            ab_printf(ab, A_DIM "   " A_GREEN "READY" A_RESET);
+        else if (!price_ok && !vol_ok)
+            ab_printf(ab, A_DIM "   " A_YELLOW "wait: price+vol" A_RESET);
+        else if (!price_ok)
+            ab_printf(ab, A_DIM "   " A_YELLOW "wait: price" A_RESET);
+        else
+            ab_printf(ab, A_DIM "   " A_YELLOW "wait: vol" A_RESET);
+    }
     ab_append(ab, A_RESET);
     y++;
 
@@ -688,7 +714,7 @@ static inline int ANSI_Section_Stats(AnsiBuf *ab, const TUISnapshot *s, int y, i
 static inline int ANSI_Section_Positions(AnsiBuf *ab, const TUISnapshot *s,
                                           int y, int w, int max_rows) {
     ab_goto(ab, y, 2);
-    ab_printf(ab, A_BOLD A_PEACH " POSITIONS " A_DIM "(%d/16)" A_RESET, s->active_count);
+    ab_printf(ab, A_BOLD A_PEACH " POSITIONS " A_DIM "(%d/%d)" A_RESET, s->active_count, s->max_positions);
     y++;
 
     // compact mode: ≥5 positions → single line with detail on the right
@@ -981,7 +1007,7 @@ static inline void ANSI_Layout_Charts(AnsiBuf *ab, const TUISnapshot *s, int h, 
                          (s->current_regime == 2) ? "VOLAT" :
                          (s->current_regime == 3) ? "TR_DN" : "RANGE";
     ab_printf(ab, A_DIM " │ " "%s%s" A_RESET, regime_color, regime);
-    ab_printf(ab, A_DIM " │ " A_SAND "POS %d/16" A_RESET, s->active_count);
+    ab_printf(ab, A_DIM " │ " A_SAND "POS %d/%d" A_RESET, s->active_count, s->max_positions);
     y++;
     ab_divider(ab, y++, w, false);
 

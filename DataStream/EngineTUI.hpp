@@ -642,6 +642,7 @@ struct TUISnapshot {
     double long_rel_slope, long_min_ls;
     // portfolio
     int active_count;
+    int max_positions;
     double equity, balance, starting;
     double total_value, total_qty;
     double exposure_pct, max_exp;
@@ -777,6 +778,7 @@ static inline void TUI_CopySnapshot(TUISnapshot *snap,
     double price_d = snap->price;
     double fee_r = FPN_ToDouble(ctrl->config.fee_rate);
     snap->active_count = Portfolio_CountActive(&ctrl->portfolio);
+    snap->max_positions = (int)ctrl->config.max_positions;
     snap->total_value = 0.0;
     snap->total_qty   = 0.0;
     uint16_t active = ctrl->portfolio.active_bitmap;
