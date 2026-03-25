@@ -156,6 +156,82 @@ static inline void ab_r2_bar(AnsiBuf *ab, double r2, int width) {
     ab_append(ab, A_RESET);
 }
 
+// half-block area chart — 2× vertical resolution vs sparkline, solid and readable
+// each terminal cell has upper half (▀) and lower half (▄) = 2 sub-rows per row
+// height_chars rows = height_chars*2 vertical levels (e.g. 3 rows = 6 levels)
+// area fill from bottom to data point, green/red trend coloring per column
+// start_y/start_x: absolute terminal position (ANSI TUI uses ab_goto, not newlines)
+static inline void ab_halfblock_chart(AnsiBuf *ab, const double *data, int head,
+                                       int count, int max_len, int width,
+                                       int height_chars, int start_y, int start_x,
+                                       const char *up_color, const char *dn_color,
+                                       const char *flat_color) {
+    if (count < 2 || width < 4 || height_chars < 1) return;
+
+    int vis = (count < width) ? count : width;
+    int start_offset = count - vis;
+    int start_idx = (head - count + max_len) % max_len;
+
+    // find min/max
+    double vmin = 1e18, vmax = -1e18;
+    for (int i = 0; i < vis; i++) {
+        int idx = (start_idx + start_offset + i) % max_len;
+        if (data[idx] < vmin) vmin = data[idx];
+        if (data[idx] > vmax) vmax = data[idx];
+    }
+    double range = vmax - vmin;
+    int sub_rows = height_chars * 2; // 2 sub-rows per terminal row
+
+    // compute fill height for each column (0 to sub_rows-1, bottom = 0)
+    int col_level[120];
+    double col_trend[120];
+    if (vis > 120) vis = 120;
+
+    for (int c = 0; c < vis; c++) {
+        int idx = (start_idx + start_offset + c) % max_len;
+        double v = data[idx];
+        if (range < 1e-10)
+            col_level[c] = sub_rows / 2;
+        else {
+            col_level[c] = (int)((v - vmin) / range * (sub_rows - 1));
+            if (col_level[c] < 0) col_level[c] = 0;
+            if (col_level[c] >= sub_rows) col_level[c] = sub_rows - 1;
+        }
+        col_trend[c] = 0.0;
+        if (c > 0) {
+            int prev_idx = (start_idx + start_offset + c - 1) % max_len;
+            col_trend[c] = v - data[prev_idx];
+        }
+    }
+
+    // render row by row, top to bottom
+    // terminal row r corresponds to sub-rows: upper = (height_chars-1-r)*2+1, lower = (height_chars-1-r)*2
+    for (int r = 0; r < height_chars; r++) {
+        ab_goto(ab, start_y + r, start_x);
+        int upper_sub = (height_chars - 1 - r) * 2 + 1; // which sub-row is the upper half
+        int lower_sub = (height_chars - 1 - r) * 2;     // which sub-row is the lower half
+
+        for (int c = 0; c < vis; c++) {
+            const char *color = flat_color;
+            if (col_trend[c] > 1e-10) color = up_color;
+            else if (col_trend[c] < -1e-10) color = dn_color;
+            ab_append(ab, color);
+
+            int fill = col_level[c]; // filled up to this sub-row (inclusive)
+            int has_upper = (fill >= upper_sub);
+            int has_lower = (fill >= lower_sub);
+
+            if (has_upper && has_lower)
+                ab_append(ab, "\xe2\x96\x88"); // █ full block
+            else if (has_lower)
+                ab_append(ab, "\xe2\x96\x84"); // ▄ lower half
+            else
+                ab_append(ab, " ");
+        }
+        ab_append(ab, A_RESET);
+    }
+}
+
 // sparkline chart from ring buffer data (▁▂▃▄▅▆▇█)
 static inline void ab_sparkline(AnsiBuf *ab, const double *data, int head,
                                  int count, int max_len, int width,
@@ -434,12 +510,13 @@ static inline int ANSI_Section_BuyGate(AnsiBuf *ab, const TUISnapshot *s, int y,
     y++;
 
     ab_goto(ab, y, 3);
+    const char *gate_op = s->gate_direction ? ">=" : "<=";
     if (s->stddev_mode)
-        ab_printf(ab, A_SAND "price <= " A_FG "%.2f" A_DIM "  (stddev: %.2fx)",
-                  s->buy_p, s->live_sm);
+        ab_printf(ab, A_SAND "price %s " A_FG "%.2f" A_DIM "  (stddev: %.2fx)",
+                  gate_op, s->buy_p, s->live_sm);
     else
-        ab_printf(ab, A_SAND "price <= " A_FG "%.2f" A_DIM "  (offset: %.3f%%)",
-                  s->buy_p, s->live_offset);
+        ab_printf(ab, A_SAND "price %s " A_FG "%.2f" A_DIM "  (offset: %.3f%%)",
+                  gate_op, s->buy_p, s->live_offset);
     if (s->buy_p > 0.01)
         ab_printf(ab, A_DIM "   " A_SAND "dist: " A_FG "$%.2f" A_DIM " (%.3f%%)",
                   s->gate_dist, s->gate_dist_pct);
@@ -680,20 +757,20 @@ static inline int ANSI_Section_Positions(AnsiBuf *ab, const TUISnapshot *s,
 // [SECTION: SPARKLINE CHARTS]
 //======================================================================================================
 static inline int ANSI_Section_Charts(AnsiBuf *ab, const TUISnapshot *s, int y, int w) {
-    if (s->graph_count < 4) return y;
+    if (s->graph_count < 2) return y;
 
     int chart_w = w - 10;
     if (chart_w > 120) chart_w = 120;
     if (chart_w < 20) chart_w = 20;
 
-    // price sparkline (2 rows: label + chart on separate lines for readability)
+    // price half-block area chart (3 rows tall = 6 vertical levels, green/red trend)
     ab_goto(ab, y, 3);
     ab_printf(ab, A_SAND "price" A_RESET);
     y++;
-    ab_goto(ab, y, 3);
-    ab_sparkline(ab, s->price_history, s->graph_head, s->graph_count,
-                 TUISnapshot::GRAPH_LEN, chart_w, A_WHEAT);
-    y++;
+    ab_halfblock_chart(ab, s->price_history, s->graph_head, s->graph_count,
+                       TUISnapshot::GRAPH_LEN, chart_w, 3, y, 3,
+                       A_GREEN, A_RED, A_WHEAT);
+    y += 3;
 
     // P&L sparkline (per-bar green/red coloring)
     ab_goto(ab, y, 3);

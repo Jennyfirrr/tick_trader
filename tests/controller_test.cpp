@@ -1779,6 +1779,173 @@ int main() {
         ctrl.rolling_long = NULL;
     }
 
+    //==================================================================================================
+    // [TEST: REGIME ADJUSTMENT — TRENDING_DOWN TP/SL USES CORRECT CONFIG + SL FLOOR]
+    //==================================================================================================
+    {
+        printf("\n--- Regime Adjust: TRENDING_DOWN TP/SL ---\n");
+        ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+        cfg.momentum_tp_mult = FPN_FromDouble<FP>(3.0);
+        cfg.momentum_sl_mult = FPN_FromDouble<FP>(1.0);
+        cfg.take_profit_pct  = FPN_FromDouble<FP>(0.04); // 4% → ×100 = 4.0σ (MR style)
+
+        PortfolioController<FP> ctrl = {};
+        PortfolioController_Init(&ctrl, cfg);
+
+        // set up rolling stats with known stddev
+        ctrl.rolling.price_stddev = FPN_FromDouble<FP>(100.0); // $100 stddev
+        ctrl.rolling.price_avg    = FPN_FromDouble<FP>(70000.0);
+
+        // add momentum position: entry $70000, TP $70500, SL $69500
+        FPN<FP> entry = FPN_FromDouble<FP>(70000.0);
+        FPN<FP> qty   = FPN_FromDouble<FP>(0.01);
+        Portfolio_AddPosition(&ctrl.portfolio, qty, entry);
+        int pidx = __builtin_ctz(ctrl.portfolio.active_bitmap);
+        ctrl.portfolio.positions[pidx].take_profit_price = FPN_FromDouble<FP>(70500.0);
+        ctrl.portfolio.positions[pidx].stop_loss_price   = FPN_FromDouble<FP>(69500.0);
+        ctrl.entry_strategy[pidx] = STRATEGY_MOMENTUM;
+
+        // simulate TRENDING → TRENDING_DOWN
+        Regime_AdjustPositions(&ctrl.portfolio, &ctrl.rolling,
+                                REGIME_TRENDING, REGIME_TRENDING_DOWN,
+                                ctrl.entry_strategy, &ctrl.config);
+
+        double tp_after = FPN_ToDouble(ctrl.portfolio.positions[pidx].take_profit_price);
+        double sl_after = FPN_ToDouble(ctrl.portfolio.positions[pidx].stop_loss_price);
+        double entry_d  = 70000.0;
+
+        // TP should use momentum_tp_mult (3.0 × $100 = $300 offset → $70300)
+        // NOT take_profit_pct×100 (4.0 × $100 = $400 → $70400)
+        double expected_tp = entry_d + 3.0 * 100.0; // 70300
+        check("downtrend: TP uses momentum_tp_mult (3σ not 4σ)",
+              tp_after < 70350.0 && tp_after > 70250.0);
+
+        // SL floor: SL distance >= 0.5 × TP distance
+        double tp_dist = tp_after - entry_d;
+        double sl_dist = entry_d - sl_after;
+        check("downtrend: SL floor holds (2:1 min reward/risk)",
+              sl_dist >= tp_dist * 0.5 - 0.01);
+
+        // TP should be tightened (Min), not widened
+        check("downtrend: TP tightened from original 70500",
+              tp_after <= 70500.01);
+
+        printf("  TP: $%.2f (expected ~$%.2f), SL: $%.2f, ratio: %.1f:1\n",
+               tp_after, expected_tp, sl_after, tp_dist / sl_dist);
+        free(ctrl.rolling_long);
+        ctrl.rolling_long = NULL;
+    }
+
+    //==================================================================================================
+    // [TEST: REGIME ADJUSTMENT — STDDEV=0 GUARD]
+    //==================================================================================================
+    {
+        printf("\n--- Regime Adjust: stddev=0 guard ---\n");
+        ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+        PortfolioController<FP> ctrl = {};
+        PortfolioController_Init(&ctrl, cfg);
+
+        // set stddev to ZERO (flat market)
+        ctrl.rolling.price_stddev = FPN_Zero<FP>();
+        ctrl.rolling.price_avg    = FPN_FromDouble<FP>(70000.0);
+
+        // add position with known TP/SL
+        FPN<FP> entry = FPN_FromDouble<FP>(70000.0);
+        FPN<FP> qty   = FPN_FromDouble<FP>(0.01);
+        Portfolio_AddPosition(&ctrl.portfolio, qty, entry);
+        int pidx = __builtin_ctz(ctrl.portfolio.active_bitmap);
+        ctrl.portfolio.positions[pidx].take_profit_price = FPN_FromDouble<FP>(70500.0);
+        ctrl.portfolio.positions[pidx].stop_loss_price   = FPN_FromDouble<FP>(69500.0);
+        ctrl.entry_strategy[pidx] = STRATEGY_MOMENTUM;
+
+        double tp_before = FPN_ToDouble(ctrl.portfolio.positions[pidx].take_profit_price);
+        double sl_before = FPN_ToDouble(ctrl.portfolio.positions[pidx].stop_loss_price);
+
+        // attempt regime adjustment — should early-return, positions untouched
+        Regime_AdjustPositions(&ctrl.portfolio, &ctrl.rolling,
+                                REGIME_TRENDING, REGIME_TRENDING_DOWN,
+                                ctrl.entry_strategy, &ctrl.config);
+
+        double tp_after = FPN_ToDouble(ctrl.portfolio.positions[pidx].take_profit_price);
+        double sl_after = FPN_ToDouble(ctrl.portfolio.positions[pidx].stop_loss_price);
+
+        check("stddev=0: TP unchanged", fabs(tp_after - tp_before) < 0.01);
+        check("stddev=0: SL unchanged", fabs(sl_after - sl_before) < 0.01);
+        free(ctrl.rolling_long);
+        ctrl.rolling_long = NULL;
+    }
+
+    //==================================================================================================
+    // [TEST: REGIME ADJUSTMENT — SL FLOOR ON ALL PATHS]
+    //==================================================================================================
+    {
+        printf("\n--- Regime Adjust: SL floor all paths ---\n");
+        ControllerConfig<FP> cfg = ControllerConfig_Default<FP>();
+        cfg.momentum_tp_mult = FPN_FromDouble<FP>(3.0);
+        cfg.momentum_sl_mult = FPN_FromDouble<FP>(1.0);
+        cfg.take_profit_pct  = FPN_FromDouble<FP>(0.04);
+        cfg.stop_loss_pct    = FPN_FromDouble<FP>(0.04);
+
+        PortfolioController<FP> ctrl = {};
+        PortfolioController_Init(&ctrl, cfg);
+        ctrl.rolling.price_stddev = FPN_FromDouble<FP>(100.0);
+        ctrl.rolling.price_avg    = FPN_FromDouble<FP>(70000.0);
+
+        // test each regime transition path
+        int transitions[][2] = {
+            {REGIME_RANGING,       REGIME_TRENDING},
+            {REGIME_TRENDING,      REGIME_RANGING},
+            {REGIME_TRENDING,      REGIME_TRENDING_DOWN},
+            {REGIME_TRENDING_DOWN, REGIME_RANGING},
+        };
+        int strategies[] = {
+            STRATEGY_MEAN_REVERSION,  // old_strategy for RANGING
+            STRATEGY_MOMENTUM,        // old_strategy for TRENDING
+            STRATEGY_MOMENTUM,        // old_strategy for TRENDING
+            STRATEGY_MEAN_REVERSION,  // old_strategy for TRENDING_DOWN
+        };
+        const char *names[] = {
+            "RANGING->TRENDING",
+            "TRENDING->RANGING",
+            "TRENDING->TRENDING_DOWN",
+            "TRENDING_DOWN->RANGING",
+        };
+
+        for (int t = 0; t < 4; t++) {
+            // reset position each time
+            ctrl.portfolio.active_bitmap = 0;
+            FPN<FP> entry = FPN_FromDouble<FP>(70000.0);
+            FPN<FP> qty   = FPN_FromDouble<FP>(0.01);
+            Portfolio_AddPosition(&ctrl.portfolio, qty, entry);
+            int pidx = __builtin_ctz(ctrl.portfolio.active_bitmap);
+            ctrl.portfolio.positions[pidx].take_profit_price = FPN_FromDouble<FP>(70500.0);
+            ctrl.portfolio.positions[pidx].stop_loss_price   = FPN_FromDouble<FP>(69500.0);
+            ctrl.entry_strategy[pidx] = strategies[t];
+
+            Regime_AdjustPositions(&ctrl.portfolio, &ctrl.rolling,
+                                    transitions[t][0], transitions[t][1],
+                                    ctrl.entry_strategy, &ctrl.config);
+
+            double tp_a = FPN_ToDouble(ctrl.portfolio.positions[pidx].take_profit_price);
+            double sl_a = FPN_ToDouble(ctrl.portfolio.positions[pidx].stop_loss_price);
+            double entry_d = 70000.0;
+            double tp_dist = tp_a - entry_d;
+            double sl_dist = entry_d - sl_a;
+
+            char msg[128];
+            snprintf(msg, sizeof(msg), "SL floor %s: sl_dist >= 0.5 * tp_dist", names[t]);
+            check(msg, sl_dist >= tp_dist * 0.5 - 0.01);
+
+            snprintf(msg, sizeof(msg), "SL floor %s: TP > entry", names[t]);
+            check(msg, tp_a > entry_d - 0.01);
+
+            snprintf(msg, sizeof(msg), "SL floor %s: SL < entry", names[t]);
+            check(msg, sl_a < entry_d + 0.01);
+        }
+        free(ctrl.rolling_long);
+        ctrl.rolling_long = NULL;
+    }
+
     printf("\n======================================\n");
     printf("  RESULTS: %d passed, %d failed\n", tests_passed, tests_failed);
     printf("======================================\n");

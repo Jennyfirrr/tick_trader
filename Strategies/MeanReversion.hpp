@@ -349,7 +349,9 @@ inline BuySideGateConditions<F> MeanReversion_BuySignal(MeanReversionState<F> *s
     {
         int long_enabled = !FPN_IsZero(cfg->min_long_slope);
         // normalize slope by price: relative_slope = slope / price_avg (dimensionless fraction)
-        FPN<F> relative_long_slope = FPN_DivNoAssert(rolling_long->price_slope, rolling_long->price_avg);
+        FPN<F> relative_long_slope = FPN_IsZero(rolling_long->price_avg)
+            ? FPN_Zero<F>()
+            : FPN_DivNoAssert(rolling_long->price_slope, rolling_long->price_avg);
         int long_pass = FPN_GreaterThanOrEqual(relative_long_slope, cfg->min_long_slope);
         int long_ok = long_pass | !long_enabled;
 

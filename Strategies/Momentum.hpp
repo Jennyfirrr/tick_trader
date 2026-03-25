@@ -230,7 +230,9 @@ inline BuySideGateConditions<F> Momentum_BuySignal(MomentumState<F> *state,
     // for momentum this is especially important — don't buy breakouts in a downtrend
     {
         int long_enabled = !FPN_IsZero(cfg->min_long_slope);
-        FPN<F> relative_long_slope = FPN_DivNoAssert(rolling_long->price_slope, rolling_long->price_avg);
+        FPN<F> relative_long_slope = FPN_IsZero(rolling_long->price_avg)
+            ? FPN_Zero<F>()
+            : FPN_DivNoAssert(rolling_long->price_slope, rolling_long->price_avg);
         int long_pass = FPN_GreaterThanOrEqual(relative_long_slope, cfg->min_long_slope);
 
         int long_blocked = long_enabled & !long_pass;

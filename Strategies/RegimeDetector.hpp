@@ -298,7 +298,12 @@ inline void Regime_AdjustPositions(Portfolio<F> *portfolio,
                                      const ControllerConfig<F> *cfg) {
     int old_strategy = Regime_ToStrategy(old_regime);
     FPN<F> stddev = rolling->price_stddev;
+
+    // guard: flat market (stddev=0) would produce zero offsets → TP=SL=entry → immediate exit
+    if (FPN_IsZero(stddev)) return;
+
     FPN<F> hundred = FPN_FromDouble<F>(100.0);
+    FPN<F> half = FPN_FromDouble<F>(0.5);
 
     uint16_t active = portfolio->active_bitmap;
     while (active) {
@@ -316,6 +321,12 @@ inline void Regime_AdjustPositions(Portfolio<F> *portfolio,
                 FPN<F> tight_sl_offset = FPN_Mul(stddev, cfg->momentum_sl_mult);
                 FPN<F> tight_sl = FPN_SubSat(pos->entry_price, tight_sl_offset);
                 pos->stop_loss_price = FPN_Max(pos->stop_loss_price, tight_sl);
+
+                // SL floor: ensure SL distance >= 0.5 × TP distance (2:1 min reward/risk)
+                FPN<F> tp_dist = FPN_Sub(pos->take_profit_price, pos->entry_price);
+                FPN<F> min_sl_dist = FPN_Mul(tp_dist, half);
+                FPN<F> sl_floor = FPN_SubSat(pos->entry_price, min_sl_dist);
+                pos->stop_loss_price = FPN_Min(pos->stop_loss_price, sl_floor);
             }
             else if ((old_regime == REGIME_TRENDING || old_regime == REGIME_TRENDING_DOWN)
                      && new_regime == REGIME_RANGING) {
@@ -326,16 +337,29 @@ inline void Regime_AdjustPositions(Portfolio<F> *portfolio,
                 FPN<F> wide_sl_offset = FPN_Mul(stddev, FPN_Mul(cfg->stop_loss_pct, hundred));
                 FPN<F> wide_sl = FPN_SubSat(pos->entry_price, wide_sl_offset);
                 pos->stop_loss_price = FPN_Min(pos->stop_loss_price, wide_sl);
+
+                // SL floor: ensure SL distance >= 0.5 × TP distance (2:1 min reward/risk)
+                FPN<F> tp_dist = FPN_Sub(pos->take_profit_price, pos->entry_price);
+                FPN<F> min_sl_dist = FPN_Mul(tp_dist, half);
+                FPN<F> sl_floor = FPN_SubSat(pos->entry_price, min_sl_dist);
+                pos->stop_loss_price = FPN_Min(pos->stop_loss_price, sl_floor);
             }
             // entering downtrend: tighten TP (take profits), tighten SL (cut losses)
+            // uses momentum_tp_mult (not take_profit_pct×100) — these are momentum positions
             else if (new_regime == REGIME_TRENDING_DOWN) {
-                FPN<F> tight_tp_offset = FPN_Mul(stddev, FPN_Mul(cfg->take_profit_pct, hundred));
+                FPN<F> tight_tp_offset = FPN_Mul(stddev, cfg->momentum_tp_mult);
                 FPN<F> tight_tp = FPN_AddSat(pos->entry_price, tight_tp_offset);
                 pos->take_profit_price = FPN_Min(pos->take_profit_price, tight_tp);
 
                 FPN<F> tight_sl_offset = FPN_Mul(stddev, cfg->momentum_sl_mult);
                 FPN<F> tight_sl = FPN_SubSat(pos->entry_price, tight_sl_offset);
                 pos->stop_loss_price = FPN_Max(pos->stop_loss_price, tight_sl);
+
+                // SL floor: ensure SL distance >= 0.5 × TP distance (2:1 min reward/risk)
+                FPN<F> tp_dist = FPN_Sub(pos->take_profit_price, pos->entry_price);
+                FPN<F> min_sl_dist = FPN_Mul(tp_dist, half);
+                FPN<F> sl_floor = FPN_SubSat(pos->entry_price, min_sl_dist);
+                pos->stop_loss_price = FPN_Min(pos->stop_loss_price, sl_floor);
             }
         }
 

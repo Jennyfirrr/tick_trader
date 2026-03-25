@@ -91,6 +91,22 @@ int main(int argc, char *argv[]) {
     BinanceConfig bcfg       = BinanceConfig_Load(cfg_path);
     ControllerConfig<FP> ccfg = ControllerConfig_Load<FP>(cfg_path);
 
+    // auto-redirect stderr to log file — always when log_file is set
+    // rotates on startup: engine.log → engine.log.1 (keeps one previous session)
+    // in TUI mode: diagnostics go to file instead of being eaten by screen redraws
+    // in headless mode: no manual 2>engine.log needed
+    if (bcfg.log_file[0]) {
+        char prev[272];
+        snprintf(prev, sizeof(prev), "%s.1", bcfg.log_file);
+        rename(bcfg.log_file, prev); // silently fails if no existing log
+        FILE *lf = freopen(bcfg.log_file, "w", stderr);
+        if (!lf) {
+            perror("freopen log_file");
+        } else {
+            setvbuf(stderr, NULL, _IOLBF, 0); // line-buffered so tail -f works
+        }
+    }
+
     //==================================================================================================
     // init stream
     //==================================================================================================
@@ -242,7 +258,7 @@ int main(int argc, char *argv[]) {
 #ifdef LATENCY_BENCH
     TUI_Init(&tui, 0, 10);  // bench mode: TUI disabled for clean latency measurement
 #else
-    TUI_Init(&tui, 1, 10);  // TODO: read tui_enabled and render_interval from config
+    TUI_Init(&tui, bcfg.tui_enabled, 10);
 #endif
 #endif // MULTICORE_TUI
 

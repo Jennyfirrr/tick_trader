@@ -4,6 +4,7 @@
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 3.0.21 | 2026-03-24 | **TP/SL audit fix** — correct 4:1 asymmetry in downtrend regime adjustment, SL floor enforcement, braille area charts, buy gate direction, auto-logging, wall-time slow-path floor |
 | 3.0.20 | 2026-03-24 | Direction-aware regime detection — TRENDING_DOWN pauses buying in downtrends, prevents momentum dead cat bounce entries |
 | 3.0.19 | 2026-03-24 | **CRITICAL:** Heap corruption fix — zero-alloc SSL (SSL_clear reuse), same-tick guard, balance sync guard, external sell detection |
 | 3.0.18 | 2026-03-24 | Single-slot position management, sell-all-BTC, paper/live sync, startup BTC recovery |
@@ -47,6 +48,7 @@
 
 ## Detailed Changelogs
 
+- [2026-03-24 (d)](changelogs/2026-03-24-d.md) — v3.0.21 (TP/SL audit fix, braille charts, auto-logging, wall-time slow-path floor)
 - [2026-03-24](changelogs/2026-03-24.md) — v3.0.18 (single-slot position management, paper/live sync, BTC dust elimination)
 - [2026-03-22](changelogs/2026-03-22.md) — v3.0.7 through v3.0.12 (warmup fix, fill diagnostics, snapshot warmup, public release)
 - [2026-03-21](changelogs/2026-03-21.md) — v0.7.1 through v3.0.6 (regime switching, latency profiling, ANSI TUI, volume spikes, SL cooldown)

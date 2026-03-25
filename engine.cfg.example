@@ -139,6 +139,7 @@ momentum_sl_mult=1.00           # SL distance in stddevs (tighter than MR, cut l
 #==============================================================================
 tui_enabled=1                   # 0 = headless mode (for VPS/tmux), 1 = terminal dashboard
 tui_render_interval=10          # render every N ticks (higher = less terminal thrash)
+log_file=engine.log             # stderr redirect when tui_enabled=0 (append mode, tail -f friendly)
 
 #==============================================================================
 # LIVE TRADING (experimental, untested)

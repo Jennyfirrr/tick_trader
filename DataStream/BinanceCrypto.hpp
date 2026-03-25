@@ -62,6 +62,8 @@ struct BinanceConfig {
     uint32_t poll_timeout_ms;   // poll() timeout in ms (e.g. 100)
     uint32_t reconnect_delay;   // seconds to wait before reconnect attempt
     uint32_t wind_down_minutes; // stop buys X minutes before reconnect
+    int tui_enabled;            // 0 = headless mode, 1 = terminal dashboard
+    char log_file[256];         // stderr redirect when headless (empty = no redirect)
 };
 
 //======================================================================================================
@@ -740,6 +742,8 @@ static inline BinanceConfig BinanceConfig_Load(const char *filepath) {
     config.poll_timeout_ms   = 100;
     config.reconnect_delay   = 5;
     config.wind_down_minutes = 5;
+    config.tui_enabled       = 1;
+    strcpy(config.log_file, "engine.log");
 
     FILE *f = fopen(filepath, "r");
     if (!f) {
@@ -781,6 +785,10 @@ static inline BinanceConfig BinanceConfig_Load(const char *filepath) {
             config.reconnect_delay = (uint32_t)atol(val);
         } else if (strcmp(key, "wind_down_minutes") == 0) {
             config.wind_down_minutes = (uint32_t)atol(val);
+        } else if (strcmp(key, "tui_enabled") == 0) {
+            config.tui_enabled = atoi(val);
+        } else if (strcmp(key, "log_file") == 0) {
+            strncpy(config.log_file, val, sizeof(config.log_file) - 1);
         }
     }
 

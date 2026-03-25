@@ -168,7 +168,7 @@ static inline Element Widget_BuyGate(const TUISnapshot *s) {
 
     return vbox({
         text("BUY GATE") | bold | color(foxml::peach),
-        hbox({text("  price <= ") | color(foxml::sand), text(fmt("%.2f", s->buy_p)) | color(foxml::fg),
+        hbox({text(s->gate_direction ? "  price >= " : "  price <= ") | color(foxml::sand), text(fmt("%.2f", s->buy_p)) | color(foxml::fg),
               text("  (") | color(foxml::dim), text(mode) | color(foxml::fg), text(")") | color(foxml::dim)}),
         hbox({text("  distance: ") | color(foxml::sand), text(fmt("$%.2f", s->gate_dist)) | color(foxml::fg),
               text(fmt("  (%.3f%%)", s->gate_dist_pct)) | color(foxml::dim)}),

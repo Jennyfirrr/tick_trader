@@ -40,6 +40,7 @@ template <unsigned F> struct PortfolioController {
   Portfolio<F> portfolio;
   uint64_t prev_bitmap;   // fill detection: pool->bitmap & ~prev_bitmap
   uint64_t tick_count;    // slow-path gate: tick_count < config.poll_interval
+  uint64_t last_slow_time; // wall-time floor: run slow path if this many seconds elapsed
   uint64_t total_ticks;
   BuySideGateConditions<F> buy_conds;
   ExitBuffer<F> exit_buf;
@@ -156,6 +157,7 @@ inline void PortfolioController_Init(PortfolioController<F> *ctrl,
 
   ctrl->prev_bitmap = 0;
   ctrl->tick_count = 0;
+  ctrl->last_slow_time = (uint64_t)time(NULL);
   ctrl->total_ticks = 0;
 
   ctrl->state = CONTROLLER_WARMUP;
@@ -274,7 +276,11 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
     // each push is one slow-path sample — spacing them out ensures each sample
     // represents a different point in time (real price diversity, not 128 copies
     // of the same second). tests use poll_interval=1 so every tick IS a sample.
-    if (ctrl->warmup_count % ctrl->config.poll_interval == 0) {
+    // time floor: also push if 3+ seconds have passed (low-volume periods)
+    uint64_t warmup_now = (uint64_t)time(NULL);
+    int warmup_time_floor = (warmup_now - ctrl->last_slow_time >= 3);
+    if ((ctrl->warmup_count % ctrl->config.poll_interval == 0) || warmup_time_floor) {
+      ctrl->last_slow_time = warmup_now;
       // session high/low tracking (display-only, slow-path granularity is sufficient)
       double pd = FPN_ToDouble(current_price);
       if (ctrl->session_high == 0.0) { ctrl->session_high = pd; ctrl->session_low = pd; }
@@ -392,6 +398,7 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
     // qty = (balance * risk_pct) / price
     // this replaces the stream quantity - we decide how much to buy, not the
     // stream
+    if (FPN_IsZero(fill_price)) return; // guard: no fill at price zero
     FPN<F> risk_amount = FPN_Mul(ctrl->balance, ctrl->config.risk_pct);
     FPN<F> sized_qty = FPN_DivNoAssert(risk_amount, fill_price);
 
@@ -558,11 +565,16 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
   ctrl->prev_bitmap = pool->bitmap;
 
   //==================================================================================================
-  // ACTIVE PHASE - EVERY N TICKS: slow-path operations
+  // ACTIVE PHASE - EVERY N TICKS OR 3 SECONDS: slow-path operations
+  // tick gate handles normal/high volume; time floor handles low-volume periods
+  // where 100 ticks could take 60+ seconds (crypto off-hours, weekends)
   //==================================================================================================
-  if (ctrl->tick_count < ctrl->config.poll_interval)
+  uint64_t now = (uint64_t)time(NULL);
+  int time_floor_hit = (now - ctrl->last_slow_time >= 3);
+  if (ctrl->tick_count < ctrl->config.poll_interval && !time_floor_hit)
     return;
   ctrl->tick_count = 0;
+  ctrl->last_slow_time = now;
 
   // drain exit buffer — books P&L, updates balance, logs trades
   PortfolioController_DrainExits(ctrl);
@@ -580,6 +592,7 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
 
       if (held >= ctrl->config.max_hold_ticks) {
         // check if gain is below threshold — don't time-exit winners
+        if (FPN_IsZero(pos->entry_price)) { active_check &= active_check - 1; continue; }
         FPN<F> gain = FPN_Sub(current_price, pos->entry_price);
         FPN<F> gain_pct = FPN_DivNoAssert(gain, pos->entry_price);
         int low_gain = FPN_LessThan(gain_pct, ctrl->config.min_hold_gain_pct);

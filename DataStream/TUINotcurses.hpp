@@ -205,7 +205,7 @@ static inline int NC_Section_BuyGate(struct ncplane *n, const TUISnapshot *s, in
     nc_foxml::bold_off(n);
 
     nc_foxml::sand(n);
-    nc_printf(n, y, 2, "price <= ");
+    nc_printf(n, y, 2, s->gate_direction ? "price >= " : "price <= ");
     nc_foxml::fg(n);
     nc_printf(n, y, 11, "%.2f", s->buy_p);
     nc_foxml::sand(n);

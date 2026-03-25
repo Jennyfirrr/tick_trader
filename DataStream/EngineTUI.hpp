@@ -329,12 +329,13 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
     double live_vmult  = FPN_ToDouble(ctrl->mean_rev.live_vol_mult);
     int stddev_mode = !FPN_IsZero(ctrl->config.offset_stddev_mult);
 
+    const char *gate_op = ctrl->buy_conds.gate_direction ? ">=" : "<=";
     printf(C_BOLD C_PEACH "  BUY GATE " C_DIM "(adaptive):" C_RESET "\n"); row++;
     if (stddev_mode) {
         double live_sm = FPN_ToDouble(ctrl->mean_rev.live_stddev_mult);
-        printf(C_SAND "    price <= " C_FG "%-12.2f" C_DIM "  (stddev: %.2fx)" C_RESET "\n", buy_p, live_sm); row++;
+        printf(C_SAND "    price %s " C_FG "%-12.2f" C_DIM "  (stddev: %.2fx)" C_RESET "\n", gate_op, buy_p, live_sm); row++;
     } else {
-        printf(C_SAND "    price <= " C_FG "%-12.2f" C_DIM "  (offset: %.3f%%)" C_RESET "\n", buy_p, live_offset); row++;
+        printf(C_SAND "    price %s " C_FG "%-12.2f" C_DIM "  (offset: %.3f%%)" C_RESET "\n", gate_op, buy_p, live_offset); row++;
     }
     printf(C_SAND "    vol   >= " C_FG "%-12.8f" C_DIM "  (mult: %.2fx)" C_RESET "\n", buy_v, live_vmult); row++;
     double spacing_pct = (roll_price_avg != 0.0) ? (spacing / roll_price_avg) * 100.0 : 0.0;
@@ -635,6 +636,7 @@ struct TUISnapshot {
     double gate_dist, gate_dist_pct;
     double spacing, spacing_pct;
     int stddev_mode;
+    int gate_direction; // 0 = buy below (MR), 1 = buy above (momentum)
     double live_offset, live_vmult, live_sm;
     int long_gate_enabled, long_gate_ok;
     double long_rel_slope, long_min_ls;
@@ -761,6 +763,7 @@ static inline void TUI_CopySnapshot(TUISnapshot *snap,
     snap->spacing     = spacing;
     snap->spacing_pct = (avg != 0.0) ? (spacing / avg) * 100.0 : 0.0;
     snap->stddev_mode = !FPN_IsZero(ctrl->config.offset_stddev_mult);
+    snap->gate_direction = ctrl->buy_conds.gate_direction;
     snap->live_offset = FPN_ToDouble(ctrl->mean_rev.live_offset_pct) * 100.0;
     snap->live_vmult  = FPN_ToDouble(ctrl->mean_rev.live_vol_mult);
     snap->live_sm     = FPN_ToDouble(ctrl->mean_rev.live_stddev_mult);
@@ -959,11 +962,12 @@ static inline void TUI_Render_Snapshot(EngineTUI *tui, const TUISnapshot *s) {
     printf(C_SURF "  ----------------------------------------------------------------" C_RESET "\n"); row++;
 
     // buy gate
+    const char *snap_gate_op = s->gate_direction ? ">=" : "<=";
     printf(C_BOLD C_PEACH "  BUY GATE " C_DIM "(adaptive):" C_RESET "\n"); row++;
     if (s->stddev_mode)
-        printf(C_SAND "    price <= " C_FG "%-12.2f" C_DIM "  (stddev: %.2fx)" C_RESET "\n", s->buy_p, s->live_sm);
+        printf(C_SAND "    price %s " C_FG "%-12.2f" C_DIM "  (stddev: %.2fx)" C_RESET "\n", snap_gate_op, s->buy_p, s->live_sm);
     else
-        printf(C_SAND "    price <= " C_FG "%-12.2f" C_DIM "  (offset: %.3f%%)" C_RESET "\n", s->buy_p, s->live_offset);
+        printf(C_SAND "    price %s " C_FG "%-12.2f" C_DIM "  (offset: %.3f%%)" C_RESET "\n", snap_gate_op, s->buy_p, s->live_offset);
     row++;
     printf(C_SAND "    vol   >= " C_FG "%-12.8f" C_DIM "  (mult: %.2fx)" C_RESET "\n", s->buy_v, s->live_vmult); row++;
     if (s->buy_p > 0.01)
