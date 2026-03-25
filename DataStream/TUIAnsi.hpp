@@ -772,23 +772,23 @@ static inline int ANSI_Section_Charts(AnsiBuf *ab, const TUISnapshot *s, int y, 
                        A_GREEN, A_RED, A_WHEAT);
     y += 3;
 
-    // P&L sparkline (per-bar green/red coloring)
+    // P&L half-block chart (2 rows, green/red by value sign)
     ab_goto(ab, y, 3);
     ab_printf(ab, A_SAND "p&l" A_RESET);
     y++;
-    ab_goto(ab, y, 3);
-    ab_sparkline_pnl(ab, s->pnl_history, s->graph_head, s->graph_count,
-                     TUISnapshot::GRAPH_LEN, chart_w);
-    y++;
+    ab_halfblock_chart(ab, s->pnl_history, s->graph_head, s->graph_count,
+                       TUISnapshot::GRAPH_LEN, chart_w, 2, y, 3,
+                       A_GREEN, A_RED, A_DIM);
+    y += 2;
 
-    // volume sparkline
+    // volume half-block chart (2 rows, clay color)
     ab_goto(ab, y, 3);
     ab_printf(ab, A_SAND "vol" A_RESET);
     y++;
-    ab_goto(ab, y, 3);
-    ab_sparkline(ab, s->volume_history, s->graph_head, s->graph_count,
-                 TUISnapshot::GRAPH_LEN, chart_w, A_CLAY);
-    y++;
+    ab_halfblock_chart(ab, s->volume_history, s->graph_head, s->graph_count,
+                       TUISnapshot::GRAPH_LEN, chart_w, 2, y, 3,
+                       A_CLAY, A_CLAY, A_CLAY);
+    y += 2;
 
     return y;
 }
