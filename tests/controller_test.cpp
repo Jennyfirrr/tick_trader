@@ -1048,6 +1048,7 @@ static void test_trailing_activates() {
 
     PortfolioController<FP> ctrl = {};
     PortfolioController_Init(&ctrl, cfg);
+    ctrl.strategy_id = STRATEGY_MOMENTUM; // trailing only active for momentum
 
     OrderPool<FP> pool;
     OrderPool_init(&pool, 64);
@@ -1060,13 +1061,14 @@ static void test_trailing_activates() {
         PortfolioController_Tick(&ctrl, &pool, FPN_FromDouble<FP>(100.0), FPN_FromDouble<FP>(500.0), &log);
     }
 
-    // add a position with TP at 103
+    // add a momentum position with TP at 103
     FPN<FP> entry = FPN_FromDouble<FP>(100.0);
     FPN<FP> tp = FPN_FromDouble<FP>(103.0);
     FPN<FP> sl = FPN_FromDouble<FP>(97.0);
     int slot = Portfolio_AddPositionWithExits(&ctrl.portfolio, FPN_FromDouble<FP>(10.0), entry, tp, sl);
     ctrl.portfolio.positions[slot].original_tp = tp;
     ctrl.portfolio.positions[slot].original_sl = sl;
+    ctrl.entry_strategy[slot] = STRATEGY_MOMENTUM;
 
     // feed steadily rising prices above TP (strong clean trend → high SNR * R²)
     for (int i = 0; i < 50; i++) {

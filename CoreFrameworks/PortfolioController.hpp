@@ -692,8 +692,8 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
     MeanReversion_Adapt(&ctrl->mean_rev, current_price, ctrl->portfolio_delta,
                          ctrl->portfolio.active_bitmap, &ctrl->buy_conds,
                          &ctrl->config);
-    MeanReversion_ExitAdjust(&ctrl->portfolio, current_price, &ctrl->rolling,
-                              &ctrl->mean_rev, &ctrl->config);
+    // no ExitAdjust for MR — fixed TP/SL, no trailing. MR is buy-the-dip, take-the-profit.
+    // trailing gives back gains in ranging markets where MR operates.
     ctrl->buy_conds = MeanReversion_BuySignal(&ctrl->mean_rev, &ctrl->rolling,
                                                ctrl->rolling_long, &ctrl->config);
     ctrl->buy_conds.gate_direction = 0;  // buy below (dips)
