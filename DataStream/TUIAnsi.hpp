@@ -159,13 +159,15 @@ static inline void ab_r2_bar(AnsiBuf *ab, double r2, int width) {
 // half-block area chart — 2× vertical resolution vs sparkline, solid and readable
 // each terminal cell has upper half (▀) and lower half (▄) = 2 sub-rows per row
 // height_chars rows = height_chars*2 vertical levels (e.g. 3 rows = 6 levels)
-// area fill from bottom to data point, green/red trend coloring per column
+// area fill from bottom to data point, per-column coloring
+// color_by_sign: 0 = color by trend (rising=up, falling=dn), 1 = color by value sign (>=0=up, <0=dn)
 // start_y/start_x: absolute terminal position (ANSI TUI uses ab_goto, not newlines)
 static inline void ab_halfblock_chart(AnsiBuf *ab, const double *data, int head,
                                        int count, int max_len, int width,
                                        int height_chars, int start_y, int start_x,
                                        const char *up_color, const char *dn_color,
-                                       const char *flat_color) {
+                                       const char *flat_color,
+                                       int color_by_sign = 0) {
     if (count < 2 || width < 4 || height_chars < 1) return;
 
     int vis = (count < width) ? count : width;
@@ -182,9 +184,9 @@ static inline void ab_halfblock_chart(AnsiBuf *ab, const double *data, int head,
     double range = vmax - vmin;
     int sub_rows = height_chars * 2; // 2 sub-rows per terminal row
 
-    // compute fill height for each column (0 to sub_rows-1, bottom = 0)
+    // compute fill height and color signal for each column
     int col_level[120];
-    double col_trend[120];
+    double col_signal[120]; // trend delta or raw value (depending on color_by_sign)
     if (vis > 120) vis = 120;
 
     for (int c = 0; c < vis; c++) {
@@ -197,10 +199,14 @@ static inline void ab_halfblock_chart(AnsiBuf *ab, const double *data, int head,
             if (col_level[c] < 0) col_level[c] = 0;
             if (col_level[c] >= sub_rows) col_level[c] = sub_rows - 1;
         }
-        col_trend[c] = 0.0;
-        if (c > 0) {
-            int prev_idx = (start_idx + start_offset + c - 1) % max_len;
-            col_trend[c] = v - data[prev_idx];
+        if (color_by_sign) {
+            col_signal[c] = v; // color by value sign: >= 0 = up_color, < 0 = dn_color
+        } else {
+            col_signal[c] = 0.0;
+            if (c > 0) {
+                int prev_idx = (start_idx + start_offset + c - 1) % max_len;
+                col_signal[c] = v - data[prev_idx]; // color by trend direction
+            }
         }
     }
 
@@ -213,8 +219,8 @@ static inline void ab_halfblock_chart(AnsiBuf *ab, const double *data, int head,
 
         for (int c = 0; c < vis; c++) {
             const char *color = flat_color;
-            if (col_trend[c] > 1e-10) color = up_color;
-            else if (col_trend[c] < -1e-10) color = dn_color;
+            if (col_signal[c] > 1e-10) color = up_color;
+            else if (col_signal[c] < -1e-10) color = dn_color;
             ab_append(ab, color);
 
             int fill = col_level[c]; // filled up to this sub-row (inclusive)
@@ -778,7 +784,7 @@ static inline int ANSI_Section_Charts(AnsiBuf *ab, const TUISnapshot *s, int y, 
     y++;
     ab_halfblock_chart(ab, s->pnl_history, s->graph_head, s->graph_count,
                        TUISnapshot::GRAPH_LEN, chart_w, 2, y, 3,
-                       A_GREEN, A_RED, A_DIM);
+                       A_GREEN, A_RED, A_DIM, 1);
     y += 2;
 
     // volume half-block chart (2 rows, clay color)
