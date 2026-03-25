@@ -531,7 +531,7 @@ int main(int argc, char *argv[]) {
                 // undo paper positions that weren't backed by real orders
                 // with single-slot mode, if the buy was skipped or failed, the paper
                 // engine shouldn't track a phantom position
-                {
+                if (ccfg.use_real_money) {
                     uint16_t check = ctrl.portfolio.active_bitmap;
                     while (check) {
                         int slot = __builtin_ctz(check);
