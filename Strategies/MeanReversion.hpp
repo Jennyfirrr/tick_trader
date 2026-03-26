@@ -142,7 +142,7 @@ inline void MeanReversion_Adapt(MeanReversionState<F> *state,
 
         // PERCENTAGE MODE: squeeze offset toward zero (not offset_min — go all the way)
         FPN<F> zero = FPN_Zero<F>();
-        FPN<F> squeeze_step = FPN_Mul(state->live_offset_pct, FPN_FromDouble<F>(0.10));
+        FPN<F> squeeze_step = FPN_Mul(state->live_offset_pct, cfg->squeeze_decay);
         FPN<F> masked_squeeze;
         for (unsigned i = 0; i < N; i++) {
             masked_squeeze.w[i] = squeeze_step.w[i] & pct_sq_mask;
@@ -155,7 +155,7 @@ inline void MeanReversion_Adapt(MeanReversionState<F> *state,
         // STDDEV MODE: squeeze stddev_mult toward offset_stddev_min
         // uses gap-based decay: step = (current - min) * 0.10
         FPN<F> stddev_gap = FPN_Sub(state->live_stddev_mult, cfg->offset_stddev_min);
-        FPN<F> stddev_step = FPN_Mul(stddev_gap, FPN_FromDouble<F>(0.10));
+        FPN<F> stddev_step = FPN_Mul(stddev_gap, cfg->squeeze_decay);
         FPN<F> masked_stddev;
         for (unsigned i = 0; i < N; i++) {
             masked_stddev.w[i] = stddev_step.w[i] & stddev_sq_mask;
@@ -168,7 +168,7 @@ inline void MeanReversion_Adapt(MeanReversionState<F> *state,
         // squeeze volume multiplier toward 1.0 (accept any trade size) — both modes
         FPN<F> one = FPN_FromDouble<F>(1.0);
         FPN<F> vmult_gap = FPN_Sub(state->live_vol_mult, one);
-        FPN<F> vmult_step = FPN_Mul(vmult_gap, FPN_FromDouble<F>(0.10));
+        FPN<F> vmult_step = FPN_Mul(vmult_gap, cfg->squeeze_decay);
         FPN<F> masked_vmult;
         for (unsigned i = 0; i < N; i++) {
             masked_vmult.w[i] = vmult_step.w[i] & sq_mask;
@@ -228,7 +228,7 @@ inline void MeanReversion_Adapt(MeanReversionState<F> *state,
             }
             masked_pct_shift.sign = neg_shift.sign & (confident & !use_stddev);
 
-            FPN<F> offset_scale = FPN_FromDouble<F>(0.001);
+            FPN<F> offset_scale = cfg->offset_adapt_scale;
             FPN<F> offset_shift = FPN_Mul(masked_pct_shift, offset_scale);
             state->live_offset_pct = FPN_AddSat(state->live_offset_pct, offset_shift);
             state->live_offset_pct = FPN_Max(state->live_offset_pct, cfg->offset_min);
@@ -245,7 +245,7 @@ inline void MeanReversion_Adapt(MeanReversionState<F> *state,
             }
             masked_stddev_shift.sign = neg_shift.sign & (confident & use_stddev);
 
-            FPN<F> stddev_adapt_scale = FPN_FromDouble<F>(0.1);
+            FPN<F> stddev_adapt_scale = cfg->stddev_adapt_scale;
             FPN<F> stddev_shift = FPN_Mul(masked_stddev_shift, stddev_adapt_scale);
             state->live_stddev_mult = FPN_AddSat(state->live_stddev_mult, stddev_shift);
             state->live_stddev_mult = FPN_Max(state->live_stddev_mult, cfg->offset_stddev_min);
@@ -259,7 +259,7 @@ inline void MeanReversion_Adapt(MeanReversionState<F> *state,
         }
         masked_shift.sign = neg_shift.sign & confident;
 
-        FPN<F> vol_shift = FPN_Mul(masked_shift, FPN_FromDouble<F>(0.1));
+        FPN<F> vol_shift = FPN_Mul(masked_shift, cfg->vol_adapt_scale);
         state->live_vol_mult = FPN_AddSat(state->live_vol_mult, vol_shift);
         state->live_vol_mult = FPN_Max(state->live_vol_mult, cfg->vol_mult_min);
         state->live_vol_mult = FPN_Min(state->live_vol_mult, cfg->vol_mult_max);

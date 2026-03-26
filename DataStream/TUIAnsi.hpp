@@ -799,32 +799,32 @@ static inline int ANSI_Section_Charts(AnsiBuf *ab, const TUISnapshot *s, int y, 
     if (chart_w > 120) chart_w = 120;
     if (chart_w < 20) chart_w = 20;
 
-    // price half-block area chart (3 rows tall = 6 vertical levels, green/red trend)
+    // price sparkline (wheat)
     ab_goto(ab, y, 3);
     ab_printf(ab, A_SAND "price" A_RESET);
     y++;
-    ab_halfblock_chart(ab, s->price_history, s->graph_head, s->graph_count,
-                       TUISnapshot::GRAPH_LEN, chart_w, 3, y, 3,
-                       A_GREEN, A_RED, A_WHEAT);
-    y += 3;
+    ab_goto(ab, y, 3);
+    ab_sparkline(ab, s->price_history, s->graph_head, s->graph_count,
+                 TUISnapshot::GRAPH_LEN, chart_w, A_WHEAT);
+    y++;
 
-    // P&L half-block chart (2 rows, green/red by value sign)
+    // P&L sparkline (per-bar green/red by value sign)
     ab_goto(ab, y, 3);
     ab_printf(ab, A_SAND "p&l" A_RESET);
     y++;
-    ab_halfblock_chart(ab, s->pnl_history, s->graph_head, s->graph_count,
-                       TUISnapshot::GRAPH_LEN, chart_w, 2, y, 3,
-                       A_GREEN, A_RED, A_DIM, 1);
-    y += 2;
+    ab_goto(ab, y, 3);
+    ab_sparkline_pnl(ab, s->pnl_history, s->graph_head, s->graph_count,
+                     TUISnapshot::GRAPH_LEN, chart_w);
+    y++;
 
-    // volume half-block chart (2 rows, clay color)
+    // volume sparkline (clay)
     ab_goto(ab, y, 3);
     ab_printf(ab, A_SAND "vol" A_RESET);
     y++;
-    ab_halfblock_chart(ab, s->volume_history, s->graph_head, s->graph_count,
-                       TUISnapshot::GRAPH_LEN, chart_w, 2, y, 3,
-                       A_CLAY, A_CLAY, A_CLAY);
-    y += 2;
+    ab_goto(ab, y, 3);
+    ab_sparkline(ab, s->volume_history, s->graph_head, s->graph_count,
+                 TUISnapshot::GRAPH_LEN, chart_w, A_CLAY);
+    y++;
 
     return y;
 }

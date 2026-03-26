@@ -278,7 +278,7 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
     // of the same second). tests use poll_interval=1 so every tick IS a sample.
     // time floor: also push if 3+ seconds have passed (low-volume periods)
     uint64_t warmup_now = (uint64_t)time(NULL);
-    int warmup_time_floor = (warmup_now - ctrl->last_slow_time >= 3);
+    int warmup_time_floor = (warmup_now - ctrl->last_slow_time >= ctrl->config.slow_path_max_secs);
     if ((ctrl->warmup_count % ctrl->config.poll_interval == 0) || warmup_time_floor) {
       ctrl->last_slow_time = warmup_now;
       // session high/low tracking (display-only, slow-path granularity is sufficient)
@@ -444,26 +444,25 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
           // R² ∈ [0,1]: high R² = consistent trend → widen TP, tighten SL
           //              low R²  = choppy           → tighten TP, widen SL
           FPN<F> r2 = ctrl->rolling.price_r_squared;
-          FPN<F> half = FPN_FromDouble<F>(0.5);
 
-          // TP: base * (0.5 + R²) → range [0.5x, 1.5x] of config value
+          // TP: base * (tp_r2_min + R²) → range [tp_r2_min, 1+tp_r2_min] of config value
           // strong trend lets winners run, weak trend takes profits early
-          FPN<F> tp_scale = FPN_AddSat(half, r2);
+          FPN<F> tp_scale = FPN_AddSat(ctrl->config.momentum_tp_r2_min, r2);
           tp_mult = FPN_Mul(ctrl->config.momentum_tp_mult, tp_scale);
 
-          // SL: base * (1.5 - R²*0.5) → range [1.0x, 1.5x] of config value
+          // SL: base * (sl_r2_max - R²*tp_r2_min) → range [1.0x, sl_r2_max] of config value
           // choppy = wider SL (avoid whipsaw stops), consistent = tighter SL
-          FPN<F> one_five = FPN_FromDouble<F>(1.5);
-          FPN<F> sl_scale = FPN_SubSat(one_five, FPN_Mul(r2, half));
+          FPN<F> sl_scale = FPN_SubSat(ctrl->config.momentum_sl_r2_max,
+                                        FPN_Mul(r2, ctrl->config.momentum_tp_r2_min));
           sl_mult = FPN_Mul(ctrl->config.momentum_sl_mult, sl_scale);
 
-          // ROR bonus: accelerating trend → 20% wider TP
+          // ROR bonus: accelerating trend → wider TP (ror_tp_bonus, default 1.2 = 20%)
           // uses direction only (not magnitude) to avoid calibration issues
           if (ctrl->regime_ror.count >= MAX_WINDOW) {
               LinearRegression3XResult<F> ror_r = RORRegressor_Compute(
                   const_cast<RORRegressor<F>*>(&ctrl->regime_ror));
               if (FPN_GreaterThan(ror_r.model.slope, FPN_Zero<F>())) {
-                  tp_mult = FPN_Mul(tp_mult, FPN_FromDouble<F>(1.2));
+                  tp_mult = FPN_Mul(tp_mult, ctrl->config.ror_tp_bonus);
               }
           }
       } else {
@@ -510,9 +509,8 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
       // gives a minimum 2:1 reward-to-risk ratio
       FPN<F> tp_dist =
           FPN_Sub(tp_price, fill_price); // how far TP is from entry
-      FPN<F> half = FPN_FromDouble<F>(0.5);
       FPN<F> min_sl_dist =
-          FPN_Mul(tp_dist, half); // SL must be at least half that
+          FPN_Mul(tp_dist, ctrl->config.min_sl_tp_ratio); // SL must be at least this fraction of TP dist
       FPN<F> sl_floor = FPN_SubSat(fill_price, min_sl_dist);
       sl_price = FPN_Min(
           sl_price, sl_floor); // Min because SL is below entry (lower = wider)
@@ -569,7 +567,7 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
   // where 100 ticks could take 60+ seconds (crypto off-hours, weekends)
   //==================================================================================================
   uint64_t now = (uint64_t)time(NULL);
-  int time_floor_hit = (now - ctrl->last_slow_time >= 3);
+  int time_floor_hit = (now - ctrl->last_slow_time >= ctrl->config.slow_path_max_secs);
   if (ctrl->tick_count < ctrl->config.poll_interval && !time_floor_hit)
     return;
   ctrl->tick_count = 0;
@@ -801,6 +799,16 @@ inline void PortfolioController_HotReload(PortfolioController<F> *ctrl,
     ctrl->config.tp_trail_mult       = new_cfg.tp_trail_mult;
     ctrl->config.sl_trail_mult       = new_cfg.sl_trail_mult;
     ctrl->config.fee_floor_mult      = new_cfg.fee_floor_mult;
+    ctrl->config.min_sl_tp_ratio     = new_cfg.min_sl_tp_ratio;
+    ctrl->config.ror_tp_bonus        = new_cfg.ror_tp_bonus;
+    ctrl->config.momentum_tp_r2_min  = new_cfg.momentum_tp_r2_min;
+    ctrl->config.momentum_sl_r2_max  = new_cfg.momentum_sl_r2_max;
+    ctrl->config.squeeze_decay       = new_cfg.squeeze_decay;
+    ctrl->config.offset_adapt_scale  = new_cfg.offset_adapt_scale;
+    ctrl->config.stddev_adapt_scale  = new_cfg.stddev_adapt_scale;
+    ctrl->config.vol_adapt_scale     = new_cfg.vol_adapt_scale;
+    ctrl->config.breakout_min        = new_cfg.breakout_min;
+    ctrl->config.slow_path_max_secs  = new_cfg.slow_path_max_secs;
     ctrl->config.max_hold_ticks      = new_cfg.max_hold_ticks;
     ctrl->config.min_hold_gain_pct   = new_cfg.min_hold_gain_pct;
     // regime + momentum

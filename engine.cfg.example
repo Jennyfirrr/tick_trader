@@ -101,6 +101,23 @@ tp_hold_score=0.15              # min score to hold past TP (0 = disabled, 0.1-0
 tp_trail_mult=1.00              # trailing TP distance in stddevs below price (0.5-2.0 recommended)
 sl_trail_mult=2.00              # trailing SL distance in stddevs below price (wider than TP)
 fee_floor_mult=3.00             # TP floor = entry × fee_rate × this (3.0 = 2x round-trip + 1x margin)
+min_sl_tp_ratio=0.50            # min SL distance as fraction of TP distance (0.5 = 2:1 reward/risk)
+ror_tp_bonus=1.20               # TP multiplier when trend is accelerating (1.2 = 20% wider)
+momentum_tp_r2_min=0.50         # TP scale at R²=0 (0.5 = half base TP when uncertain)
+momentum_sl_r2_max=1.50         # SL scale at R²=0 (1.5 = wider SL in choppy markets)
+
+#==============================================================================
+# ADAPTATION SPEED
+#==============================================================================
+# controls how fast the engine adjusts filters based on P&L regression
+# higher = more aggressive adaptation, lower = slower/smoother changes
+
+squeeze_decay=0.10              # idle squeeze rate per cycle (10% of gap toward floor)
+offset_adapt_scale=0.001        # P&L regression → offset_pct shift strength
+stddev_adapt_scale=0.10         # P&L regression → stddev/breakout shift strength
+vol_adapt_scale=0.10            # P&L regression → volume_mult shift strength
+breakout_min=0.50               # momentum breakout floor in stddevs (idle squeeze target)
+slow_path_max_secs=3            # wall-time floor between slow-path cycles (seconds)
 
 #==============================================================================
 # TIME-BASED EXIT

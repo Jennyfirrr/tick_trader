@@ -303,7 +303,7 @@ inline void Regime_AdjustPositions(Portfolio<F> *portfolio,
     if (FPN_IsZero(stddev)) return;
 
     FPN<F> hundred = FPN_FromDouble<F>(100.0);
-    FPN<F> half = FPN_FromDouble<F>(0.5);
+    FPN<F> half = cfg->min_sl_tp_ratio;
 
     uint16_t active = portfolio->active_bitmap;
     while (active) {

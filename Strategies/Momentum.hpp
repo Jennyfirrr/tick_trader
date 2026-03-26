@@ -107,10 +107,10 @@ inline void Momentum_Adapt(MomentumState<F> *state,
         int should_squeeze = is_empty & trailing;
         uint64_t sq_mask = -(uint64_t)should_squeeze;
 
-        // squeeze breakout_mult toward a minimum (0.5 stddev — very sensitive)
-        FPN<F> breakout_min = FPN_FromDouble<F>(0.5);
+        // squeeze breakout_mult toward minimum (breakout_min stddevs)
+        FPN<F> breakout_min = cfg->breakout_min;
         FPN<F> gap = FPN_Sub(state->live_breakout_mult, breakout_min);
-        FPN<F> step = FPN_Mul(gap, FPN_FromDouble<F>(0.10));
+        FPN<F> step = FPN_Mul(gap, cfg->squeeze_decay);
         FPN<F> masked_step;
         for (unsigned i = 0; i < N; i++) {
             masked_step.w[i] = step.w[i] & sq_mask;
@@ -122,7 +122,7 @@ inline void Momentum_Adapt(MomentumState<F> *state,
         // squeeze volume multiplier toward 1.0 (same as MR)
         FPN<F> one = FPN_FromDouble<F>(1.0);
         FPN<F> vmult_gap = FPN_Sub(state->live_vol_mult, one);
-        FPN<F> vmult_step = FPN_Mul(vmult_gap, FPN_FromDouble<F>(0.10));
+        FPN<F> vmult_step = FPN_Mul(vmult_gap, cfg->squeeze_decay);
         FPN<F> masked_vmult;
         for (unsigned i = 0; i < N; i++) {
             masked_vmult.w[i] = vmult_step.w[i] & sq_mask;
@@ -160,12 +160,11 @@ inline void Momentum_Adapt(MomentumState<F> *state,
         }
         masked_shift.sign = neg_shift.sign & confident;
 
-        FPN<F> adapt_scale = FPN_FromDouble<F>(0.1);
-        FPN<F> scaled_shift = FPN_Mul(masked_shift, adapt_scale);
+        FPN<F> scaled_shift = FPN_Mul(masked_shift, cfg->stddev_adapt_scale);
         state->live_breakout_mult = FPN_AddSat(state->live_breakout_mult, scaled_shift);
 
-        // clamp breakout_mult to reasonable range (0.5 — 5.0 stddevs)
-        FPN<F> breakout_min = FPN_FromDouble<F>(0.5);
+        // clamp breakout_mult to reasonable range
+        FPN<F> breakout_min = cfg->breakout_min;
         FPN<F> breakout_max = FPN_FromDouble<F>(5.0);
         state->live_breakout_mult = FPN_Max(state->live_breakout_mult, breakout_min);
         state->live_breakout_mult = FPN_Min(state->live_breakout_mult, breakout_max);

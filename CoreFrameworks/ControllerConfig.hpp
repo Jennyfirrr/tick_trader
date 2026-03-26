@@ -60,6 +60,18 @@ template <unsigned F> struct ControllerConfig {
   FPN<F> tp_trail_mult;       // trailing distance: stddev * this (e.g. 1.0)
   FPN<F> sl_trail_mult;       // trailing SL distance: stddev * this (e.g. 2.0)
   FPN<F> fee_floor_mult;      // TP floor = entry × fee_rate × this (default 3.0, try 5.0 for wider)
+  // risk ratios
+  FPN<F> min_sl_tp_ratio;     // min SL/TP distance ratio (0.5 = 2:1 reward/risk floor)
+  FPN<F> ror_tp_bonus;        // TP multiplier when ROR positive (1.2 = 20% wider)
+  FPN<F> momentum_tp_r2_min;  // TP scale at R²=0 (0.5 = half base TP, conservative on uncertainty)
+  FPN<F> momentum_sl_r2_max;  // SL scale at R²=0 (1.5 = wider SL in choppy markets)
+  // adaptation speed
+  FPN<F> squeeze_decay;       // idle squeeze rate per cycle (0.10 = 10% of gap)
+  FPN<F> offset_adapt_scale;  // P&L regression → offset shift (0.001)
+  FPN<F> stddev_adapt_scale;  // P&L regression → stddev/breakout shift (0.1)
+  FPN<F> vol_adapt_scale;     // P&L regression → volume shift (0.1)
+  FPN<F> breakout_min;        // momentum breakout floor in stddevs (0.5)
+  uint32_t slow_path_max_secs; // wall-time floor between slow paths (3 seconds)
   // time-based exit (disabled by default)
   uint32_t max_hold_ticks;    // close position if held longer than this (0 = disabled)
   FPN<F> min_hold_gain_pct;   // only time-exit if gain < this % (e.g. 0.001 = 0.1%)
@@ -119,6 +131,16 @@ template <unsigned F> inline ControllerConfig<F> ControllerConfig_Default() {
   cfg.tp_trail_mult = FPN_FromDouble<F>(1.0);     // trail 1 stddev below price
   cfg.sl_trail_mult = FPN_FromDouble<F>(2.0);     // trail SL 2 stddevs below price
   cfg.fee_floor_mult = FPN_FromDouble<F>(3.0);    // TP floor = entry × fee_rate × 3
+  cfg.min_sl_tp_ratio = FPN_FromDouble<F>(0.5);   // 2:1 reward/risk floor
+  cfg.ror_tp_bonus = FPN_FromDouble<F>(1.2);      // 20% wider TP on accelerating trend
+  cfg.momentum_tp_r2_min = FPN_FromDouble<F>(0.5); // TP scale at R²=0
+  cfg.momentum_sl_r2_max = FPN_FromDouble<F>(1.5); // SL scale at R²=0
+  cfg.squeeze_decay = FPN_FromDouble<F>(0.10);     // 10% of gap per cycle
+  cfg.offset_adapt_scale = FPN_FromDouble<F>(0.001);
+  cfg.stddev_adapt_scale = FPN_FromDouble<F>(0.1);
+  cfg.vol_adapt_scale = FPN_FromDouble<F>(0.1);
+  cfg.breakout_min = FPN_FromDouble<F>(0.5);       // 0.5 stddev floor
+  cfg.slow_path_max_secs = 3;
   cfg.max_hold_ticks = 0;                          // 0 = disabled
   cfg.min_hold_gain_pct = FPN_FromDouble<F>(0.001); // 0.1% — only time-exit if below this gain
   // regime detection
@@ -257,6 +279,26 @@ inline ControllerConfig<F> ControllerConfig_Load(const char *filepath) {
       double v = atof(val); if (v < 1) v = 1;
       cfg.fee_floor_mult = FPN_FromDouble<F>(v);
     }
+    else if (strcmp(key, "min_sl_tp_ratio") == 0)
+      cfg.min_sl_tp_ratio = FPN_FromDouble<F>(atof(val));
+    else if (strcmp(key, "ror_tp_bonus") == 0)
+      cfg.ror_tp_bonus = FPN_FromDouble<F>(atof(val));
+    else if (strcmp(key, "momentum_tp_r2_min") == 0)
+      cfg.momentum_tp_r2_min = FPN_FromDouble<F>(atof(val));
+    else if (strcmp(key, "momentum_sl_r2_max") == 0)
+      cfg.momentum_sl_r2_max = FPN_FromDouble<F>(atof(val));
+    else if (strcmp(key, "squeeze_decay") == 0)
+      cfg.squeeze_decay = FPN_FromDouble<F>(atof(val));
+    else if (strcmp(key, "offset_adapt_scale") == 0)
+      cfg.offset_adapt_scale = FPN_FromDouble<F>(atof(val));
+    else if (strcmp(key, "stddev_adapt_scale") == 0)
+      cfg.stddev_adapt_scale = FPN_FromDouble<F>(atof(val));
+    else if (strcmp(key, "vol_adapt_scale") == 0)
+      cfg.vol_adapt_scale = FPN_FromDouble<F>(atof(val));
+    else if (strcmp(key, "breakout_min") == 0)
+      cfg.breakout_min = FPN_FromDouble<F>(atof(val));
+    else if (strcmp(key, "slow_path_max_secs") == 0)
+      cfg.slow_path_max_secs = (uint32_t)atol(val);
     else if (strcmp(key, "max_hold_ticks") == 0)
       cfg.max_hold_ticks = (uint32_t)atol(val);
     else if (strcmp(key, "min_hold_gain_pct") == 0)
