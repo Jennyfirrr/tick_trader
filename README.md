@@ -191,6 +191,57 @@ DOCS/                    Architecture, configuration, performance, changelogs
 
 See `DOCS/CONTRIBUTING.md` for the full guide.
 
+## Latency Tuning
+
+The hot path (BuyGate → ExitGate → PortfolioController_Tick) achieves ~300-400ns total with warm caches:
+
+| Component | Typical | What it does |
+|-----------|---------|-------------|
+| BuyGate | ~50ns | Branchless price+volume compare, pool write |
+| ExitGate | ~80ns/pos | Bitmap walk, TP/SL compare per position |
+| PCTick | ~200ns | Fill consumption, bitmap ops |
+
+In practice, avg rises to 1-2μs and p95 to 4-8μs from cache pollution and scheduler interrupts. To get consistent sub-500ns:
+
+### Core Isolation (Linux)
+
+Add to kernel boot parameters (`/etc/kernel/cmdline` or `GRUB_CMDLINE_LINUX`):
+
+```
+isolcpus=3 nohz_full=3 rcu_nocbs=3
+```
+
+- `isolcpus=3` — removes core 3 from general scheduler (only pinned tasks run on it)
+- `nohz_full=3` — disables timer tick on core 3 (no 250Hz scheduler interrupts)
+- `rcu_nocbs=3` — moves kernel RCU callbacks off core 3
+
+Reboot to apply. The engine already pins itself to core 3 and TUI to core 2 (`pthread_setaffinity_np` in main.cpp). With 8+ cores, dedicating 1 core leaves plenty for the OS.
+
+### Build Options
+
+```bash
+cmake -B build -DBUSY_POLL=ON        # spin-poll instead of poll() — keeps icache permanently warm
+cmake -B build -DLATENCY_PROFILING=ON # RDTSCP instrumentation — shows per-component breakdown
+cmake -B build -DLATENCY_LITE=ON      # lighter profiling (hot path only, skip component breakdown)
+cmake -B build -DLATENCY_BENCH=ON     # TUI disabled, clean measurement
+cmake -B build -DUSE_NATIVE_128=ON    # native 128-bit multiply (avoids __int128 emulation)
+```
+
+### Arch Linux (systemd-boot)
+
+```bash
+# Edit /etc/kernel/cmdline, add: isolcpus=3 nohz_full=3 rcu_nocbs=3
+sudo reinstall-kernels   # or: sudo bootctl update
+reboot
+```
+
+### Verify
+
+```bash
+cat /sys/devices/system/cpu/isolated   # should show: 3
+taskset -p $(pgrep engine)             # should show affinity mask: 8 (core 3)
+```
+
 ## License
 
 AGPL-3.0-or-later or Commercial. See top of this file for full terms.
