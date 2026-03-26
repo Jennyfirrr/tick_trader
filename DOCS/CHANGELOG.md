@@ -4,7 +4,10 @@
 
 | Version | Date | Highlights |
 |---------|------|------------|
-| 3.0.24 | 2026-03-25 | PAPER/LIVE mode indicator in TUI state bar — bold red for live, dim for paper |
+| 3.0.27 | 2026-03-25 | Extract 10 hardcoded constants to engine.cfg (squeeze_decay, adapt scales, risk ratios), revert to sparkline charts |
+| 3.0.26 | 2026-03-25 | **P&L accounting fix** — total P&L derived from equity, force-close/undo/orphan sell properly book balance+fees, configurable fee_floor_mult |
+| 3.0.25 | 2026-03-25 | Disable trailing TP for mean reversion (fixed exits in ranging), fix paper trading undo guard |
+| 3.0.24 | 2026-03-25 | PAPER/LIVE mode indicator, separate paper/live snapshots, dynamic POS display, buy gate volume+status |
 | 3.0.23 | 2026-03-25 | Separate paper/live snapshots, POS display shows config max_positions, P&L chart colors by value sign, buy gate shows volume gate + live status indicator |
 | 3.0.22 | 2026-03-25 | Half-block area charts for all graphs (price/P&L/vol), P&L color-by-sign fix |
 | 3.0.21 | 2026-03-24 | **TP/SL audit fix** — correct 4:1 asymmetry in downtrend regime adjustment, SL floor enforcement, braille area charts, buy gate direction, auto-logging, wall-time slow-path floor |
