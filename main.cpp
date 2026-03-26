@@ -54,6 +54,19 @@ static inline void engine_force_close_all(PortfolioController<FP> *ctrl, TradeLo
         double delta_pct = 0.0;
         if (entry_d != 0.0) delta_pct = ((exit_d - entry_d) / entry_d) * 100.0;
 
+        // book P&L, balance, and fees (same accounting as DrainExits)
+        FPN<FP> gross_proceeds = FPN_Mul(last_price, pos->quantity);
+        FPN<FP> exit_fee = FPN_Mul(gross_proceeds, ctrl->config.fee_rate);
+        FPN<FP> net_proceeds = FPN_SubSat(gross_proceeds, exit_fee);
+        FPN<FP> entry_cost = FPN_Mul(pos->entry_price, pos->quantity);
+        FPN<FP> entry_fee = FPN_Mul(entry_cost, ctrl->config.fee_rate);
+        FPN<FP> pos_pnl = FPN_Sub(net_proceeds, FPN_AddSat(entry_cost, entry_fee));
+
+        ctrl->balance = FPN_AddSat(ctrl->balance, net_proceeds);
+        ctrl->realized_pnl = FPN_AddSat(ctrl->realized_pnl, pos_pnl);
+        ctrl->total_fees = FPN_AddSat(ctrl->total_fees, exit_fee);
+        ctrl->losses++;
+
         { TradeLogRecord r = {};
           r.tick = ctrl->total_ticks; r.price = exit_d; r.quantity = qty_d;
           r.entry_price = entry_d; r.delta_pct = delta_pct;
@@ -546,6 +559,9 @@ int main(int argc, char *argv[]) {
                                                             ctrl.portfolio.positions[slot].entry_price);
                             FPN<FP> fee = FPN_Mul(position_cost, ctrl.config.fee_rate);
                             ctrl.balance = FPN_AddSat(ctrl.balance, FPN_AddSat(position_cost, fee));
+                            // reverse the entry fee that was counted at buy time — the buy didn't happen
+                            ctrl.total_fees = FPN_SubSat(ctrl.total_fees, fee);
+                            ctrl.total_buys--;
                         }
                         check &= check - 1;
                     }
@@ -683,8 +699,17 @@ int main(int argc, char *argv[]) {
                                 double notional = qty_d * last_stream.price_d;
                                 if (qty_d >= order_api.filters.lot_min_qty
                                     && notional >= order_api.filters.min_notional * 2.0) {
-                                    char oid[32]; double fp, fq;
-                                    BinanceOrderAPI_MarketSell(&order_api, qty_d, oid, &fp, &fq);
+                                    char oid[32]; double fp = 0, fq = 0;
+                                    if (BinanceOrderAPI_MarketSell(&order_api, qty_d, oid, &fp, &fq) && fq > 0) {
+                                        // book the exit in paper ledger
+                                        FPN<FP> proceeds = FPN_FromDouble<FP>(fp * fq);
+                                        FPN<FP> exit_fee = FPN_Mul(proceeds, ctrl.config.fee_rate);
+                                        ctrl.balance = FPN_AddSat(ctrl.balance, FPN_SubSat(proceeds, exit_fee));
+                                        ctrl.total_fees = FPN_AddSat(ctrl.total_fees, exit_fee);
+                                        ctrl.losses++;
+                                        fprintf(stderr, "[LIVE] orphan sold: %.8f @ $%.2f, fee $%.4f\n",
+                                                fq, fp, FPN_ToDouble(exit_fee));
+                                    }
                                 } else {
                                     fprintf(stderr, "[LIVE] orphan slot %d too small to sell (notional $%.2f)\n", idx, notional);
                                 }

@@ -815,9 +815,9 @@ static inline void TUI_CopySnapshot(TUISnapshot *snap,
     snap->starting   = starting;
     snap->realized   = realized;
     snap->unrealized = unrealized;
-    snap->total_pnl  = realized + unrealized;
-    snap->return_pct = (starting != 0.0) ? (snap->total_pnl / starting) * 100.0 : 0.0;
     snap->equity     = balance + snap->total_value;
+    snap->total_pnl  = snap->equity - starting; // derive from equity (always correct)
+    snap->return_pct = (starting != 0.0) ? (snap->total_pnl / starting) * 100.0 : 0.0;
     snap->exposure_pct = (starting != 0.0) ? ((starting - balance) / starting) * 100.0 : 0.0;
     snap->max_exp    = FPN_ToDouble(ctrl->config.max_exposure_pct) * 100.0;
     snap->fees       = FPN_ToDouble(ctrl->total_fees);

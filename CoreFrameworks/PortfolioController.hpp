@@ -497,11 +497,10 @@ inline void PortfolioController_Tick(PortfolioController<F> *ctrl,
       sl_price.sign = (vol_sl.sign & has_stats) | (sl_pct_dn.sign & !has_stats);
 
       // TP FLOOR: ensure TP is above the round-trip fee breakeven point
-      // min_tp = entry + entry * fee_rate * 3 (2x for round-trip fees + 1x
-      // safety margin)
-      FPN<F> three = FPN_FromDouble<F>(3.0);
+      // min_tp = entry + entry * fee_rate * fee_floor_mult
+      // default 3.0 = 2x round-trip fees + 1x safety margin
       FPN<F> fee_floor_offset =
-          FPN_Mul(fill_price, FPN_Mul(ctrl->config.fee_rate, three));
+          FPN_Mul(fill_price, FPN_Mul(ctrl->config.fee_rate, ctrl->config.fee_floor_mult));
       FPN<F> tp_floor = FPN_AddSat(fill_price, fee_floor_offset);
       tp_price = FPN_Max(tp_price, tp_floor);
 
@@ -801,6 +800,7 @@ inline void PortfolioController_HotReload(PortfolioController<F> *ctrl,
     ctrl->config.tp_hold_score       = new_cfg.tp_hold_score;
     ctrl->config.tp_trail_mult       = new_cfg.tp_trail_mult;
     ctrl->config.sl_trail_mult       = new_cfg.sl_trail_mult;
+    ctrl->config.fee_floor_mult      = new_cfg.fee_floor_mult;
     ctrl->config.max_hold_ticks      = new_cfg.max_hold_ticks;
     ctrl->config.min_hold_gain_pct   = new_cfg.min_hold_gain_pct;
     // regime + momentum
