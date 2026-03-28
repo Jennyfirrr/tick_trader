@@ -286,7 +286,7 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
     printf(C_SAND "  ================================================================" C_RESET "\n"); row++;
     printf(C_BOLD C_PEACH "     /\\_/\\   FOXML TRADER" C_RESET
            C_RESET "\n"); row++;
-    printf(C_BOLD C_PEACH "    ( o.o )  " C_WHEAT "engine v3.0.27" C_RESET "\n"); row++;
+    printf(C_BOLD C_PEACH "    ( o.o )  " C_WHEAT "engine v3.0.28" C_RESET "\n"); row++;
     printf(C_BOLD C_PEACH "     > ^ <" C_RESET "\n"); row++;
     printf(C_SAND "  ================================================================" C_RESET "\n"); row++;
     int is_paused = FPN_IsZero(ctrl->buy_conds.price) && (ctrl->state == CONTROLLER_ACTIVE);
@@ -371,8 +371,7 @@ static inline void TUI_Render(EngineTUI *tui, const PortfolioController<F> *ctrl
 
     // ==== PORTFOLIO section ====
     double equity = balance + total_value;
-    double deployed = starting - balance;
-    double exposure_pct = (starting != 0.0) ? (deployed / starting) * 100.0 : 0.0;
+    double exposure_pct = (starting != 0.0) ? (total_value / starting) * 100.0 : 0.0;
     double max_exp = FPN_ToDouble(ctrl->config.max_exposure_pct) * 100.0;
 
     printf(C_BOLD C_PEACH "  PORTFOLIO:" C_RESET "\n"); row++;
@@ -818,7 +817,7 @@ static inline void TUI_CopySnapshot(TUISnapshot *snap,
     snap->equity     = balance + snap->total_value;
     snap->total_pnl  = snap->equity - starting; // derive from equity (always correct)
     snap->return_pct = (starting != 0.0) ? (snap->total_pnl / starting) * 100.0 : 0.0;
-    snap->exposure_pct = (starting != 0.0) ? ((starting - balance) / starting) * 100.0 : 0.0;
+    snap->exposure_pct = (starting != 0.0) ? (snap->total_value / starting) * 100.0 : 0.0;
     snap->max_exp    = FPN_ToDouble(ctrl->config.max_exposure_pct) * 100.0;
     snap->fees       = FPN_ToDouble(ctrl->total_fees);
     snap->fee_rate_pct = fee_r * 100.0;
@@ -938,7 +937,7 @@ static inline void TUI_Render_Snapshot(EngineTUI *tui, const TUISnapshot *s) {
     int row = 1;
     printf(C_SAND "  ================================================================" C_RESET "\n"); row++;
     printf(C_BOLD C_PEACH "     /\\_/\\   FOXML TRADER" C_RESET "\n"); row++;
-    printf(C_BOLD C_PEACH "    ( o.o )  " C_WHEAT "engine v3.0.27" C_RESET "\n"); row++;
+    printf(C_BOLD C_PEACH "    ( o.o )  " C_WHEAT "engine v3.0.28" C_RESET "\n"); row++;
     printf(C_BOLD C_PEACH "     > ^ <" C_RESET "\n"); row++;
     printf(C_SAND "  ================================================================" C_RESET "\n"); row++;
     printf(C_SAND "  STATE: " C_FG "%-8s" C_RESET C_DIM "  |  " C_SAND "UPTIME: " C_FG "%02u:%02u:%02u" C_RESET "%s\n",
