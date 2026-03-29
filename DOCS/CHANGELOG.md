@@ -4,6 +4,7 @@
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 3.0.29 | 2026-03-28 | Remove copyright headers + bounty clause, keep dual license (AGPL/Commercial), SPDX tags in source files |
 | 3.0.28 | 2026-03-27 | **Exposure calc fix** — use position market value instead of balance deficit, fixes phantom exposure from realized losses/fees |
 | 3.0.27 | 2026-03-25 | Extract 10 hardcoded constants to engine.cfg (squeeze_decay, adapt scales, risk ratios), revert to sparkline charts |
 | 3.0.26 | 2026-03-25 | **P&L accounting fix** — total P&L derived from equity, force-close/undo/orphan sell properly book balance+fees, configurable fee_floor_mult |

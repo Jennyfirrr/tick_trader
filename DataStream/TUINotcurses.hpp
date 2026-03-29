@@ -1,6 +1,4 @@
-// Copyright (c) 2026 Jennifer Lewis. All rights reserved.
-// Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
-// See LICENSE file in the project root for full license text.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 //======================================================================================================
 // [NOTCURSES TUI]
@@ -80,7 +78,7 @@ static inline int NC_Section_Header(struct ncplane *n, const TUISnapshot *s, int
     nc_printf(n, y++, 2, "/\\_/\\   FOXML TRADER");
     nc_printf(n, y, 2, "( o.o )  ");
     nc_foxml::wheat(n);
-    nc_printf(n, y++, 11, "engine v3.0.28");
+    nc_printf(n, y++, 11, "engine v3.0.29");
     nc_foxml::peach(n);
     nc_printf(n, y++, 2, " > ^ <");
     nc_foxml::bold_off(n);

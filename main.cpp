@@ -1,6 +1,4 @@
-// Copyright (c) 2026 Jennifer Lewis. All rights reserved.
-// Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
-// See LICENSE file in the project root for full license text.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 //======================================================================================================
 // [TICK TRADER ENGINE]
@@ -93,8 +91,7 @@ static inline void engine_force_close_all(PortfolioController<FP> *ctrl, TradeLo
 // [MAIN]
 //======================================================================================================
 int main(int argc, char *argv[]) {
-    fprintf(stderr, "Tick Trader — Copyright (c) 2026 Jennifer Lewis. All rights reserved.\n");
-    fprintf(stderr, "Licensed under AGPL-3.0-or-later. Commercial license: jenn.lewis5789@gmail.com\n\n");
+    fprintf(stderr, "Tick Trader — AGPL-3.0-or-later | Commercial license: jenn.lewis5789@gmail.com\n\n");
 
     const char *cfg_path = (argc > 1) ? argv[1] : "engine.cfg";
 
